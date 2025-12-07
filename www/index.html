@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BGTK</title>
+<meta charset="UTF-8">
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<link rel=alternate type="application/rss+xml" title=log href=feed.xml />
+<style>pre{width:52ch;margin:2ch auto}a{color:#ff00ff}</style>
+<pre>
+		┌─────────────┐
+		│ BGTK is the │
+		│ simplest    │
+		│ toolkit for │
+		│ buffers.    │
+		│             │
+		│  ┌───────┐  │
+		│  │ HELLO │  │
+		│  └───────┘  │
+		└─────────────┘
+
+<i><b>BGTK: Brian's Graphical Tool Kit</b></i>
+
+BGTK is a simple toolkit that directly handles
+framebuffers. I was created for BGCE, so it makes
+it very easy to send/receive events and create
+widgets and components.
+
+
+<b>Overview</b>
+
+BGTK offers the Widget abstraction and some basic
+helper functions. The idea is to be a "declarative"
+library, so it is intuitive to use.
+
+To keep track of the develoment check the commit log
+on the <a href=feed.xml>feed</a>.
+
+
+<b>Build Instructions</b>
+
+First make sure all dependencies are met:
+- freetype2
+- bgce
+
+Then run:
+
+	git clone https://terminal.pink/bgtk
+	cd bgtk
+	make
+	./app   # run sample app
+
+
+<b>Goals</b>
+
+- Minimal, declarative widget library
+- Few external dependencies
+- Educational reference for framebuffer-based
+  compositing
+
+
+<b>License</b>
+
+BSD 2-clause license.
+</pre>
