@@ -4,6 +4,14 @@ This is a toolkit for the BGCE display server. It works by directly writing to
 a graphical buffer, this library lets developers create user interfaces easily.
 
 
+## Style guide
+
+Prefer passing struct pointers to functions instead of malloc'ing them in the function:
+
+struct ctx = ...
+int res = bgtk_init(&ctx);
+
+
 ## Roadmap
 
 [ ] **Step 1: Define BGTK Interface (`bgtk.h`)**

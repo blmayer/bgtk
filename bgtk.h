@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include FT_FREETYPE_H
+#include <bgce.h>
 
 // Function pointer for button callbacks
 typedef void (*BGTK_Callback)(void);
@@ -13,21 +14,16 @@ typedef void (*BGTK_Callback)(void);
 struct BGTK_Context {
 	int conn_fd;  // File descriptor for BGCE connection
 	void* shm_buffer;
-	uint32_t buf_width;  // The actual width of the buffer (might differ
-			     // from server width)
-	uint32_t buf_height;
 	int width;
+	int height;
+
 	// FreeType data
 	FT_Library ft_library;
 	FT_Face ft_face;
 	int font_size;
 
-	// For now, simple absolute positioning
-	int height;
-	// For now, simple absolute positioning
-	struct BGTK_Widget** widgets;
-	size_t widget_count;
-	size_t widget_capacity;
+	// Single root widget for the widget tree
+	struct BGTK_Widget* root_widget;
 };
 
 // BGTK_Widget_Type
@@ -63,12 +59,12 @@ struct BGTK_Widget {
 		} text;
 		struct {
 			struct BGTK_Widget** widgets;  // List of child widgets
-			size_t widget_count;
-			size_t widget_capacity;
+			int widget_count;
+			int widget_capacity;
 			int scroll_y;	     // Current scroll position
 			int content_height;  // Total height of all child
 					     // widgets
-			uint32_t* tmp;
+			uint32_t* tmp;		// off-screen buffer
 		} scrollable;
 	} data;
 
@@ -77,31 +73,28 @@ struct BGTK_Widget {
 
 // --- Core Functions ---
 
-// Initializes BGTK, connects to BGCE server, gets buffer/dimensions.
-struct BGTK_Context* bgtk_init(void);
+// Initializes BGTK with given dimensions.
+struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width, int height);
 
-void bgtk_main_loop(struct BGTK_Context* ctx);
+// Handles a single event and returns whether a redraw is needed.
+int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev);
 
-// Cleans up the BGTK context and resources.
 void bgtk_destroy(struct BGTK_Context* ctx);
 
 // --- Widget Creation Functions ---
 
 // Creates a label widget.
-
 struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text);
 struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
 				struct BGTK_Widget* text,
 				BGTK_Callback callback, int flags);
 
-// Adds a widget to the context with absolute positioning.
-void bgtk_add_widget(struct BGTK_Context* ctx, struct BGTK_Widget* widget,
-		     int x, int y, int w, int h);
+void bgtk_draw_widgets(struct BGTK_Context* ctx);
 
 // Creates a text widget (label) for use in other widgets (e.g., buttons).
 struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, int flags);
 
 struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
 				    struct BGTK_Widget** widgets,
-				    size_t widget_count, int flags);
+				    int widget_count, int flags);
 #endif
