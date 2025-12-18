@@ -4,7 +4,7 @@ CFLAGS = -Wall -Wextra -Werror -I. -I/usr/include/freetype2 -I/usr/local/include
 LDFLAGS = -lfreetype -lbgce
 
 TARGET = app
-SRC = app.c bgtk.c
+SRC = app.c bgtk.c drawing.c widgets.c
 OBJ = $(SRC:.c=.o)
 
 .PHONY: all clean test
