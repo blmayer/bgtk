@@ -19,18 +19,16 @@ int res = bgtk_init(&ctx);
     * Define the event structure (`struct BGTK_Event`).
     [ ] Improve widget structure: add options (like alignment), child widgets.
     [ ] Add methods to update a widget's property so it redraws automaticaly.
-    * Define API functions:
-        * `BGTK_Context *bgtk_init(void)`: Connects to BGCE server, gets buffer/dimensions.
-        * `void bgtk_main_loop(BGTK_Context *ctx)`: Blocking loop to handle events and redraws.
-        * `BGTK_Widget *bgtk_label_new(const char *text)`: Creates a label.
-        * `BGTK_Widget *bgtk_button_new(const char *text, void (*callback)(void))`
-        * `void bgtk_add_widget(BGTK_Context *ctx, BGTK_Widget *widget, int x, int y, int w, int h)`: Simple absolute positioning for now.
 
 [ ] **Step 2: Implement BGTK Core (`bgtk.c`)**
     [X] Implement initialization, event queueing, and simple drawing (e.g., drawing rectangles for buttons, text rendering).
-    [ ] Only call draw when changes are made, like input.
-    [ ] Implement proper hit detection: using widget trees and coordinates, e.g. click on x,y -> search the tree until last widget is found, then send the input to that widget.
-    [ ] Add a generic scroll widget, that scrolls content
+    [X] Only call draw when changes are made, like input.
+    [X] Implement proper hit detection: using widget trees and coordinates, e.g. click on x,y -> search the tree until last widget is found, then send the input to that widget.
+    [X] Add a generic scroll widget, that scrolls content
+    [ ] Add a image widget that supports image files:
+        [ ] png
+        [ ] svg
+        [ ] jpeg
 
 [x] **Step 3: Integrate and Test**
     [X] Create a new client file (or update `client.c`) to demonstrate a basic BGTK application. -> app.c

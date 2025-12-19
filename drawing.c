@@ -1,12 +1,34 @@
+#include <stdio.h>
+
 #include "bgtk.h"
 #include "internal.h"
-#include <stdio.h>
 
 // A few basic colors (0xAARRGGBB)
 #define BGTK_COLOR_BG 0xFFCCCCCC     // Light Gray
 #define BGTK_COLOR_BTN 0xFF007BFF    // Blue
 #define BGTK_COLOR_TEXT 0xFF000000   // Black
 #define BGTK_COLOR_WHITE 0xFFFFFFFF  // White
+// Define STB_IMAGE_IMPLEMENTATION in one source file
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+// Loads an image file into a pixel buffer (RGBA format).
+// Returns 0 on success, -1 on failure.
+int load_image(const char* path, uint32_t** out_pixels, int* out_w,
+	       int* out_h) {
+	int w, h, channels;
+	unsigned char* pixels = stbi_load(path, &w, &h, &channels, 4);
+	if (!pixels) {
+		fprintf(stderr, "Failed to load image: %s\n", path);
+		return -1;
+	}
+
+	// Convert to uint32_t (RGBA)
+	*out_pixels = (uint32_t*)pixels;
+	*out_w = w;
+	*out_h = h;
+	return 0;
+}
 
 void clear_buffer(struct BGTK_Context* ctx) {
 	uint32_t* pixels = (uint32_t*)ctx->shm_buffer;
@@ -16,30 +38,16 @@ void clear_buffer(struct BGTK_Context* ctx) {
 	}
 }
 
-void draw_rect(struct BGTK_Context* ctx, uint32_t* pixels, int x, int y,
-		      int w, int h, uint32_t color) {
+void draw_rect(struct BGTK_Context* ctx, uint32_t* pixels, int x, int y, int w,
+	       int h, uint32_t color) {
 	// Basic clipping and drawing
 	int x1 = x;
 	int y1 = y;
 	int x2 = x + w;
 	int y2 = y + h;
 
-	// Clip to buffer bounds
-	if (x1 < 0) {
-		x1 = 0;
-	}
-	if (y1 < 0) {
-		y1 = 0;
-	}
-	if (x2 > (int)ctx->width) {
-		x2 = ctx->width;
-	}
-	if (y2 > (int)ctx->height) {
-		y2 = ctx->height;
-	}
-
+	// TODO: stride can be of a tmp buffer != from ctx
 	int stride = ctx->width;
-
 	for (int j = y1; j < y2; j++) {
 		for (int i = x1; i < x2; i++) {
 			pixels[j * stride + i] = color;
@@ -69,8 +77,7 @@ void measure_text(FT_Face face, const char* text, int* out_width,
 	*out_height = height;
 }
 
-void calculate_widget_size(struct BGTK_Context* ctx,
-				  struct BGTK_Widget* w) {
+void calculate_widget_size(struct BGTK_Context* ctx, struct BGTK_Widget* w) {
 	if (!w) {
 		return;
 	}
@@ -110,19 +117,26 @@ void calculate_widget_size(struct BGTK_Context* ctx,
 				struct BGTK_Widget* child =
 				    w->data.scrollable.widgets[i];
 				calculate_widget_size(ctx, child);
-				w->data.scrollable.content_height +=
-				    child->h + 5;  // 5px spacing
+				w->data.scrollable.content_height += child->h;
 			}
+
+			// a padding between widgets
+			w->data.scrollable.content_height +=
+			    (w->data.scrollable.widget_count - 1) * 5;
 			printf("calcutated scrollable size: %ux%u\n", w->w,
 			       w->data.scrollable.content_height);
+			break;
+		case BGTK_WIDGET_IMAGE:
+			// the widget must have a definite size
+			printf("calcutated image size: %ux%u\n", w->w, w->h);
 			break;
 		default:
 			break;
 	}
 }
 
-void draw_text(struct BGTK_Context* ctx, uint32_t* pixels,
-		      const char* text, int x, int y, uint32_t color) {
+void draw_text(struct BGTK_Context* ctx, uint32_t* pixels, const char* text,
+	       int x, int y, uint32_t color) {
 	if (!ctx->ft_face) {
 		// Fallback to simple placeholder if font didn't load
 		draw_rect(ctx, pixels, x, y, 5, 5, color);
@@ -136,7 +150,6 @@ void draw_text(struct BGTK_Context* ctx, uint32_t* pixels,
 	int pen_y = y + (ctx->ft_face->size->metrics.ascender >> 6);
 
 	int stride = ctx->width;
-
 	for (const char* p = text; *p; p++) {
 		FT_UInt index = FT_Get_Char_Index(ctx->ft_face, *p);
 
@@ -163,10 +176,6 @@ void draw_text(struct BGTK_Context* ctx, uint32_t* pixels,
 
 				int32_t dx = gx + col;
 				int32_t dy = gy + row;
-				if (dx < 0 || dx >= (int)ctx->width || dy < 0 ||
-				    dy >= (int)ctx->height) {
-					continue;
-				}
 
 				// Blend
 				uint32_t dst = pixels[dy * stride + dx];
@@ -193,11 +202,23 @@ void draw_text(struct BGTK_Context* ctx, uint32_t* pixels,
 	}
 }
 
+static void draw_image(struct BGTK_Context* ctx, struct BGTK_Widget w,
+		       uint32_t* pixels) {
+	int stride = ctx->width;
+	for (int j = 0; j < w.h; j++) {
+		for (int i = 0; i < w.w; i++) {
+			int dx = w.x + i;
+			int dy = w.y + j;
+			pixels[dy * stride + dx] =
+			    w.data.image.pixels[j * w.data.image.img_w + i];
+		}
+	}
+}
+
 void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
-			uint32_t* pixels) {
+		 uint32_t* pixels) {
 	switch (w->type) {
 		case BGTK_WIDGET_LABEL:
-
 			// Draw label background
 			draw_rect(ctx, pixels, w->x, w->y, w->w, w->h,
 				  BGTK_COLOR_BG);
@@ -238,15 +259,13 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 			break;
 		case BGTK_WIDGET_SCROLLABLE:
 			puts("drawing scrollable widget");
-			// Allocate or update the off-screen buffer if
-			// needed
-			if (!w->data.scrollable.tmp) {
-				int content_height =
-				    w->data.scrollable.content_height;
-				if (w->h > content_height) {
-					content_height = w->h;
-				}
+			int content_height = w->data.scrollable.content_height;
+			if (w->h > content_height) {
+				content_height = w->h;
+			}
 
+			// Allocate or update the off-screen buffer if needed
+			if (!w->data.scrollable.tmp) {
 				// Allocate the off-screen buffer
 				w->data.scrollable.tmp = calloc(
 				    w->w * content_height, sizeof(uint32_t));
@@ -258,12 +277,11 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 					break;
 				}
 				draw_rect(ctx, w->data.scrollable.tmp, 0, 0,
-					  w->w,
-					  w->data.scrollable.content_height,
-					  BGTK_COLOR_BG);
+					  w->w, content_height, BGTK_COLOR_BG);
+				printf("allocated temp buffer %ux%u\n", w->w,
+				       content_height);
 
-				// Draw child widgets into the
-				// off-screen buffer
+				// Draw child widgets into the off-screen buffer
 				int current_y = 0;
 				for (int i = 0;
 				     i < w->data.scrollable.widget_count; i++) {
@@ -277,6 +295,9 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 						    (w->w - child->w) / 2;
 					}
 					child->y = current_y;
+					printf(
+					    "drawing child widget %d at %u\n",
+					    i, current_y);
 					draw_widget(ctx, child,
 						    w->data.scrollable.tmp);
 					current_y +=
@@ -289,20 +310,18 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 			uint32_t* buff = ctx->shm_buffer;
 			uint32_t* tmp = w->data.scrollable.tmp;
 			for (int row = 0; row < w->h; row++) {
-				if (w->data.scrollable.scroll_y + row <
-				    w->data.scrollable.content_height) {
-					memcpy(
-					    &buff[(w->y + row) * ctx->width +
-						  w->x],
-					    &tmp[(w->data.scrollable.scroll_y +
-						  row) *
-						 w->w],
-					    w->w * 4);
+				int src_row = w->data.scrollable.scroll_y + row;
+				if (src_row < content_height) {
+					memcpy(&buff[(w->y + row) * ctx->width +
+						     w->x],
+					       &tmp[src_row * w->w], w->w * 4);
 				}
 			}
 
 			break;
+		case BGTK_WIDGET_IMAGE:
+			puts("drawing image widget");
+			draw_image(ctx, *w, pixels);
+			break;
 	}
 }
-
-

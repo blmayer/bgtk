@@ -1,9 +1,10 @@
-#include "bgtk.h"
-#include "internal.h"
-
+#include <bgce.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <bgce.h>
+#include <string.h>
+
+#include "bgtk.h"
+#include "internal.h"
 
 // Helper to create a generic widget
 static struct BGTK_Widget* widget_new(struct BGTK_Context* ctx,
@@ -114,10 +115,6 @@ struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
 	return widget;
 }
 
-// --- Layout/Management Functions ---
-
-// Helper to recalculate the content height of a scrollable
-// widget
 struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
 				    struct BGTK_Widget** widgets,
 				    int widget_count, int flags) {
@@ -151,6 +148,30 @@ struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
 	// during drawing
 	widget->data.scrollable.tmp = NULL;
 	printf("BGTK allocated scrollable widget\n");
+
+	return widget;
+}
+
+struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
+			       int flags) {
+	printf("BGTK creating image widget\n");
+	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_IMAGE, flags);
+	if (!widget) {
+		perror("BGTK Failed to create image widget");
+		return NULL;
+	}
+
+	// Load the image into a pixel buffer
+	uint32_t* pixels = NULL;
+	int img_w, img_h;
+	if (load_image(path, &pixels, &img_w, &img_h) != 0) {
+		free(widget);
+		return NULL;
+	}
+
+	widget->data.image.pixels = pixels;
+	widget->data.image.img_w = img_w;
+	widget->data.image.img_h = img_h;
 
 	return widget;
 }

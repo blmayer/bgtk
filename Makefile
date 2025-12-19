@@ -1,7 +1,7 @@
 # Makefile for BGTK
 
 CFLAGS = -Wall -Wextra -Werror -I. -I/usr/include/freetype2 -I/usr/local/include/bgce
-LDFLAGS = -lfreetype -lbgce
+LDFLAGS = -lfreetype -lbgce -lm
 
 TARGET = app
 SRC = app.c bgtk.c drawing.c widgets.c

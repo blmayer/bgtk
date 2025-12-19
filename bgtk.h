@@ -32,6 +32,7 @@ enum BGTK_Widget_Type {
 	BGTK_WIDGET_LABEL,
 	BGTK_WIDGET_TEXT,
 	BGTK_WIDGET_SCROLLABLE,
+	BGTK_WIDGET_IMAGE,
 	// Add more types as needed
 };
 
@@ -62,10 +63,15 @@ struct BGTK_Widget {
 			int widget_count;
 			int widget_capacity;
 			int scroll_y;	     // Current scroll position
-			int content_height;  // Total height of all child
-					     // widgets
-			uint32_t* tmp;		// off-screen buffer
+			int content_height;  // Total height of all
+					     // child widgets
+			uint32_t* tmp;	     // off-screen buffer
 		} scrollable;
+		struct {
+			uint32_t* pixels;  // Pixel buffer (RGBA)
+			int img_w;	   // Image width
+			int img_h;	   // Image height
+		} image;
 	} data;
 
 	void (*set_label)(struct BGTK_Widget* self, char*);
@@ -74,9 +80,11 @@ struct BGTK_Widget {
 // --- Core Functions ---
 
 // Initializes BGTK with given dimensions.
-struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width, int height);
+struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
+			       int height);
 
-// Handles a single event and returns whether a redraw is needed.
+// Handles a single event and returns whether a redraw is
+// needed.
 int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev);
 
 void bgtk_destroy(struct BGTK_Context* ctx);
@@ -91,10 +99,14 @@ struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
 
 void bgtk_draw_widgets(struct BGTK_Context* ctx);
 
-// Creates a text widget (label) for use in other widgets (e.g., buttons).
+// Creates a text widget (label) for use in other widgets (e.g.,
+// buttons).
 struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, int flags);
 
 struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
 				    struct BGTK_Widget** widgets,
 				    int widget_count, int flags);
+// Creates an image widget.
+struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
+			       int flags);
 #endif

@@ -42,7 +42,7 @@ int main(void) {
 	}
 
 	// 3. Request a buffer with given dimensions
-	struct BufferRequest req = {.width = 600, .height = 480};
+	struct BufferRequest req = {.width = 600, .height = 400};
 
 	void* buffer = bgce_get_buffer(conn_fd, req);
 	if (!buffer) {
@@ -52,7 +52,7 @@ int main(void) {
 		return -3;
 	}
 
-	ctx = bgtk_init(conn_fd, buffer, 600, 480);
+	ctx = bgtk_init(conn_fd, buffer, 600, 400);
 	if (!ctx) {
 		fprintf(stderr, "Failed to initialize BGTK.\n");
 		return 1;
@@ -69,18 +69,27 @@ int main(void) {
 	// counter_label = bgtk_label(ctx, counter_text);
 
 	// Create a list of widgets for the scrollable container
-	struct BGTK_Widget* scrollable_widgets[10];
-	for (int i = 0; i < 10; i++) {
+	struct BGTK_Widget* scrollable_widgets[21];
+	for (int i = 0; i < 20; i++) {
 		char label_text[32];
 		sprintf(label_text, "Item %d", i + 1);
 		scrollable_widgets[i] = bgtk_text(ctx, label_text, 0);
 	}
 
+	struct BGTK_Widget* image_widget = bgtk_image(ctx, "example.png", 0);
+	if (image_widget) {
+		image_widget->w = 500;
+		image_widget->h = 400;
+		scrollable_widgets[20] = image_widget;
+	} else {
+		fprintf(stderr, "Failed to load image widget\n");
+	}
+
 	// Create the scrollable widget with the list of widgets
 	struct BGTK_Widget* scrollable =
-	    bgtk_scrollable(ctx, scrollable_widgets, 10, BGTK_FLAG_CENTER);
+	    bgtk_scrollable(ctx, scrollable_widgets, 21, BGTK_FLAG_CENTER);
 	scrollable->w = 600;
-	scrollable->h = 480;
+	scrollable->h = 400;
 
 	// 6. draw widgets
 	ctx->root_widget = scrollable;
@@ -103,18 +112,23 @@ int main(void) {
 			break;
 		}
 
+		int res = 0;
 		switch (msg.type) {
 			case MSG_INPUT_EVENT:
-				bgtk_handle_input_event(ctx,
-							msg.data.input_event);
-			break;
+				res = bgtk_handle_input_event(
+				    ctx, msg.data.input_event);
+				break;
 			case MSG_BUFFER_CHANGE:
-				// TODO: Handle buffer resize/move
-				break;  // Redraw
+				// TODO: Handle buffer
+				// resize/move
+				break;	// Redraw
 			default:
 				// Ignore other messages for now
 				printf("Ignoring message\n");
 				break;
+		}
+		if (res) {
+			bgce_draw(conn_fd);
 		}
 	}
 
