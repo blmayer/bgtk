@@ -61,22 +61,23 @@ int main(void) {
 
 	// 4. Create Widgets
 
-	// char* counter_text = "Counter: 0";
-	// struct BGTK_Widget* title = bgtk_label(ctx, "BGTK Demo Application");
-	// struct BGTK_Widget* button_text = bgtk_text(ctx, "Click Me!", 0);
-	// struct BGTK_Widget* button =
-	//     bgtk_button(ctx, button_text, button_callback, 0);
-	// counter_label = bgtk_label(ctx, counter_text);
-
 	// Create a list of widgets for the scrollable container
 	struct BGTK_Widget* scrollable_widgets[21];
 	for (int i = 0; i < 20; i++) {
 		char label_text[32];
 		sprintf(label_text, "Item %d", i + 1);
-		scrollable_widgets[i] = bgtk_text(ctx, label_text, 0);
+		scrollable_widgets[i] = bgtk_text(ctx, label_text, (BGTK_Options){
+			.flags = 0,
+			.padding = 5,
+			.margin = 2,
+		});
 	}
 
-	struct BGTK_Widget* image_widget = bgtk_image(ctx, "example.png", 0);
+	struct BGTK_Widget* image_widget = bgtk_image(ctx, "example.png", (BGTK_Options){
+		.flags = 0,
+		.padding = 10,
+		.margin = 5,
+	});
 	if (image_widget) {
 		image_widget->w = 500;
 		image_widget->h = 400;
@@ -87,15 +88,19 @@ int main(void) {
 
 	// Create the scrollable widget with the list of widgets
 	struct BGTK_Widget* scrollable =
-	    bgtk_scrollable(ctx, scrollable_widgets, 21, BGTK_FLAG_CENTER);
+	    bgtk_scrollable(ctx, scrollable_widgets, 21, (BGTK_Options){
+			.flags = BGTK_FLAG_CENTER,
+			.padding = 10,
+			.margin = 5,
+		});
 	scrollable->w = 600;
 	scrollable->h = 400;
-
-	// 6. draw widgets
+	
+	// 5. draw widgets
 	ctx->root_widget = scrollable;
 	bgtk_draw_widgets(ctx);
 
-	// 5. start loop to listen for input events
+	// 6. start loop to listen for input events
 	printf("Starting BGTK main loop (%dx%d)...\n", ctx->width, ctx->height);
 	struct BGCEMessage msg;
 	ssize_t bytes;

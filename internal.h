@@ -20,13 +20,4 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 		 uint32_t* pixels);
 int load_image(const char* path, uint32_t** out_pixels, int* out_w, int* out_h);
 
-// from widgets.c
-struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text);
-struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, int flags);
-struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
-				struct BGTK_Widget* label,
-				BGTK_Callback callback, int flags);
-struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
-				    struct BGTK_Widget** widgets,
-				    int widget_count, int flags);
 #endif

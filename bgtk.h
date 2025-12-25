@@ -39,12 +39,21 @@ enum BGTK_Widget_Type {
 // Widget flags
 #define BGTK_FLAG_CENTER (1 << 0)  // Center widgets horizontally
 
+// BGTK_Options: Options for widget creation (replaces flags).
+typedef struct {
+	int flags;      // Flags for widget behavior (e.g., BGTK_FLAG_CENTER).
+	int padding;   // Internal spacing (pixels).
+	int margin;    // External spacing (pixels).
+} BGTK_Options;
+
 // BGTK_Widget: Base structure for all widgets
 struct BGTK_Widget {
 	struct BGTK_Context* ctx;
 	enum BGTK_Widget_Type type;
 	int x, y, w, h;	 // Absolute position and size
 	int flags;	 // Flags for widget behavior
+	int padding;      // Internal spacing (pixels)
+	int margin;       // External spacing (pixels)
 
 	// Union for specific widget data
 	union {
@@ -73,40 +82,28 @@ struct BGTK_Widget {
 			int img_h;	   // Image height
 		} image;
 	} data;
-
-	void (*set_label)(struct BGTK_Widget* self, char*);
 };
 
 // --- Core Functions ---
 
 // Initializes BGTK with given dimensions.
-struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
-			       int height);
+struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width, int height);
 
-// Handles a single event and returns whether a redraw is
-// needed.
+// Handles a single event and returns whether a redraw is needed.
 int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev);
 
-void bgtk_destroy(struct BGTK_Context* ctx);
-
 // --- Widget Creation Functions ---
-
 // Creates a label widget.
-struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text);
+struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text, BGTK_Options options);
 struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
-				struct BGTK_Widget* text,
-				BGTK_Callback callback, int flags);
+			struct BGTK_Widget* text,
+			BGTK_Callback callback, BGTK_Options options);
 
-void bgtk_draw_widgets(struct BGTK_Context* ctx);
+struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, BGTK_Options options);
 
-// Creates a text widget (label) for use in other widgets (e.g.,
-// buttons).
-struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, int flags);
+struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx, struct BGTK_Widget** items, int widget_count, BGTK_Options options);
 
-struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
-				    struct BGTK_Widget** widgets,
-				    int widget_count, int flags);
 // Creates an image widget.
-struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
-			       int flags);
+struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path, BGTK_Options options);
+
 #endif

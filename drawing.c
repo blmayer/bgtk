@@ -86,49 +86,48 @@ void calculate_widget_size(struct BGTK_Context* ctx, struct BGTK_Widget* w) {
 		case BGTK_WIDGET_LABEL:
 			if (w->data.label.text) {
 				calculate_widget_size(ctx, w->data.label.text);
-				w->w =
-				    w->data.label.text->w + 10;	 // Add padding
-				w->h =
-				    w->data.label.text->h + 10;	 // Add padding
+				w->w = w->data.label.text->w + 2 * w->padding;
+				w->h = w->data.label.text->h + 2 * w->padding;
 			}
 			break;
 		case BGTK_WIDGET_TEXT:
 			if (w->data.text.text) {
 				measure_text(ctx->ft_face, w->data.text.text,
 					     &w->w, &w->h);
+				// Add padding to the text widget
+				w->w += 2 * w->padding;
+				w->h += 2 * w->padding;
 			}
-			printf("calcutated text size: %ux%u\n", w->w, w->h);
+			printf("calculated text size: %ux%u\n", w->w, w->h);
 			break;
 		case BGTK_WIDGET_BUTTON:
 			if (w->data.button.label) {
-				calculate_widget_size(ctx,
-						      w->data.button.label);
-				w->w = w->data.button.label->w +
-				       20;  // Add padding
-				w->h = w->data.button.label->h +
-				       20;  // Add padding
+				calculate_widget_size(ctx, w->data.button.label);
+				w->w = w->data.button.label->w + 2 * w->padding;
+				w->h = w->data.button.label->h + 2 * w->padding;
 			}
-			printf("calcutated button size: %ux%u\n", w->w, w->h);
+			printf("calculated button size: %ux%u\n", w->w, w->h);
 			break;
 		case BGTK_WIDGET_SCROLLABLE:
 			w->data.scrollable.content_height = 0;
 			for (int i = 0; i < w->data.scrollable.widget_count;
 			     i++) {
 				struct BGTK_Widget* child =
-				    w->data.scrollable.widgets[i];
+				    w->data.scrollable.items[i];
 				calculate_widget_size(ctx, child);
-				w->data.scrollable.content_height += child->h;
+				w->data.scrollable.content_height += child->h + 2 * w->margin;
 			}
 
-			// a padding between widgets
-			w->data.scrollable.content_height +=
-			    (w->data.scrollable.widget_count - 1) * 5;
-			printf("calcutated scrollable size: %ux%u\n", w->w,
-			       w->data.scrollable.content_height);
+			// Subtract the last margin (no margin after the last widget)
+			if (w->data.scrollable.widget_count > 0) {
+				w->data.scrollable.content_height -= 2 * w->margin;
+			}
+			printf("calculated scrollable size: %ux%u\n", w->w,
+		       w->data.scrollable.content_height);
 			break;
 		case BGTK_WIDGET_IMAGE:
 			// the widget must have a definite size
-			printf("calcutated image size: %ux%u\n", w->w, w->h);
+			printf("calculated image size: %ux%u\n", w->w, w->h);
 			break;
 		default:
 			break;
@@ -220,40 +219,44 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 	switch (w->type) {
 		case BGTK_WIDGET_LABEL:
 			// Draw label background
-			draw_rect(ctx, pixels, w->x, w->y, w->w, w->h,
-				  BGTK_COLOR_BG);
-			// Draw text widget (offset for padding)
+			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, 
+				  w->w - 2 * w->margin, w->h - 2 * w->margin, BGTK_COLOR_BG);
+			// Draw text widget (offset for padding and margin)
 			if (w->data.label.text) {
-				w->data.label.text->x = w->x + 5;
-				w->data.label.text->y = w->y + 5;
+				w->data.label.text->x = w->x + w->margin + w->padding;
+				w->data.label.text->y = w->y + w->margin + w->padding;
 				draw_widget(ctx, w->data.label.text, pixels);
 			}
 			break;
 		case BGTK_WIDGET_TEXT:
 			puts("drawing text widget");
-			draw_text(ctx, pixels, w->data.text.text, w->x, w->y,
+			draw_text(ctx, pixels, w->data.text.text, 
+				  w->x + w->margin + w->padding, 
+				  w->y + w->margin + w->padding, 
 				  BGTK_COLOR_TEXT);
 			break;
 		case BGTK_WIDGET_BUTTON:
 			puts("drawing button widget");
 			// Draw button background
-			draw_rect(ctx, pixels, w->x, w->y, w->w, w->h,
-				  BGTK_COLOR_BTN);
+			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
+				  w->w - 2 * w->margin, w->h - 2 * w->margin, BGTK_COLOR_BTN);
 
 			// Draw button border (1px black)
-			draw_rect(ctx, pixels, w->x, w->y, w->w, 1,
-				  BGTK_COLOR_TEXT);  // Top
-			draw_rect(ctx, pixels, w->x, w->y + w->h - 1, w->w, 1,
+			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, 
+				  w->w - 2 * w->margin, 1, BGTK_COLOR_TEXT);  // Top
+			draw_rect(ctx, pixels, w->x + w->margin, 
+				  w->y + w->h - 1 - w->margin, w->w - 2 * w->margin, 1,
 				  BGTK_COLOR_TEXT);  // Bottom
-			draw_rect(ctx, pixels, w->x, w->y, 1, w->h,
-				  BGTK_COLOR_TEXT);  // Left
-			draw_rect(ctx, pixels, w->x + w->w - 1, w->y, 1, w->h,
+			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, 1,
+				  w->h - 2 * w->margin, BGTK_COLOR_TEXT);  // Left
+			draw_rect(ctx, pixels, w->x + w->w - 1 - w->margin, 
+				  w->y + w->margin, 1, w->h - 2 * w->margin,
 				  BGTK_COLOR_TEXT);  // Right
 
-			// Draw label widget (offset for padding)
+			// Draw label widget (offset for padding and margin)
 			if (w->data.button.label) {
-				w->data.button.label->x = w->x + 10;
-				w->data.button.label->y = w->y + 10;
+				w->data.button.label->x = w->x + w->margin + w->padding;
+				w->data.button.label->y = w->y + w->margin + w->padding;
 				draw_widget(ctx, w->data.button.label, pixels);
 			}
 			break;
@@ -271,9 +274,7 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 				    w->w * content_height, sizeof(uint32_t));
 				if (!w->data.scrollable.tmp) {
 					fprintf(stderr,
-						"Failed to allocate "
-						"off-screen "
-						"buffer\n");
+						"Failed to allocate off-screen buffer\n");
 					break;
 				}
 				draw_rect(ctx, w->data.scrollable.tmp, 0, 0,
@@ -288,20 +289,18 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 					struct BGTK_Widget* child =
 					    w->data.scrollable.widgets[i];
 
-					child->x = w->x + 5;  // 5px padding
+					child->x = w->x + w->margin + w->padding;
 					if (w->flags & BGTK_FLAG_CENTER) {
-						child->x =
-						    w->x +
-						    (w->w - child->w) / 2;
+						child->x = w->x + w->margin +
+						    (w->w - 2 * w->margin - child->w) / 2;
 					}
-					child->y = current_y;
+					child->y = current_y + w->margin;
 					printf(
 					    "drawing child widget %d at %u\n",
 					    i, current_y);
 					draw_widget(ctx, child,
-						    w->data.scrollable.tmp);
-					current_y +=
-					    child->h + 5;  // 5px spacing
+						   w->data.scrollable.tmp);
+					current_y += child->h + 2 * w->margin;
 				}
 			}
 
@@ -312,8 +311,7 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 			for (int row = 0; row < w->h; row++) {
 				int src_row = w->data.scrollable.scroll_y + row;
 				if (src_row < content_height) {
-					memcpy(&buff[(w->y + row) * ctx->width +
-						     w->x],
+					memcpy(&buff[(w->y + row) * ctx->width + w->x],
 					       &tmp[src_row * w->w], w->w * 4);
 				}
 			}
@@ -321,7 +319,13 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 			break;
 		case BGTK_WIDGET_IMAGE:
 			puts("drawing image widget");
-			draw_image(ctx, *w, pixels);
+			// Adjust the widget's x/y to account for margin and padding
+			struct BGTK_Widget adjusted_widget = *w;
+			adjusted_widget.x += w->margin + w->padding;
+			adjusted_widget.y += w->margin + w->padding;
+			adjusted_widget.w -= 2 * (w->margin + w->padding);
+			adjusted_widget.h -= 2 * (w->margin + w->padding);
+			draw_image(ctx, adjusted_widget, pixels);
 			break;
 	}
 }
