@@ -31,7 +31,7 @@ void set_label(struct BGTK_Widget* widget, char* label) {
 	}
 
 	// Create a new text widget for the label
-	struct BGTK_Widget* text_widget = bgtk_text(widget->ctx, label, 0);
+	struct BGTK_Widget* text_widget = bgtk_text(widget->ctx, label, (BGTK_Options){ .flags = 0 });
 	if (!text_widget) {
 		perror(
 		    "BGTK Failed to create text widget for "
@@ -57,7 +57,7 @@ struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text, BGTK_Option
 		return NULL;
 	}
 
-	widget->set_label = set_label;
+	widget->data.label.set_label = set_label;
 
 	// Create a text widget for the label
 	struct BGTK_Widget* text_widget = bgtk_text(ctx, text, (BGTK_Options){ .flags = 0 });
@@ -80,7 +80,7 @@ struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text, BGTK_Option
 
 struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, BGTK_Options options) {
 	printf("BGTK creating text widget\n");
-	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_TEXT, flags);
+	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_TEXT, options);
 	printf("BGTK allocated text widget\n");
 	if (!widget) {
 		perror("BGTK Failed to create new widget");
@@ -133,7 +133,7 @@ struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
 		return NULL;
 	}
 
-	widget->data.scrollable.widgets = (struct BGTK_Widget**)calloc(
+	widget->data.scrollable.items = (struct BGTK_Widget**)calloc(
 	    widget_count, sizeof(struct BGTK_Widget*));
 	if (!widget->data.scrollable.items) {
 		perror("calloc");

@@ -59,6 +59,7 @@ struct BGTK_Widget {
 	union {
 		struct {
 			struct BGTK_Widget* text;  // Text widget for label
+			void (*set_label)(struct BGTK_Widget* self, char*);
 		} label;
 		struct {
 			struct BGTK_Widget* label;  // Label widget for button
@@ -68,7 +69,7 @@ struct BGTK_Widget {
 			char* text;
 		} text;
 		struct {
-			struct BGTK_Widget** widgets;  // List of child widgets
+			struct BGTK_Widget** items;  // List of child widgets
 			int widget_count;
 			int widget_capacity;
 			int scroll_y;	     // Current scroll position
@@ -85,6 +86,10 @@ struct BGTK_Widget {
 };
 
 // --- Core Functions ---
+
+void bgtk_draw_widgets(struct BGTK_Context* ctx);
+
+void bgtk_destroy(struct BGTK_Context* ctx);
 
 // Initializes BGTK with given dimensions.
 struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width, int height);

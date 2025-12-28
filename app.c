@@ -16,8 +16,8 @@ void button_callback(void) {
 		puts(" setting new label");
 		char counter_text[32];
 		sprintf(counter_text, "Counter: %d", counter);
-		printf("calling set_label: %p\n", counter_label->set_label);
-		counter_label->set_label(counter_label, counter_text);
+		printf("calling set_label: %p\n", counter_label->data.label.set_label);
+		counter_label->data.label.set_label(counter_label, counter_text);
 	}
 }
 

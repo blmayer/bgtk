@@ -65,15 +65,15 @@ void bgtk_destroy(struct BGTK_Context* ctx) {
 	// Free the root widget and its children recursively
 	if (ctx->root_widget) {
 		if (ctx->root_widget->type == BGTK_WIDGET_SCROLLABLE) {
-			if (ctx->root_widget->data.scrollable.widgets) {
+			if (ctx->root_widget->data.scrollable.items) {
 				for (int i = 0;
 				     i < ctx->root_widget->data.scrollable
 					     .widget_count;
 				     i++) {
 					free(ctx->root_widget->data.scrollable
-						 .widgets[i]);
+						 .items[i]);
 				}
-				free(ctx->root_widget->data.scrollable.widgets);
+				free(ctx->root_widget->data.scrollable.items);
 			}
 			if (ctx->root_widget->data.scrollable.tmp) {
 				free(ctx->root_widget->data.scrollable.tmp);
@@ -199,7 +199,7 @@ int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev) {
 				for (int i = 0;
 				     i < w->data.scrollable.widget_count; i++) {
 					struct BGTK_Widget* item =
-					    w->data.scrollable.widgets[i];
+					    w->data.scrollable.items[i];
 					if (ev.x >= item->x &&
 					    ev.x < (item->x + item->w) &&
 					    ev.y >= item->y &&

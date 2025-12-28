@@ -287,7 +287,7 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 				for (int i = 0;
 				     i < w->data.scrollable.widget_count; i++) {
 					struct BGTK_Widget* child =
-					    w->data.scrollable.widgets[i];
+					    w->data.scrollable.items[i];
 
 					child->x = w->x + w->margin + w->padding;
 					if (w->flags & BGTK_FLAG_CENTER) {
