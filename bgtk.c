@@ -1,10 +1,16 @@
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+
 #include "bgtk.h"
+#include "config.h"
 
 #include <bgce.h>
 #include <linux/input.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <time.h>
+#include <sys/time.h>
+#include <stb_image_write.h>
 
 #include "internal.h"
 
@@ -14,7 +20,34 @@
 	"InputMono-Regular.ttf"
 #define DEFAULT_FONT_SIZE 12
 
-// --- Core Functions ---
+int take_screenshot(BGTK_Context ctx) {
+	if (!ctx.shm_buffer) {
+		fprintf(stderr, "No framebuffer available for screenshot.\n");
+		return -1;
+	}
+
+	// Write the framebuffer to a PNG file
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	char filename[256];
+	snprintf(filename, sizeof(filename), "screenshot_%ld_%06ld.png", tv.tv_sec, tv.tv_usec);
+	int result = stbi_write_png(
+		filename,
+		ctx.width,
+		ctx.height,
+		BGCE_BYTES_PER_PIXEL,
+		ctx.shm_buffer,
+		ctx.width * BGCE_BYTES_PER_PIXEL
+	);
+
+	if (!result) {
+		fprintf(stderr, "Failed to save screenshot to %s.\n", filename);
+		return -1;
+	}
+
+	printf("Screenshot saved to %s.\n", filename);
+	return 0;
+}
 
 struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
 			       int height) {
@@ -32,6 +65,23 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
 	ctx->height = height;
 	ctx->root_widget = NULL;
 
+	// Load config file
+	struct config config;
+	if (parse_config(&config) == 0) {
+		// Store theme data
+		ctx->theme = config.theme;
+		strncpy(ctx->font_path, config.font_path, MAX_PATH_LEN - 1);
+		ctx->font_path[MAX_PATH_LEN - 1] = '\0';
+		ctx->font_size = config.font_size;
+	} else {
+		// Use defaults if config file is missing or invalid
+		ctx->theme.background = 0xAAAAAAAA; // Default gray
+		ctx->theme.button = 0x88888888;     // Default button color
+		ctx->theme.button_text = 0xFFFFFFFF; // Default white text
+		strncpy(ctx->font_path, DEFAULT_FONT_PATH, MAX_PATH_LEN - 1);
+		ctx->font_path[MAX_PATH_LEN - 1] = '\0';
+	}
+
 	// 1. Initialize FreeType
 	if (FT_Init_FreeType(&ctx->ft_library)) {
 		fprintf(stderr,
@@ -41,12 +91,12 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
 	}
 
 	// 2. Load Font
-	if (FT_New_Face(ctx->ft_library, DEFAULT_FONT_PATH, 0, &ctx->ft_face)) {
+	if (FT_New_Face(ctx->ft_library, ctx->font_path, 0, &ctx->ft_face)) {
 		fprintf(stderr,
 			"bgtk_init: Could not load font %s. Falling back "
 			"to simple "
 			"drawing.\n",
-			DEFAULT_FONT_PATH);
+			ctx->font_path);
 		free(ctx);
 		return NULL;
 	}
@@ -125,6 +175,13 @@ void bgtk_draw_widgets(struct BGTK_Context* ctx) {
 
 // TODO: implement descending into child widgets
 int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev) {
+	// Hanlde some keys
+	if (ev.code == KEY_SYSRQ) {
+		printf("[BGTK] Print Screen key pressed, taking screenshot.\n");
+		take_screenshot(*ctx);
+		return 1;
+	}
+
 	// Handle mouse wheel for scrolling (REL_WHEEL)
 	if (ev.code == REL_WHEEL) {
 		printf("handling mouse wheel: val=%d at (%u, %u)\n", ev.value,

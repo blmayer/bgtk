@@ -24,11 +24,13 @@ int res = bgtk_init(&ctx);
     [X] Implement initialization, event queueing, and simple drawing (e.g., drawing rectangles for buttons, text rendering).
     [X] Only call draw when changes are made, like input.
     [X] Implement proper hit detection: using widget trees and coordinates, e.g. click on x,y -> search the tree until last widget is found, then send the input to that widget.
+    [ ] Add support for screenshots
     [X] Add a generic scroll widget, that scrolls content
-    [ ] Add a image widget that supports image files:
-        [ ] png
-        [ ] svg
-        [ ] jpeg
+        [ ] Add options for vertical or horizontal
+    [X] Add a image widget that supports image files:
+        [X] png
+        [X] svg
+        [X] jpeg
 
 [x] **Step 3: Integrate and Test**
     [X] Create a new client file (or update `client.c`) to demonstrate a basic BGTK application. -> app.c

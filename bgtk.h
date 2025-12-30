@@ -7,6 +7,8 @@
 #include FT_FREETYPE_H
 #include <bgce.h>
 
+#include "config.h"
+
 // Function pointer for button callbacks
 typedef void (*BGTK_Callback)(void);
 
@@ -21,6 +23,10 @@ struct BGTK_Context {
 	FT_Library ft_library;
 	FT_Face ft_face;
 	int font_size;
+
+	// Theme data
+	BGTK_Theme theme;
+	char font_path[MAX_PATH_LEN];
 
 	// Single root widget for the widget tree
 	struct BGTK_Widget* root_widget;
