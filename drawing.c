@@ -3,11 +3,6 @@
 #include "bgtk.h"
 #include "internal.h"
 
-// A few basic colors (0xAARRGGBB)
-#define BGTK_COLOR_BG 0xFFCCCCCC     // Light Gray
-#define BGTK_COLOR_BTN 0xFF007BFF    // Blue
-#define BGTK_COLOR_TEXT 0xFF000000   // Black
-#define BGTK_COLOR_WHITE 0xFFFFFFFF  // White
 // Define STB_IMAGE_IMPLEMENTATION in one source file
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -34,7 +29,7 @@ void clear_buffer(struct BGTK_Context* ctx) {
 	uint32_t* pixels = (uint32_t*)ctx->shm_buffer;
 	size_t size = (size_t)ctx->width * ctx->height;
 	for (size_t i = 0; i < size; i++) {
-		pixels[i] = BGTK_COLOR_BG;
+		pixels[i] = ctx->theme.background;
 	}
 }
 
@@ -220,7 +215,7 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 		case BGTK_WIDGET_LABEL:
 			// Draw label background
 			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, 
-				  w->w - 2 * w->margin, w->h - 2 * w->margin, BGTK_COLOR_BG);
+				  w->w - 2 * w->margin, w->h - 2 * w->margin, ctx->theme.background);
 			// Draw text widget (offset for padding and margin)
 			if (w->data.label.text) {
 				w->data.label.text->x = w->x + w->margin + w->padding;
@@ -233,25 +228,25 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 			draw_text(ctx, pixels, w->data.text.text, 
 				  w->x + w->margin + w->padding, 
 				  w->y + w->margin + w->padding, 
-				  BGTK_COLOR_TEXT);
+				  ctx->theme.button_text);
 			break;
 		case BGTK_WIDGET_BUTTON:
 			puts("drawing button widget");
 			// Draw button background
 			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
-				  w->w - 2 * w->margin, w->h - 2 * w->margin, BGTK_COLOR_BTN);
+				  w->w - 2 * w->margin, w->h - 2 * w->margin, ctx->theme.button);
 
 			// Draw button border (1px black)
 			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, 
-				  w->w - 2 * w->margin, 1, BGTK_COLOR_TEXT);  // Top
+				  w->w - 2 * w->margin, 1, ctx->theme.button_text);  // Top
 			draw_rect(ctx, pixels, w->x + w->margin, 
 				  w->y + w->h - 1 - w->margin, w->w - 2 * w->margin, 1,
-				  BGTK_COLOR_TEXT);  // Bottom
+				  ctx->theme.button_text);  // Bottom
 			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, 1,
-				  w->h - 2 * w->margin, BGTK_COLOR_TEXT);  // Left
+				  w->h - 2 * w->margin, ctx->theme.button_text);  // Left
 			draw_rect(ctx, pixels, w->x + w->w - 1 - w->margin, 
 				  w->y + w->margin, 1, w->h - 2 * w->margin,
-				  BGTK_COLOR_TEXT);  // Right
+				  ctx->theme.button_text);  // Right
 
 			// Draw label widget (offset for padding and margin)
 			if (w->data.button.label) {
@@ -278,7 +273,7 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 					break;
 				}
 				draw_rect(ctx, w->data.scrollable.tmp, 0, 0,
-					  w->w, content_height, BGTK_COLOR_BG);
+					  w->w, content_height, ctx->theme.background);
 				printf("allocated temp buffer %ux%u\n", w->w,
 				       content_height);
 

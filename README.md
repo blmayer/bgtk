@@ -3,11 +3,27 @@
 A lightweight toolkit for the BGCE display server. This library allows developers to
 create graphical user interfaces by directly writing to a shared graphical buffer.
 
+
 ## Features
 - Simple widget system (labels, buttons).
 - Direct rendering to a shared memory buffer.
 - Event handling for user input.
 - Basic font rendering using FreeType.
+- Theme support via config files (e.g., colors, fonts).
+
+
+## Themes
+Theme config files allow customizing the appearance of BGTK applications.
+To use a theme:
+1. Create a config file in `~/.config/bgtk.conf`.
+2. Define theme properties like colors and fonts in key-value pairs:
+
+```
+background_color = #282828
+text_color = #ebdbb2
+font = /opt/fonts/.../DejaVu Sans.otf
+```
+
 
 ## Building
 
@@ -20,6 +36,7 @@ Requirements:
 make
 ```
 
+
 ## Running
 
 Start the BGCE server, then run the demo application:
@@ -27,6 +44,7 @@ Start the BGCE server, then run the demo application:
 ```sh
 ./app
 ```
+
 
 ## Project Structure
 - `bgtk.h`: Public API and type definitions.
