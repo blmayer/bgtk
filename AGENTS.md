@@ -53,3 +53,9 @@ int res = bgtk_init(&ctx);
   - If function arguments don't fit on one line, place each on a new line and close
     the parenthesis on its own line.
 - **Testing**: The `app.c` file is a demo application. Use it to test new features.
+
+### Adding new widgets
+
+1. Updated bgtk.h to add the type in the enum and in the union
+2. Update widgets.c to add a function to create it
+2. Update drawing.c to update the draw_widget function

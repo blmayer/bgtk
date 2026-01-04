@@ -186,3 +186,24 @@ struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
 
 	return widget;
 }
+
+struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, int border_width, BGTK_Options options) {
+	struct BGTK_Widget* frame = (struct BGTK_Widget*)malloc(sizeof(struct BGTK_Widget));
+	if (!frame) return NULL;
+
+	frame->ctx = ctx;
+	frame->type = BGTK_WIDGET_FRAME;
+	frame->x = 0; // Default position, can be adjusted
+	frame->y = 0;
+	frame->w = width;
+	frame->h = height;
+	frame->flags = options.flags;
+	frame->padding = options.padding;
+	frame->margin = options.margin;
+
+	frame->data.frame.child = child;
+	frame->data.frame.border_width = border_width;
+
+	return frame;
+}
+

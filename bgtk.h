@@ -39,6 +39,7 @@ enum BGTK_Widget_Type {
 	BGTK_WIDGET_TEXT,
 	BGTK_WIDGET_SCROLLABLE,
 	BGTK_WIDGET_IMAGE,
+	BGTK_WIDGET_FRAME,
 	// Add more types as needed
 };
 
@@ -116,5 +117,8 @@ struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx, struct BGTK_Widget
 
 // Creates an image widget.
 struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path, BGTK_Options options);
+
+// Creates a frame widget.
+struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, int border_width, BGTK_Options options);
 
 #endif
