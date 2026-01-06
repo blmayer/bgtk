@@ -8,7 +8,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <time.h>
 #include <sys/time.h>
 #include <stb_image_write.h>
 
@@ -20,7 +19,7 @@
 	"InputMono-Regular.ttf"
 #define DEFAULT_FONT_SIZE 12
 
-int take_screenshot(BGTK_Context ctx) {
+int take_screenshot(struct BGTK_Context ctx) {
 	if (!ctx.shm_buffer) {
 		fprintf(stderr, "No framebuffer available for screenshot.\n");
 		return -1;

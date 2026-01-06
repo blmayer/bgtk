@@ -1,11 +1,11 @@
 # Makefile for BGTK
 
-CFLAGS = -Wall -Wextra -Werror -I. -I/usr/include/freetype2 -I../bgce
+CFLAGS = -Wall -Wextra -Werror -I. -I/usr/include/freetype2 -fPIC
 LDFLAGS = -lfreetype -lbgce -lm
 
 TARGET = libbgtk.so app
-SRC = app.c bgtk.c drawing.c widgets.c
-LIB_OBJS = bgtk.c drawing.c widgets.c
+SRC = app.c bgtk.c drawing.c widgets.c config.c
+LIB_OBJS = bgtk.o drawing.o widgets.o config.o
 OBJ = $(SRC:.c=.o)
 
 .PHONY: all clean test
@@ -31,9 +31,9 @@ install: libbgtk.so bgtk.h
 	install -d $(INSTALL_INCLUDE)
 	install -m 644 bgtk.h $(INSTALL_INCLUDE)
 	ldconfig
-test: $(TARGET)
 
 .PHONY: test
+test: app
 	@echo "Starting BGCE server in background..."
 	bgce &
 	BGCE_PID=$$

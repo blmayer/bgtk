@@ -202,7 +202,7 @@ struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* chi
 	frame->margin = options.margin;
 
 	frame->data.frame.child = child;
-	frame->data.frame.border_width = border_width;
+	frame->data.frame.border_w = border_width;
 
 	return frame;
 }
