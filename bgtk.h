@@ -80,6 +80,10 @@ struct BGTK_Widget {
 			char* text;
 		} text;
 		struct {
+			struct BGTK_Widget* child;
+			int border_w;
+		} frame;
+		struct {
 			struct BGTK_Widget** items;  // List of child widgets
 			int widget_count;
 			int widget_capacity;

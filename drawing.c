@@ -340,17 +340,17 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 		       draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->w - 2 * w->margin, w->h - 2 * w->margin, ctx->theme.background);
 
 		       // Draw frame border
-		       draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->w - 2 * w->margin, w->data.frame.border_width, ctx->theme.button_text);  // Top
-		       draw_rect(ctx, pixels, w->x + w->margin, w->y + w->h - w->margin - w->data.frame.border_width, w->w - 2 * w->margin, w->data.frame.border_width, ctx->theme.button_text);  // Bottom
-		       draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->data.frame.border_width, w->h - 2 * w->margin, ctx->theme.button_text);  // Left
-		       draw_rect(ctx, pixels, w->x + w->w - w->margin - w->data.frame.border_width, w->y + w->margin, w->data.frame.border_width, w->h - 2 * w->margin, ctx->theme.button_text);  // Right
+		       draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->w - 2 * w->margin, w->data.frame.border_w, ctx->theme.button_text);  // Top
+		       draw_rect(ctx, pixels, w->x + w->margin, w->y + w->h - w->margin - w->data.frame.border_w, w->w - 2 * w->margin, w->data.frame.border_w, ctx->theme.button_text);  // Bottom
+		       draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->data.frame.border_w, w->h - 2 * w->margin, ctx->theme.button_text);  // Left
+		       draw_rect(ctx, pixels, w->x + w->w - w->margin - w->data.frame.border_w, w->y + w->margin, w->data.frame.border_w, w->h - 2 * w->margin, ctx->theme.button_text);  // Right
 
 		       // Draw child widget inside the frame
 		       if (w->data.frame.child) {
-			       w->data.frame.child->x = w->x + w->margin + w->data.frame.border_width + w->padding;
-			       w->data.frame.child->y = w->y + w->margin + w->data.frame.border_width + w->padding;
-			       w->data.frame.child->w = w->w - 2 * (w->margin + w->data.frame.border_width + w->padding);
-			       w->data.frame.child->h = w->h - 2 * (w->margin + w->data.frame.border_width + w->padding);
+			       w->data.frame.child->x = w->x + w->margin + w->data.frame.border_w + w->padding;
+			       w->data.frame.child->y = w->y + w->margin + w->data.frame.border_w + w->padding;
+			       w->data.frame.child->w = w->w - 2 * (w->margin + w->data.frame.border_w + w->padding);
+			       w->data.frame.child->h = w->h - 2 * (w->margin + w->data.frame.border_w + w->padding);
 			       draw_widget(ctx, w->data.frame.child, pixels);
 		       }
 		       break;
