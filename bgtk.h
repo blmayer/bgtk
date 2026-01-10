@@ -30,6 +30,9 @@ struct BGTK_Context {
 
 	// Single root widget for the widget tree
 	struct BGTK_Widget* root_widget;
+
+	// Currently focused widget (for keyboard input)
+	struct BGTK_Widget* focused_widget;
 };
 
 // BGTK_Widget_Type
@@ -40,6 +43,7 @@ enum BGTK_Widget_Type {
 	BGTK_WIDGET_SCROLLABLE,
 	BGTK_WIDGET_IMAGE,
 	BGTK_WIDGET_FRAME,
+	BGTK_WIDGET_TEXT_INPUT,
 	// Add more types as needed
 };
 
@@ -89,6 +93,14 @@ struct BGTK_Widget {
 			int img_w;	   // Image width
 			int img_h;	   // Image height
 		} image;
+		struct {
+			char* text;           // Input text
+			int cursor_pos;       // Cursor position
+			int selection_start;  // Selection start (-1 if none)
+			int selection_end;    // Selection end (-1 if none)
+			bool focused;         // Whether the widget is focused
+			BGTK_Callback on_change; // Callback for text changes
+		} text_input;
 	} data;
 };
 

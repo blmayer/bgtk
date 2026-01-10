@@ -78,6 +78,7 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
 		ctx->theme.background = 0xAAAAAAAA; // Default gray
 		ctx->theme.button = 0x88888888;     // Default button color
 		ctx->theme.button_text = 0xFFFFFFFF; // Default white text
+		ctx->theme.frame_border_size = 1; // Default border_size
 		strncpy(ctx->font_path, DEFAULT_FONT_PATH, MAX_PATH_LEN - 1);
 		ctx->font_path[MAX_PATH_LEN - 1] = '\0';
 	}
@@ -105,6 +106,15 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
 	FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
 
 	return ctx;
+}
+
+// Sets the focused widget for keyboard input.
+void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget) {
+    ctx->focused_widget = widget;
+    if (widget && widget->type == BGTK_WIDGET_TEXT_INPUT) {
+        widget->data.text_input.focused = true;
+    }
+    printf("Focus set to widget type: %d\n", widget ? widget->type : -1);
 }
 
 void bgtk_destroy(struct BGTK_Context* ctx) {
@@ -231,6 +241,112 @@ int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev) {
 		return 0;
 	}
 	printf("BGTK Got click: (%d, %d)\n", ev.x, ev.y);
+	//
+    // Handle mouse clicks (set focus or trigger callbacks)
+    if (ev.code == BTN_LEFT && ev.value == 1) {
+        printf("BGTK Got click: (%d, %d)\n", ev.x, ev.y);
+        // Traverse widgets to find the clicked widget
+        struct BGTK_Widget* w = ctx->root_widget;
+        struct BGTK_Widget* clicked_widget = NULL;
+        // Simple traversal (assumes no nested widgets beyond scrollable)
+        if (w->type == BGTK_WIDGET_SCROLLABLE) {
+            for (int i = 0; i < w->data.scrollable.widget_count; i++) {
+                struct BGTK_Widget* item = w->data.scrollable.items[i];
+                if (ev.x >= item->x && ev.x < (item->x + item->w) &&
+                    ev.y >= item->y && ev.y < (item->y + item->h)) {
+                    clicked_widget = item;
+                    break;
+                }
+            }
+        } else if (ev.x >= w->x && ev.x < (w->x + w->w) &&
+                   ev.y >= w->y && ev.y < (w->y + w->h)) {
+            clicked_widget = w;
+        }
+
+        if (clicked_widget) {
+            // Set focus if it's a text input
+            if (clicked_widget->type == BGTK_WIDGET_TEXT_INPUT) {
+                bgtk_set_focus(ctx, clicked_widget);
+                return 1;  // Redraw
+            }
+            // Handle button clicks
+            else if (clicked_widget->type == BGTK_WIDGET_BUTTON) {
+                if (clicked_widget->data.button.callback) {
+                    clicked_widget->data.button.callback();
+                    return 1;
+                }
+            }
+        } else {
+            // Clicked outside any widget: clear focus
+            bgtk_set_focus(ctx, NULL);
+            return 1;  // Redraw
+        }
+    }
+
+    // Handle keyboard events (route to focused widget)
+    if (ctx->focused_widget && ctx->focused_widget->type == BGTK_WIDGET_TEXT_INPUT) {
+        struct BGTK_Widget* w = ctx->focused_widget;
+        bool redraw = false;
+
+        // Handle printable characters
+        if (ev.type == EV_KEY && ev.value == 1 && ev.code < 256) {
+            char c = (char)ev.code;
+            if (c >= 32 && c <= 126) {  // Printable ASCII
+                // Insert character at cursor_pos
+                char* text = w->data.text_input.text;
+                int cursor = w->data.text_input.cursor_pos;
+                int len = strlen(text);
+                // Resize text buffer
+                text = realloc(text, len + 2);
+                if (!text) return 0;
+                // Shift characters after cursor
+                memmove(&text[cursor + 1], &text[cursor], len - cursor + 1);
+                text[cursor] = c;
+                w->data.text_input.text = text;
+                w->data.text_input.cursor_pos++;
+                redraw = true;
+                if (w->data.text_input.on_change) {
+                    w->data.text_input.on_change();
+                }
+            }
+        }
+        // Handle backspace
+        else if (ev.type == EV_KEY && ev.value == 1 && ev.code == KEY_BACKSPACE) {
+            char* text = w->data.text_input.text;
+            int cursor = w->data.text_input.cursor_pos;
+            if (cursor > 0) {
+                memmove(&text[cursor - 1], &text[cursor], strlen(text) - cursor + 1);
+                w->data.text_input.cursor_pos--;
+                redraw = true;
+                if (w->data.text_input.on_change) {
+                    w->data.text_input.on_change();
+                }
+            }
+        }
+        // Handle delete
+        else if (ev.type == EV_KEY && ev.value == 1 && ev.code == KEY_DELETE) {
+            char* text = w->data.text_input.text;
+            int cursor = w->data.text_input.cursor_pos;
+            if (cursor < strlen(text)) {
+                memmove(&text[cursor], &text[cursor + 1], strlen(text) - cursor);
+                redraw = true;
+                if (w->data.text_input.on_change) {
+                    w->data.text_input.on_change();
+                }
+            }
+        }
+        // Handle arrow keys (cursor movement)
+        else if (ev.type == EV_KEY && ev.value == 1) {
+            int cursor = w->data.text_input.cursor_pos;
+            int len = strlen(w->data.text_input.text);
+            if (ev.code == KEY_LEFT && cursor > 0) {
+                w->data.text_input.cursor_pos--;
+                redraw = true;
+            } else if (ev.code == KEY_RIGHT && cursor < len) {
+                w->data.text_input.cursor_pos++;
+                redraw = true;
+            }
+        }
 
 	// Hit-testing for buttons
 	struct BGTK_Widget* w = ctx->root_widget;

@@ -110,6 +110,9 @@ int parse_config(struct config* config) {
 			} else if (strcmp(key, "button_text") == 0) {
 				config->theme.button_text = parse_hex_color(value);
 			}
+			} else if (strcmp(key, "frame_border_size") == 0) {
+				config->theme.frame_border_size = atoi(value);
+			}
 		} else if (strcmp(current_section, "font") == 0) {
 			if (strcmp(key, "path") == 0) {
 				strncpy(config->font_path, value, MAX_PATH_LEN - 1);

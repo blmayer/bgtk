@@ -23,9 +23,14 @@ int res = bgtk_init(&ctx);
 [ ] **Step 2: Implement BGTK Core (`bgtk.c`)**
     [X] Implement initialization, event queueing, and simple drawing (e.g., drawing rectangles for buttons, text rendering).
     [X] Only call draw when changes are made, like input.
-    [X] Implement proper hit detection: using widget trees and coordinates, e.g. click on x,y -> search the tree until last widget is found, then send the input to that widget.
-    [ ] Add support for screenshots
-    [X] Add a generic scroll widget, that scrolls content
+    [ ] Implement proper hit detection: using widget trees and coordinates, e.g. click on x,y -> search the tree until last widget is found, then send the input to that widget.
+        [ ] Implement this approach: each widget has a handle_event() function and if hit runs the function. Also set the focus.
+            [ ] Scrollable will find which item got the event and call the event handler of the item
+            [ ] Frame will pass to the child
+            [ ] Button calls the button handler
+            [ ] Input text sets the input focus 
+    [X] Add support for screenshots
+    [ ] Add a generic scroll widget, that scrolls content
         [ ] Add options for vertical or horizontal
     [X] Add a image widget that supports image files:
         [X] png
@@ -53,6 +58,7 @@ int res = bgtk_init(&ctx);
   - If function arguments don't fit on one line, place each on a new line and close
     the parenthesis on its own line.
 - **Testing**: The `app.c` file is a demo application. Use it to test new features.
+
 
 ### Adding new widgets
 

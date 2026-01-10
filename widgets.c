@@ -20,6 +20,8 @@ static struct BGTK_Widget* widget_new(struct BGTK_Context* ctx,
 	widget->flags = options.flags;
 	widget->padding = options.padding;
 	widget->margin = options.margin;
+
+	// TODO: setup handle_event function
 	return widget;
 }
 
@@ -187,7 +189,7 @@ struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
 	return widget;
 }
 
-struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, int border_width, BGTK_Options options) {
+struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, BGTK_Options options) {
 	struct BGTK_Widget* frame = (struct BGTK_Widget*)malloc(sizeof(struct BGTK_Widget));
 	if (!frame) return NULL;
 
@@ -202,8 +204,32 @@ struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* chi
 	frame->margin = options.margin;
 
 	frame->data.frame.child = child;
-	frame->data.frame.border_width = border_width;
+	frame->data.frame.border_width = ctx->theme.frame_border_size;
 
 	return frame;
 }
 
+// Creates a text input widget.
+struct BGTK_Widget* bgtk_text_input(
+	struct BGTK_Context* ctx, char* initial_text, int width, int height, BGTK_Options options) {
+	printf("BGTK creating text input widget\n");
+	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_TEXT_INPUT, options);
+	if (!widget) {
+	    perror("BGTK Failed to create text input widget");
+	    return NULL;
+	}
+
+	// Initialize text input data
+	widget->data.text_input.text = strdup(initial_text ? initial_text : "");
+	widget->data.text_input.cursor_pos = strlen(widget->data.text_input.text);
+	widget->data.text_input.selection_start = -1;
+	widget->data.text_input.selection_end = -1;
+	widget->data.text_input.focused = false;
+	widget->data.text_input.on_change = NULL;
+
+	// Set widget size (width/height are outer dimensions including padding/border)
+	widget->w = width;
+	widget->h = height;
+
+	return widget;
+}

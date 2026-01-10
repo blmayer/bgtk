@@ -124,6 +124,18 @@ void calculate_widget_size(struct BGTK_Context* ctx, struct BGTK_Widget* w) {
 			// the widget must have a definite size
 			printf("calculated image size: %ux%u\n", w->w, w->h);
 			break;
+		case BGTK_WIDGET_TEXT_INPUT: {
+			// Calculate size based on text content (or use fixed width/height)
+			int text_w, text_h;
+			measure_text(ctx->ft_face, w->data.text_input.text,
+				     &text_w, &text_h);
+			// Ensure minimum width/height (e.g., 100px)
+			w->w = text_w + 2 * w->padding;
+			w->h = text_h + 2 * w->padding;
+			if (w->w < 100) w->w = 100;
+			if (w->h < 20) w->h = 20;
+			break;
+		}
 		default:
 			break;
 	}
@@ -342,5 +354,62 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 			       draw_widget(ctx, w->data.frame.child, pixels);
 		       }
 		       break;
+		case BGTK_WIDGET_TEXT_INPUT: {
+			puts("drawing text input widget");
+			// Draw background (white)
+			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
+				  w->w - 2 * w->margin, w->h - 2 * w->margin, 0xFFFFFFFF);
+			// Draw border (black)
+			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
+				  w->w - 2 * w->margin, 1, 0xFF000000);  // Top
+			draw_rect(ctx, pixels, w->x + w->margin, 
+				  w->y + w->h - 1 - w->margin, w->w - 2 * w->margin, 1,
+				  0xFF000000);  // Bottom
+			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, 1,
+				  w->h - 2 * w->margin, 0xFF000000);  // Left
+			draw_rect(ctx, pixels, w->x + w->w - 1 - w->margin, 
+				  w->y + w->margin, 1, w->h - 2 * w->margin,
+				  0xFF000000);  // Right
+			// Draw text (offset for padding)
+			int text_x = w->x + w->margin + w->padding;
+			int text_y = w->y + w->margin + w->padding;
+			draw_text(ctx, pixels, w->data.text_input.text, text_x, text_y, 0xFF000000);
+			// Draw cursor if focused
+			if (w->data.text_input.focused) {
+				int cursor_x = text_x;
+				// Measure text up to cursor_pos to get cursor_x
+				for (int i = 0; i < w->data.text_input.cursor_pos; i++) {
+					FT_UInt index = FT_Get_Char_Index(ctx->ft_face, w->data.text_input.text[i]);
+					if (FT_Load_Glyph(ctx->ft_face, index, FT_LOAD_DEFAULT)) continue;
+					cursor_x += ctx->ft_face->glyph->advance.x >> 6;
+				}
+				// Draw cursor (vertical line)
+				draw_rect(ctx, pixels, cursor_x, text_y, 1, w->h - 2 * (w->margin + w->padding), 0xFF000000);
+			}
+			break;
+		}
+		case BGTK_WIDGET_FRAME:
+			puts("drawing frame widget");
+			// Draw frame background
+			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->w - 2 * w->margin, w->h - 2 * w->margin, ctx->theme.background);
+
+			// Draw frame border
+			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->w - 2 * w->margin, w->data.frame.border_width, ctx->theme.button_text);  // Top
+			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->h - w->margin - w->data.frame.border_width, w->w - 2 * w->margin, w->data.frame.border_width, ctx->theme.button_text);  // Bottom
+			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->data.frame.border_width, w->h - 2 * w->margin, ctx->theme.button_text);  // Left
+			draw_rect(ctx, pixels, w->x + w->w - w->margin - w->data.frame.border_width, w->y + w->margin, w->data.frame.border_width, w->h - 2 * w->margin, ctx->theme.button_text);  // Right
+
+			// Draw child widget inside the frame
+			if (w->data.frame.child) {
+				w->data.frame.child->x = w->x + w->margin + w->data.frame.border_width + w->padding;
+				w->data.frame.child->y = w->y + w->margin + w->data.frame.border_width + w->padding;
+				w->data.frame.child->w = w->w - 2 * (w->margin + w->data.frame.border_width + w->padding);
+				w->data.frame.child->h = w->h - 2 * (w->margin + w->data.frame.border_width + w->padding);
+				draw_widget(ctx, w->data.frame.child, pixels);
+			}
+			break;
+		default:
+		       puts("can't draw unknown widget");
+
 	}
 }

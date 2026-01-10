@@ -17,22 +17,25 @@ typedef enum {
 	IMAGE_SCALED
 } ImageMode;
 
-// Theme colors
+// Theme stuff
 typedef struct {
 	uint32_t background;
 	uint32_t button;
 	uint32_t button_text;
+	uint32_t frame_border_size;
 } BGTK_Theme;
 
 // Config structure
 struct config {
+	char font_path[MAX_PATH_LEN];
+	int font_size;
+
 	BackgroundType type;
 	uint32_t color;
 	char path[MAX_PATH_LEN];
 	ImageMode mode;
+
 	BGTK_Theme theme;
-	char font_path[MAX_PATH_LEN];
-	int font_size;
 };
 
 int parse_config(struct config* config);
