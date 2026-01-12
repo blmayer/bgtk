@@ -376,9 +376,9 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 			draw_text(ctx, pixels, w->data.text_input.text, text_x, text_y, 0xFF000000);
 			// Draw cursor if focused
 			if (w->data.text_input.focused) {
-				int cursor_x = text_x;
+				uint32_t cursor_x = text_x;
 				// Measure text up to cursor_pos to get cursor_x
-				for (int i = 0; i < w->data.text_input.cursor_pos; i++) {
+				for (uint32_t i = 0; i < w->data.text_input.cursor_pos; i++) {
 					FT_UInt index = FT_Get_Char_Index(ctx->ft_face, w->data.text_input.text[i]);
 					if (FT_Load_Glyph(ctx->ft_face, index, FT_LOAD_DEFAULT)) continue;
 					cursor_x += ctx->ft_face->glyph->advance.x >> 6;
@@ -388,26 +388,6 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 			}
 			break;
 		}
-		case BGTK_WIDGET_FRAME:
-			puts("drawing frame widget");
-			// Draw frame background
-			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->w - 2 * w->margin, w->h - 2 * w->margin, ctx->theme.background);
-
-			// Draw frame border
-			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->w - 2 * w->margin, w->data.frame.border_width, ctx->theme.button_text);  // Top
-			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->h - w->margin - w->data.frame.border_width, w->w - 2 * w->margin, w->data.frame.border_width, ctx->theme.button_text);  // Bottom
-			draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->data.frame.border_width, w->h - 2 * w->margin, ctx->theme.button_text);  // Left
-			draw_rect(ctx, pixels, w->x + w->w - w->margin - w->data.frame.border_width, w->y + w->margin, w->data.frame.border_width, w->h - 2 * w->margin, ctx->theme.button_text);  // Right
-
-			// Draw child widget inside the frame
-			if (w->data.frame.child) {
-				w->data.frame.child->x = w->x + w->margin + w->data.frame.border_width + w->padding;
-				w->data.frame.child->y = w->y + w->margin + w->data.frame.border_width + w->padding;
-				w->data.frame.child->w = w->w - 2 * (w->margin + w->data.frame.border_width + w->padding);
-				w->data.frame.child->h = w->h - 2 * (w->margin + w->data.frame.border_width + w->padding);
-				draw_widget(ctx, w->data.frame.child, pixels);
-			}
-			break;
 		default:
 		       puts("can't draw unknown widget");
 

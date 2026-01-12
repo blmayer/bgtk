@@ -99,7 +99,7 @@ struct BGTK_Widget {
 		} image;
 		struct {
 			char* text;           // Input text
-			int cursor_pos;       // Cursor position
+			uint32_t cursor_pos;       // Cursor position
 			int selection_start;  // Selection start (-1 if none)
 			int selection_end;    // Selection end (-1 if none)
 			bool focused;         // Whether the widget is focused
@@ -135,6 +135,6 @@ struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx, struct BGTK_Widget
 struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path, BGTK_Options options);
 
 // Creates a frame widget.
-struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, int border_width, BGTK_Options options);
+struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, BGTK_Options options);
 
 #endif
