@@ -1,67 +1,140 @@
-# BGTK (Brian's Graphical Toolkit)
+# BGTK - Brian's GUI Toolkit - Agent Guide
+
+## Project Overview
+
+BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux systems. It provides a set of widgets and a rendering system for building graphical user interfaces.
+
+## Codebase Structure
+
+```
+/
+├── AGENTS.md         - This file, guidance for agents working on the project
+├── app.c             - Test application entry point
+├── bgtk.c            - Core BGTK implementation
+├── bgtk.h            - Public API headers
+├── config.c          - Configuration file parsing
+├── config.h          - Configuration definitions
+├── drawing.c         - Drawing and rendering functions
+├── internal.h        - Internal headers and definitions
+├── Makefile          - Build configuration
+├── README.md         - Project overview
+├── stb_image.h       - STB image loading library
+├── stb_image_write.h - STB image writing library
+├── test/             - Test scripts and utilities
+└── widgets.c         - Widget implementations
+```
+
+## Key Components
+
+### 1. BGTK Context (`struct BGTK_Context`)
+- Central structure holding application state
+- Manages the connection to the display server
+- Contains the root widget and focused widget
+- Handles theme and font information
+
+### 2. Widget System
+- Base widget structure: `struct BGTK_Widget`
+- Widget types: Button, Label, Text, Scrollable, Image, Frame, TextInput
+- Each widget has:
+  - Position and dimensions (x, y, w, h)
+  - Styling properties (padding, margin, flags)
+  - Type-specific data in a union
+  - Event handling function (`handle_event`)
+
+### 3. Event Handling
+- Events start at the root widget and propagate down to children
+- Each widget can handle or pass through events
+- Mouse and keyboard events are supported
+- Focus management for text input
+
+### 4. Drawing System
+- Widgets are drawn to a shared memory buffer
+- Drawing functions in `drawing.c`
+- Supports text rendering with FreeType
+- Handles widget layout and positioning
+
+## Development Guidelines
+
+### Coding Style
+- Follow existing code style (indentation, naming, etc.)
+- Use clear, descriptive variable and function names
+- Keep functions focused on single responsibilities
+- Add comments for complex logic
+
+### Widget Implementation
+1. Add new widget type to `enum BGTK_Widget_Type`
+2. Add widget-specific data to the union in `struct BGTK_Widget`
+3. Implement creation function in `widgets.c`
+4. Implement drawing logic in `drawing.c`
+5. Implement event handler (or use default)
+6. Add declaration to `bgtk.h`
+
+### Event Handling
+- Each widget should implement `handle_event`
+- Return 1 if event is handled, 0 otherwise
+- For container widgets, propagate events to children
+- Transform event coordinates for child widgets
+
+## Common Tasks
+
+### Adding a New Widget
+1. Define the widget data structure in the union
+2. Create a constructor function in `widgets.c`
+3. Implement the drawing function in `drawing.c`
+4. Implement event handling if needed
+5. Add the constructor to `bgtk.h`
+
+### Modifying Event Handling
+1. Update widget-specific handlers in `widgets.c`
+2. Modify `bgtk_handle_input_event` in `bgtk.c` if needed
+3. Ensure proper event propagation
+
+### Adding New Features
+1. Add necessary data structures
+2. Implement core functionality
+3. Add configuration options if needed
+4. Update documentation
+
+## Testing
+
+### Manual Testing
+- Run the application and interact with widgets
+- Test edge cases (rapid clicks, keyboard input, etc.)
+- Verify visual appearance
+
+### Automated Testing
+- Test scripts are in the `test/` directory
+- Run with `./test/server_client.sh`
+
+### Debugging Tips
+- Use `printf` for debugging output
+- Check widget bounds and positions
+- Verify event coordinates
+
+## Important Notes for Agents
+
+1. **Event Coordinate System**: Events use absolute screen coordinates. When propagating to children, transform coordinates to be relative to the child widget.
+
+2. **Widget Hierarchy**: The root widget is in `ctx->root_widget`. Child widgets are stored in parent widgets.
+
+3. **Focus Management**: Text input widgets need special handling for keyboard events. Use `bgtk_set_focus()` to manage focus.
+
+4. **Drawing**: Widgets are drawn to `ctx->shm_buffer`. Use the drawing functions in `drawing.c`.
+
+5. **Memory Management**: Widgets are responsible for freeing their own resources in the destructor.
+
+6. **Configuration**: Theme and font settings are loaded from a config file at startup.
+
+## Useful Functions
+
+- `bgtk_init()`: Initialize the BGTK context
+- `bgtk_destroy()`: Clean up resources
+- `bgtk_handle_input_event()`: Handle input events
+- `bgtk_draw_widgets()`: Render all widgets
+- `bgtk_set_focus()`: Set the focused widget
+- `draw_widget()`: Draw a single widget
+- `calculate_widget_size()`: Calculate widget dimensions and positions
 
 This is a toolkit for the BGCE display server. It works by directly writing to
 a graphical buffer, this library lets developers create user interfaces easily.
 
-
-## Style guide
-
-Prefer passing struct pointers to functions instead of malloc'ing them in the function:
-
-struct ctx = ...
-int res = bgtk_init(&ctx);
-
-
-## Roadmap
-
-[ ] **Step 1: Define BGTK Interface (`bgtk.h`)**
-    * Define the core structure for a widget (`struct BGTK_Widget`).
-    * Define the event structure (`struct BGTK_Event`).
-    [ ] Improve widget structure: add options (like alignment), child widgets.
-    [ ] Add methods to update a widget's property so it redraws automaticaly.
-
-[ ] **Step 2: Implement BGTK Core (`bgtk.c`)**
-    [X] Implement initialization, event queueing, and simple drawing (e.g., drawing rectangles for buttons, text rendering).
-    [X] Only call draw when changes are made, like input.
-    [ ] Implement proper hit detection: using widget trees and coordinates, e.g. click on x,y -> search the tree until last widget is found, then send the input to that widget.
-        [ ] Implement this approach: each widget has a handle_event() function and if hit runs the function. Also set the focus.
-            [ ] Scrollable will find which item got the event and call the event handler of the item
-            [ ] Frame will pass to the child
-            [ ] Button calls the button handler
-            [ ] Input text sets the input focus 
-    [X] Add support for screenshots
-    [ ] Add a generic scroll widget, that scrolls content
-        [ ] Add options for vertical or horizontal
-    [X] Add a image widget that supports image files:
-        [X] png
-        [X] svg
-        [X] jpeg
-
-[x] **Step 3: Integrate and Test**
-    [X] Create a new client file (or update `client.c`) to demonstrate a basic BGTK application. -> app.c
-
-
-## Useful Hints for Agents
-
-- The project uses **absolute positioning** for widgets. Future work includes adding
-  layout managers (e.g., box, grid).
-- **FreeType** is used for font rendering. Ensure the font path in `bgtk.c` is valid
-  or make it configurable.
-- **BGCE** is the display server. The connection is established in `bgtk_init()`.
-- **Event handling** is done in `bgtk_main_loop()`. It currently processes input events
-  and redraws the screen.
-- **Widget updates**: When a widget's property changes (e.g., label text), it should
-  trigger a redraw. This is partially implemented.
-- **Code style**: Use the provided `.clang-format` file. Key rules:
-  - Braces on the same line for `if`, `for`, `while`, etc.
-  - Never omit braces for single-line blocks.
-  - If function arguments don't fit on one line, place each on a new line and close
-    the parenthesis on its own line.
-- **Testing**: The `app.c` file is a demo application. Use it to test new features.
-
-
-### Adding new widgets
-
-1. Updated bgtk.h to add the type in the enum and in the union
-2. Update widgets.c to add a function to create it
-2. Update drawing.c to update the draw_widget function

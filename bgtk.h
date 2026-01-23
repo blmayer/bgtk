@@ -61,11 +61,14 @@ typedef struct {
 struct BGTK_Widget {
 	struct BGTK_Context* ctx;
 	enum BGTK_Widget_Type type;
-	int x, y, w, h;	 // Absolute position and size
-	int flags;	 // Flags for widget behavior
-	int padding;      // Internal spacing (pixels)
-	int margin;       // External spacing (pixels)
-
+	int x, y, w, h;      // Absolute position and size
+	int flags;          // Flags for widget behavior
+	int padding;        // Internal spacing (pixels)
+	int margin;         // External spacing (pixels)
+	
+	// Function pointer for event handling
+	int (*handle_event)(struct BGTK_Widget* widget, struct InputEvent ev);
+	
 	// Union for specific widget data
 	union {
 		struct {

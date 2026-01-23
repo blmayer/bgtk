@@ -175,235 +175,28 @@ void bgtk_draw_widgets(struct BGTK_Context* ctx) {
 	bgce_draw(ctx->conn_fd);
 }
 
-// TODO: implement descending into child widgets
+// Handles a single event and returns whether a redraw is needed.
 int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev) {
-	// Hanlde some keys
-	if (ev.code == KEY_SYSRQ) {
-		printf("[BGTK] Print Screen key pressed, taking screenshot.\n");
-		take_screenshot(*ctx);
-		return 1;
-	}
-
-	// Handle mouse wheel for scrolling (REL_WHEEL)
-	if (ev.code == REL_WHEEL) {
-		printf("handling mouse wheel: val=%d at (%u, %u)\n", ev.value,
-		       ev.x, ev.y);
-		struct BGTK_Widget* w = ctx->root_widget;
-
-		// TODO: descend to the last scrollable widget
-		// while (1) {
-		if (w->type == BGTK_WIDGET_SCROLLABLE) {
-			puts("found scroll widget");
-
-			// Check if mouse is over the scrollable
-			// widget
-			if (ev.x >= w->x && ev.x < (w->x + w->w) &&
-			    ev.y >= w->y && ev.y < (w->y + w->h)) {
-				puts("updating scroll");
-				w->data.scrollable.scroll_y -=
-				    ev.value * 10;  // Scroll speed
-
-				// Clamp scroll_y to valid range
-				if (w->data.scrollable.scroll_y < 0) {
-					w->data.scrollable.scroll_y = 0;
-				}
-				if (w->data.scrollable.scroll_y >
-				    w->data.scrollable.content_height - w->h) {
-					w->data.scrollable.scroll_y =
-					    w->data.scrollable.content_height -
-					    w->h;
-				}
-				if (w->data.scrollable.scroll_y < 0) {
-					w->data.scrollable.scroll_y = 0;
-				}
-				printf(
-				    "updated scroll position: "
-				    "%d\n",
-				    w->data.scrollable.scroll_y);
-				draw_widget(ctx, w, ctx->shm_buffer);
-
-				return 1;  // Redraw
-			}
-		}
-		//}
-	}
-
-	// Only handle mouse button presses for now
-	if (ev.code != BTN_LEFT || ev.value != 1) {
-		return 0;
-	}
-	printf("BGTK Got click: (%d, %d)\n", ev.x, ev.y);
-
-	// Handle mouse clicks (set focus or trigger callbacks)
-	if (ev.code == BTN_LEFT && ev.value == 1) {
-		printf("BGTK Got click: (%d, %d)\n", ev.x, ev.y);
-		// Traverse widgets to find the clicked widget
-		struct BGTK_Widget* w = ctx->root_widget;
-		struct BGTK_Widget* clicked_widget = NULL;
-		// Simple traversal (assumes no nested widgets beyond
-		// scrollable)
-		if (w->type == BGTK_WIDGET_SCROLLABLE) {
-			for (int i = 0; i < w->data.scrollable.widget_count;
-			     i++) {
-				struct BGTK_Widget* item =
-				    w->data.scrollable.items[i];
-				if (ev.x >= item->x &&
-				    ev.x < (item->x + item->w) &&
-				    ev.y >= item->y &&
-				    ev.y < (item->y + item->h)) {
-					clicked_widget = item;
-					break;
-				}
-			}
-		} else if (ev.x >= w->x && ev.x < (w->x + w->w) &&
-			   ev.y >= w->y && ev.y < (w->y + w->h)) {
-			clicked_widget = w;
-		}
-
-		if (clicked_widget) {
-			// Set focus if it's a text input
-			if (clicked_widget->type == BGTK_WIDGET_TEXT_INPUT) {
-				bgtk_set_focus(ctx, clicked_widget);
-				return 1;  // Redraw
-			}
-			// Handle button clicks
-			else if (clicked_widget->type == BGTK_WIDGET_BUTTON) {
-				if (clicked_widget->data.button.callback) {
-					clicked_widget->data.button.callback();
-					return 1;
-				}
-			}
-		} else {
-			// Clicked outside any widget: clear focus
-			bgtk_set_focus(ctx, NULL);
-			return 1;  // Redraw
-		}
-	}
-
-	// Handle keyboard events (route to focused widget)
-	if (ctx->focused_widget &&
-	    ctx->focused_widget->type == BGTK_WIDGET_TEXT_INPUT) {
-		struct BGTK_Widget* w = ctx->focused_widget;
-		int redraw = 0;
-
-		// Handle printable characters
-		if (ev.type == EV_KEY && ev.value == 1 && ev.code < 256) {
-			char c = (char)ev.code;
-			if (c >= 32 && c <= 126) {  // Printable ASCII
-				// Insert character at cursor_pos
-				char* text = w->data.text_input.text;
-				int cursor = w->data.text_input.cursor_pos;
-				int len = strlen(text);
-				// Resize text buffer
-				text = realloc(text, len + 2);
-				if (!text) {
-					return 0;
-				}
-				// Shift characters after cursor
-				memmove(&text[cursor + 1], &text[cursor],
-					len - cursor + 1);
-				text[cursor] = c;
-				w->data.text_input.text = text;
-				w->data.text_input.cursor_pos++;
-				redraw = 1;
-				if (w->data.text_input.on_change) {
-					w->data.text_input.on_change();
-				}
-			}
-		}
-		// Handle backspace
-		else if (ev.type == EV_KEY && ev.value == 1 &&
-			 ev.code == KEY_BACKSPACE) {
-			char* text = w->data.text_input.text;
-			int cursor = w->data.text_input.cursor_pos;
-			if (cursor > 0) {
-				memmove(&text[cursor - 1], &text[cursor],
-					strlen(text) - cursor + 1);
-				w->data.text_input.cursor_pos--;
-				redraw = 1;
-				if (w->data.text_input.on_change) {
-					w->data.text_input.on_change();
-				}
-			}
-		}
-		// Handle delete
-		else if (ev.type == EV_KEY && ev.value == 1 &&
-			 ev.code == KEY_DELETE) {
-			char* text = w->data.text_input.text;
-			uint32_t cursor = w->data.text_input.cursor_pos;
-			if (cursor < strlen(text)) {
-				memmove(&text[cursor], &text[cursor + 1],
-					strlen(text) - cursor);
-				redraw = 1;
-				if (w->data.text_input.on_change) {
-					w->data.text_input.on_change();
-				}
-			}
-		}
-		// Handle arrow keys (cursor movement)
-		else if (ev.type == EV_KEY && ev.value == 1) {
-			int cursor = w->data.text_input.cursor_pos;
-			int len = strlen(w->data.text_input.text);
-			if (ev.code == KEY_LEFT && cursor > 0) {
-				w->data.text_input.cursor_pos--;
-				redraw = 1;
-			} else if (ev.code == KEY_RIGHT && cursor < len) {
-				w->data.text_input.cursor_pos++;
-				redraw = 1;
-			}
-		}
-		return redraw;
-	}
-
-	// Hit-testing for buttons
-	struct BGTK_Widget* w = ctx->root_widget;
-	while (w) {
-		switch (w->type) {
-			case BGTK_WIDGET_BUTTON:
-				// Check if click coordinates
-				// are within button bounds
-				if (ev.x >= w->x && ev.x < (w->x + w->w) &&
-				    ev.y >= w->y && ev.y < (w->y + w->h)) {
-					printf("BGTK Clicked in button\n");
-
-					// Trigger callback
-					if (w->data.button.callback) {
-						w->data.button.callback();
-						return 1;
-					}
-				}
-				return 0;
-			case BGTK_WIDGET_SCROLLABLE: {
-				printf("clicked in a scrollable widget\n");
-				int found = 0;
-				for (int i = 0;
-				     i < w->data.scrollable.widget_count; i++) {
-					struct BGTK_Widget* item =
-					    w->data.scrollable.items[i];
-					if (ev.x >= item->x &&
-					    ev.x < (item->x + item->w) &&
-					    ev.y >= item->y &&
-					    ev.y < (item->y + item->h)) {
-						printf(
-						    "clicked in the %d "
-						    "item\n",
-						    i);
-						w = item;
-						found = 1;
-						break;
-					}
-				}
-				if (!found) {
-					return 0;
-				}
-				break;
-			}
-			default:
-				printf(
-				    "clicked on a widget without "
-				    "action\n");
-				return 0;
-		}
-	}
-	return 0;
+    // Handle some keys
+    if (ev.code == KEY_SYSRQ) {
+        printf("[BGTK] Print Screen key pressed, taking screenshot.\n");
+        take_screenshot(*ctx);
+        return 1;
+    }
+    
+    // Start event handling from the root widget
+    if (ctx->root_widget) {
+        // Make a copy of the event to avoid modifying the original
+        struct InputEvent widget_ev = ev;
+        
+        // Pass the event to the root widget
+        int handled = ctx->root_widget->handle_event(ctx->root_widget, widget_ev);
+        
+        // If the event was handled, we might need to redraw
+        if (handled) {
+            return 1;
+        }
+    }
+    
+    return 0; // No redraw needed
 }

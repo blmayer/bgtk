@@ -6,23 +6,31 @@
 
 static int counter = 0;
 static struct BGTK_Widget* counter_label = NULL;
+static struct BGTK_Widget* text_input = NULL;
 struct BGTK_Context* ctx = NULL;
-
 void button_callback(void) {
-	counter++;
-	printf("Button clicked! Counter: %d\n", counter);
+    counter++;
+    printf("Button clicked! Counter: %d\n", counter);
 
-	if (counter_label && counter_label->type == BGTK_WIDGET_LABEL) {
-		puts(" setting new label");
-		char counter_text[32];
-		sprintf(counter_text, "Counter: %d", counter);
-		printf("calling set_label: %p\n", counter_label->data.label.set_label);
-		counter_label->data.label.set_label(counter_label, counter_text);
-	}
+    if (counter_label && counter_label->type == BGTK_WIDGET_LABEL) {
+        puts(" setting new label");
+        char counter_text[32];
+        sprintf(counter_text, "Counter: %d", counter);
+        printf("calling set_label: %p\n", counter_label->data.label.set_label);
+        counter_label->data.label.set_label(counter_label, counter_text);
+    }
+}
+
+void text_input_changed(void) {
+    if (text_input && text_input->type == BGTK_WIDGET_TEXT_INPUT) {
+        printf("Text changed: %s\n", text_input->data.text_input.text);
+    }
 }
 
 int main(void) {
-	setvbuf(stdout, NULL, _IONBF, 0);  // Disable buffering for stdout
+    setvbuf(stdout, NULL, _IONBF, 0);  // Disable buffering for stdout
+    setvbuf(stderr, NULL, _IONBF, 0);  // Disable buffering for stderr
+
 	setvbuf(stderr, NULL, _IONBF, 0);  // Disable buffering for stderr
 
 	// 1. Connect to BGCE
@@ -62,42 +70,81 @@ int main(void) {
 	// 4. Create Widgets
 
 	// Create a list of widgets for the scrollable container
-	struct BGTK_Widget* scrollable_widgets[21];
-	for (int i = 0; i < 20; i++) {
-		char label_text[32];
-		sprintf(label_text, "Item %d", i + 1);
-		scrollable_widgets[i] = bgtk_text(ctx, label_text, (BGTK_Options){
-			.flags = 0,
-			.padding = 5,
-			.margin = 2,
-		});
-	}
+    // Create a list of widgets for the scrollable container
+    struct BGTK_Widget* scrollable_widgets[22]; // Increased size for text input
+    
+    // Create a button with a label
+    struct BGTK_Widget* button_label = bgtk_text(ctx, "Click me!", (BGTK_Options){
+        .flags = 0,
+        .padding = 5,
+        .margin = 2,
+    });
+    
+    struct BGTK_Widget* button = bgtk_button(ctx, button_label, button_callback, (BGTK_Options){
+        .flags = 0,
+        .padding = 10,
+        .margin = 5,
+    });
+    button->w = 200;
+    button->h = 50;
+    scrollable_widgets[0] = button;
+    
+    // Create counter label
+    counter_label = bgtk_label(ctx, "Counter: 0", (BGTK_Options){
+        .flags = 0,
+        .padding = 5,
+        .margin = 2,
+    });
+    scrollable_widgets[1] = counter_label;
+    
+    // Add regular items
+    for (int i = 0; i < 18; i++) { // Reduced count to make room for other widgets
+        char label_text[32];
+        sprintf(label_text, "Item %d", i + 1);
+        scrollable_widgets[i + 2] = bgtk_text(ctx, label_text, (BGTK_Options){
+            .flags = 0,
+            .padding = 5,
+            .margin = 2,
+        });
+    }
 
-	struct BGTK_Widget* image_widget = bgtk_image(ctx, "example.png", (BGTK_Options){
-		.flags = 0,
-		.padding = 10,
-		.margin = 5,
-	});
-	if (image_widget) {
-		image_widget->w = 500;
-		image_widget->h = 400;
-		scrollable_widgets[20] = image_widget;
-	} else {
-		fprintf(stderr, "Failed to load image widget\n");
-	}
-
-	// Create the scrollable widget with the list of widgets
-	struct BGTK_Widget* scrollable =
-	    bgtk_scrollable(ctx, scrollable_widgets, 21, (BGTK_Options){
-			.flags = BGTK_FLAG_CENTER,
-			.padding = 10,
-			.margin = 5,
-		});
-	scrollable->w = 600;
-	scrollable->h = 400;
+    // Create text input widget
+    text_input = bgtk_text_input(ctx, "Type here...", 300, 40, (BGTK_Options){
+        .flags = 0,
+        .padding = 8,
+        .margin = 5,
+    });
+    
+    // Set the change callback
+    text_input->data.text_input.on_change = text_input_changed;
+    scrollable_widgets[20] = text_input;
+    
+    // Create image widget
+    struct BGTK_Widget* image_widget = bgtk_image(ctx, "example.png", (BGTK_Options){
+        .flags = 0,
+        .padding = 10,
+        .margin = 5,
+    });
+    if (image_widget) {
+        image_widget->w = 500;
+        image_widget->h = 400;
+        scrollable_widgets[21] = image_widget;
+    } else {
+        fprintf(stderr, "Failed to load image widget\n");
+        scrollable_widgets[21] = bgtk_text(ctx, "Image failed to load", (BGTK_Options){
+            .flags = 0,
+            .padding = 5,
+            .margin = 2,
+        });
+    }
 	
-	// 5. draw widgets
-	ctx->root_widget = scrollable;
+    // Create the scrollable widget with the list of widgets
+    struct BGTK_Widget* scrollable =
+        bgtk_scrollable(ctx, scrollable_widgets, 22, (BGTK_Options){
+            .flags = BGTK_FLAG_CENTER,
+            .padding = 10,
+            .margin = 5,
+        });
 	bgtk_draw_widgets(ctx);
 
 	// 6. start loop to listen for input events
