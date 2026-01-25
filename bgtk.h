@@ -140,4 +140,5 @@ struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path, BGTK_
 // Creates a frame widget.
 struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, BGTK_Options options);
 
+struct BGTK_Widget* bgtk_text_input(struct BGTK_Context* ctx, char* initial_text, int width, int height, BGTK_Options options);
 #endif

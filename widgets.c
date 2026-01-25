@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <linux/input.h>
 
 #include "bgtk.h"
 #include "internal.h"
@@ -37,6 +38,12 @@ static int button_handle_event(struct BGTK_Widget* widget, struct InputEvent ev)
     }
     
     return 0; // Event not handled by this specific handler
+}
+
+// Sets the focused widget for keyboard input.
+void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget) {
+	ctx->focused_widget = widget;
+	printf("Focus set to widget type: %d\n", widget->type);
 }
 
 // Text input event handler

@@ -103,12 +103,6 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
 	return ctx;
 }
 
-// Sets the focused widget for keyboard input.
-void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget) {
-	ctx->focused_widget = widget;
-	printf("Focus set to widget type: %d\n", widget->type);
-}
-
 void bgtk_destroy(struct BGTK_Context* ctx) {
 	if (!ctx) {
 		return;
