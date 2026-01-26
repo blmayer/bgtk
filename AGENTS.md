@@ -60,6 +60,7 @@ BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux syste
 - Use clear, descriptive variable and function names
 - Keep functions focused on single responsibilities
 - Add comments for complex logic
+- Ident using tabs
 
 ### Widget Implementation
 1. Add new widget type to `enum BGTK_Widget_Type`
