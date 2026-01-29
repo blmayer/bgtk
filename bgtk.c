@@ -162,7 +162,7 @@ void bgtk_destroy(struct BGTK_Context* ctx) {
 // --- Drawing Primitives & Widgets ---
 
 void bgtk_draw_widgets(struct BGTK_Context* ctx) {
-	puts("got draw widgets request");
+	puts("[BGTK] Drawing widgets");
 	clear_buffer(ctx);
 	calculate_widget_size(ctx, ctx->root_widget);
 	draw_widget(ctx, ctx->root_widget, ctx->shm_buffer);
@@ -171,26 +171,24 @@ void bgtk_draw_widgets(struct BGTK_Context* ctx) {
 
 // Handles a single event and returns whether a redraw is needed.
 int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev) {
-    // Handle some keys
-    if (ev.code == KEY_SYSRQ) {
-        printf("[BGTK] Print Screen key pressed, taking screenshot.\n");
-        take_screenshot(*ctx);
-        return 1;
-    }
-    
-    // Start event handling from the root widget
-    if (ctx->root_widget) {
-        // Make a copy of the event to avoid modifying the original
-        struct InputEvent widget_ev = ev;
-        
-        // Pass the event to the root widget
-        int handled = ctx->root_widget->handle_event(ctx->root_widget, widget_ev);
-        
-        // If the event was handled, we might need to redraw
-        if (handled) {
-            return 1;
-        }
-    }
-    
-    return 0; // No redraw needed
+	printf("[BGTK] got event from device %s type=%d\n", ev.device.name,
+	       ev.type);
+
+	// Handle some keys
+	if (ev.code == KEY_SYSRQ) {
+		printf("[BGTK] Print Screen key pressed, taking screenshot.\n");
+		take_screenshot(*ctx);
+		return 1;
+	}
+
+	// Start event handling from the root widget
+	if (!ctx->root_widget) {
+		return 0;
+	}
+
+	// Make a copy of the event to avoid modifying the original
+	struct InputEvent widget_ev = ev;
+
+	// Pass the event to the root widget
+	return ctx->root_widget->handle_event(ctx->root_widget, widget_ev);
 }

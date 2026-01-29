@@ -35,6 +35,10 @@ struct BGTK_Context {
 	struct BGTK_Widget* focused_widget;
 };
 
+// Sets the focused widget for keyboard input.
+// Passing NULL clears focus.
+void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget);
+
 // BGTK_Widget_Type
 enum BGTK_Widget_Type {
 	BGTK_WIDGET_BUTTON,
@@ -102,10 +106,9 @@ struct BGTK_Widget {
 		} image;
 		struct {
 			char* text;           // Input text
-			uint32_t cursor_pos;       // Cursor position
+			uint32_t cursor_pos;  // Cursor position
 			int selection_start;  // Selection start (-1 if none)
 			int selection_end;    // Selection end (-1 if none)
-			bool focused;         // Whether the widget is focused
 			BGTK_Callback on_change; // Callback for text changes
 		} text_input;
 	} data;

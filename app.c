@@ -1,6 +1,7 @@
 #include <bgce.h>
 #include <errno.h>
 #include <stdio.h>
+#include <linux/input.h>
 
 #include "bgtk.h"
 
@@ -8,6 +9,7 @@ static int counter = 0;
 static struct BGTK_Widget* counter_label = NULL;
 static struct BGTK_Widget* text_input = NULL;
 struct BGTK_Context* ctx = NULL;
+
 void button_callback(void) {
 	counter++;
 	printf("Button clicked! Counter: %d\n", counter);
@@ -31,8 +33,6 @@ void text_input_changed(void) {
 
 int main(void) {
 	setvbuf(stdout, NULL, _IONBF, 0);  // Disable buffering for stdout
-	setvbuf(stderr, NULL, _IONBF, 0);  // Disable buffering for stderr
-
 	setvbuf(stderr, NULL, _IONBF, 0);  // Disable buffering for stderr
 
 	// 1. Connect to BGCE
@@ -74,7 +74,7 @@ int main(void) {
 	// Create a list of widgets for the scrollable container
 	// Create a list of widgets for the scrollable container
 	struct BGTK_Widget*
-	    scrollable_widgets[22];  // Increased size for text input
+	    scrollable_widgets[10];  // Increased size for text input
 
 	// Create a button with a label
 	struct BGTK_Widget* button_label = bgtk_text(ctx, "Click me!",
@@ -105,7 +105,7 @@ int main(void) {
 	scrollable_widgets[1] = counter_label;
 
 	// Add regular items
-	for (int i = 0; i < 18;
+	for (int i = 0; i < 8;
 	     i++) {  // Reduced count to make room for other widgets
 		char label_text[32];
 		sprintf(label_text, "Item %d", i + 1);
@@ -127,7 +127,7 @@ int main(void) {
 
 	// Set the change callback
 	text_input->data.text_input.on_change = text_input_changed;
-	scrollable_widgets[20] = text_input;
+	scrollable_widgets[8] = text_input;
 
 	// Create image widget
 	struct BGTK_Widget* image_widget = bgtk_image(ctx, "example.png",
@@ -139,10 +139,10 @@ int main(void) {
 	if (image_widget) {
 		image_widget->w = 500;
 		image_widget->h = 400;
-		scrollable_widgets[21] = image_widget;
+		scrollable_widgets[9] = image_widget;
 	} else {
 		fprintf(stderr, "Failed to load image widget\n");
-		scrollable_widgets[21] = bgtk_text(ctx, "Image failed to load",
+		scrollable_widgets[9] = bgtk_text(ctx, "Image failed to load",
 						   (BGTK_Options){
 						       .flags = 0,
 						       .padding = 5,
@@ -152,7 +152,7 @@ int main(void) {
 
 	// Create the scrollable widget with the list of widgets
 	struct BGTK_Widget* scrollable =
-	    bgtk_scrollable(ctx, scrollable_widgets, 22,
+	    bgtk_scrollable(ctx, scrollable_widgets, 10,
 			    (BGTK_Options){
 				.flags = BGTK_FLAG_CENTER,
 				.padding = 10,
@@ -184,8 +184,12 @@ int main(void) {
 		int res = 0;
 		switch (msg.type) {
 			case MSG_INPUT_EVENT:
-				res = bgtk_handle_input_event(
-				    ctx, msg.data.input_event);
+				// Ignore mouse movement for now to avoid excessive redraw/event spam
+				if (msg.data.input_event.type != EV_REL &&
+				    msg.data.input_event.type != EV_ABS) {
+					res = bgtk_handle_input_event(
+					    ctx, msg.data.input_event);
+				}
 				break;
 			case MSG_BUFFER_CHANGE:
 				// TODO: Handle buffer

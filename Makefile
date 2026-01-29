@@ -35,10 +35,10 @@ install: libbgtk.so bgtk.h
 .PHONY: test
 test: app
 	@echo "Starting BGCE server in background..."
-	bgce &
+	bgce > server.log 2>&1 &
 	BGCE_PID=$$
 	@echo "Running app..."
-	./app || true
+	./app > app.log 2>&1 || true
 	@echo "Killing BGCE server (PID: $$BGCE_PID)..."
 	kill $$BGCE_PID 2>/dev/null || true
 	@echo "Test complete."
