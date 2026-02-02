@@ -123,23 +123,11 @@ void calculate_widget_size(struct BGTK_Context* ctx, struct BGTK_Widget* w) {
 		case BGTK_WIDGET_IMAGE:
 			// the widget must have a definite size
 			break;
-		case BGTK_WIDGET_TEXT_INPUT: {
-			// Calculate size based on text content (or use fixed
-			// width/height)
-			int text_w, text_h;
-			measure_text(ctx->ft_face, w->data.text_input.text,
-				     &text_w, &text_h);
-			// Ensure minimum width/height (e.g., 100px)
-			w->w = text_w + 2 * w->padding;
-			w->h = text_h + 2 * w->padding;
-			if (w->w < 100) {
-				w->w = 100;
-			}
-			if (w->h < 20) {
-				w->h = 20;
-			}
+		case BGTK_WIDGET_TEXT_INPUT:
+			// Text input is a fixed-size widget; its size is set by
+			// the constructor (bgtk_text_input). Do not resize
+			// based on content.
 			break;
-		}
 		default:
 			break;
 	}
@@ -417,15 +405,103 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 			draw_rect(ctx, pixels, w->x + w->w - 1 - w->margin,
 				  w->y + w->margin, 1, w->h - 2 * w->margin,
 				  border);  // Right
-			// Draw text (offset for padding)
+			// Draw text (offset for padding) with horizontal scroll
+			int inner_x0 = w->x + w->margin + 1;
+			int inner_y0 = w->y + w->margin + 1;
+			int inner_w = w->w - 2 * w->margin - 2;
+			int inner_h = w->h - 2 * w->margin - 2;
+			if (inner_w < 1) {
+				inner_w = 1;
+			}
+			if (inner_h < 1) {
+				inner_h = 1;
+			}
+
 			int text_x = w->x + w->margin + w->padding;
 			int text_y = w->y + w->margin + w->padding;
-			draw_text(ctx, pixels, w->data.text_input.text, text_x,
-				  text_y, 0xFF000000);
+			int scroll_x = w->data.text_input.scroll_x;
+			if (scroll_x < 0) {
+				scroll_x = 0;
+			}
 
+			// Draw text clipped to the inner rectangle so glyphs don't
+			// render outside the input box when scrolled.
+			int draw_x = text_x - scroll_x;
+			const char* full = w->data.text_input.text ?
+				w->data.text_input.text : "";
+
+			int stride = ctx->width;
+			FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
+			int pen_x = draw_x;
+			int pen_y = text_y + (ctx->ft_face->size->metrics.ascender >> 6);
+
+			for (const char* p = full; *p; p++) {
+				FT_UInt index = FT_Get_Char_Index(ctx->ft_face, *p);
+				if (FT_Load_Glyph(ctx->ft_face, index,
+						  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
+					continue;
+				}
+				FT_Render_Glyph(ctx->ft_face->glyph, FT_RENDER_MODE_NORMAL);
+
+				FT_GlyphSlot slot = ctx->ft_face->glyph;
+				FT_Bitmap* bitmap = &slot->bitmap;
+				int gx = pen_x + slot->bitmap_left;
+				int gy = pen_y - slot->bitmap_top;
+
+				// If this glyph is entirely left of the visible area, just
+				// advance and continue.
+				int glyph_x0 = gx;
+				int glyph_x1 = gx + (int)bitmap->width;
+				if (glyph_x1 <= inner_x0) {
+					pen_x += slot->advance.x >> 6;
+					continue;
+				}
+				// If this glyph is entirely right of the visible area, we can
+				// stop.
+				if (glyph_x0 >= inner_x0 + inner_w) {
+					break;
+				}
+
+				for (unsigned int row = 0; row < bitmap->rows; row++) {
+					int32_t dy = gy + (int)row;
+					if (dy < inner_y0 || dy >= inner_y0 + inner_h) {
+						continue;
+					}
+					for (unsigned int col = 0; col < bitmap->width; col++) {
+						int32_t dx = gx + (int)col;
+						if (dx < inner_x0 || dx >= inner_x0 + inner_w) {
+							continue;
+						}
+
+						uint8_t a = bitmap->buffer[row * bitmap->pitch + col];
+						if (a == 0) {
+							continue;
+						}
+
+						uint32_t dst = pixels[dy * stride + dx];
+						uint8_t inv = 255 - a;
+
+						uint8_t r_dst = (dst >> 16) & 0xFF;
+						uint8_t g_dst = (dst >> 8) & 0xFF;
+						uint8_t b_dst = (dst) & 0xFF;
+
+						uint8_t r_src = (0xFF000000 >> 16) & 0xFF;
+						uint8_t g_src = (0xFF000000 >> 8) & 0xFF;
+						uint8_t b_src = (0xFF000000) & 0xFF;
+
+						uint8_t r = (r_src * a + r_dst * inv) / 255;
+						uint8_t g = (g_src * a + g_dst * inv) / 255;
+						uint8_t b = (b_src * a + b_dst * inv) / 255;
+
+						pixels[dy * stride + dx] = (r << 16) | (g << 8) | b;
+					}
+				}
+
+				pen_x += slot->advance.x >> 6;
+			}
 			// Draw cursor if focused
 			if (focused) {
-				uint32_t cursor_x = text_x;
+				int cursor_x = text_x - scroll_x;
 				// Measure text up to cursor_pos to get cursor_x
 				for (uint32_t i = 0;
 				     i < w->data.text_input.cursor_pos; i++) {
@@ -439,10 +515,20 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 					cursor_x +=
 					    ctx->ft_face->glyph->advance.x >> 6;
 				}
-				// Draw cursor (vertical line)
-				draw_rect(ctx, pixels, cursor_x, text_y, 1,
-					  w->h - 2 * (w->margin + w->padding),
-					  0xFF000000);
+
+				// Keep cursor inside the inner border (avoid
+				// drawing outside).
+				if (cursor_x < inner_x0) {
+					cursor_x = inner_x0;
+				}
+				if (cursor_x > inner_x0 + inner_w - 1) {
+					cursor_x = inner_x0 + inner_w - 1;
+				}
+
+				// Draw cursor (vertical line) inside the inner
+				// rect
+				draw_rect(ctx, pixels, cursor_x, inner_y0, 1,
+					  inner_h, 0xFF000000);
 			}
 			break;
 		}

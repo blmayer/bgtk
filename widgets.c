@@ -64,6 +64,54 @@ void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget) {
 	bgtk_draw_widgets(ctx);
 }
 
+// Returns pixel width of text[0..len-1]
+static int measure_prefix_width(FT_Face face, const char* text, int len) {
+	int width = 0;
+	if (!face || !text || len <= 0) {
+		return 0;
+	}
+	for (int i = 0; i < len && text[i]; i++) {
+		if (FT_Load_Char(face, text[i], FT_LOAD_DEFAULT)) {
+			continue;
+		}
+		width += face->glyph->advance.x;
+	}
+	return width >> 6;
+}
+
+static void text_input_ensure_cursor_visible(struct BGTK_Context* ctx,
+					     struct BGTK_Widget* widget) {
+	if (!ctx || !ctx->ft_face || !widget) {
+		return;
+	}
+	int content_w = widget->w - 2 * (widget->margin + widget->padding);
+	if (content_w < 1) {
+		content_w = 1;
+	}
+	int cursor_px =
+	    measure_prefix_width(ctx->ft_face, widget->data.text_input.text,
+				 (int)widget->data.text_input.cursor_pos);
+
+	int scroll_x = widget->data.text_input.scroll_x;
+	if (scroll_x < 0) {
+		scroll_x = 0;
+	}
+
+	// Keep a small right-side caret margin so the cursor isn't flush.
+	int caret_margin = 2;
+
+	if (cursor_px - scroll_x > content_w - caret_margin) {
+		scroll_x = cursor_px - (content_w - caret_margin);
+	}
+	if (cursor_px - scroll_x < 0) {
+		scroll_x = cursor_px;
+	}
+	if (scroll_x < 0) {
+		scroll_x = 0;
+	}
+	widget->data.text_input.scroll_x = scroll_x;
+}
+
 // Text input event handler
 static int text_input_handle_event(struct BGTK_Widget* widget,
 				   struct InputEvent ev) {
@@ -261,6 +309,7 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
 			text[cursor] = ascii;
 			widget->data.text_input.text = text;
 			widget->data.text_input.cursor_pos++;
+			text_input_ensure_cursor_visible(widget->ctx, widget);
 
 			if (widget->data.text_input.on_change) {
 				widget->data.text_input.on_change();
@@ -280,6 +329,8 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
 				memmove(&text[cursor - 1], &text[cursor],
 					strlen(text) - cursor + 1);
 				widget->data.text_input.cursor_pos--;
+				text_input_ensure_cursor_visible(widget->ctx,
+								 widget);
 
 				if (widget->data.text_input.on_change) {
 					widget->data.text_input.on_change();
@@ -299,6 +350,8 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
 			if (cursor < strlen(text)) {
 				memmove(&text[cursor], &text[cursor + 1],
 					strlen(text) - cursor);
+				text_input_ensure_cursor_visible(widget->ctx,
+								 widget);
 
 				if (widget->data.text_input.on_change) {
 					widget->data.text_input.on_change();
@@ -316,18 +369,26 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
 			int cursor = widget->data.text_input.cursor_pos;
 			int len = strlen(widget->data.text_input.text);
 
-			if (ev.code == KEY_LEFT && cursor > 0) {
-				widget->data.text_input.cursor_pos--;
-				if (widget->ctx) {
-					bgtk_draw_widgets(widget->ctx);
+			// Handle arrow keys (cursor movement)
+			if (ev.code == KEY_LEFT || ev.code == KEY_RIGHT) {
+				if (ev.code == KEY_LEFT && cursor > 0) {
+					widget->data.text_input.cursor_pos--;
+					text_input_ensure_cursor_visible(
+					    widget->ctx, widget);
+					if (widget->ctx) {
+						bgtk_draw_widgets(widget->ctx);
+					}
+					return 1;  // Event handled
+				} else if (ev.code == KEY_RIGHT &&
+					   cursor < len) {
+					widget->data.text_input.cursor_pos++;
+					text_input_ensure_cursor_visible(
+					    widget->ctx, widget);
+					if (widget->ctx) {
+						bgtk_draw_widgets(widget->ctx);
+					}
+					return 1;  // Event handled
 				}
-				return 1;  // Event handled
-			} else if (ev.code == KEY_RIGHT && cursor < len) {
-				widget->data.text_input.cursor_pos++;
-				if (widget->ctx) {
-					bgtk_draw_widgets(widget->ctx);
-				}
-				return 1;  // Event handled
 			}
 		}
 	}
@@ -438,7 +499,7 @@ static int scrollable_handle_event(struct BGTK_Widget* widget,
 		}
 		return 1;  // Event handled
 	}
-	
+
 	if (ev.code == BTN_LEFT && ev.value == 1) {
 		bgtk_set_focus(widget->ctx, widget);
 		return 1;

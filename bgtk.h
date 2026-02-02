@@ -109,6 +109,7 @@ struct BGTK_Widget {
 			uint32_t cursor_pos;  // Cursor position
 			int selection_start;  // Selection start (-1 if none)
 			int selection_end;    // Selection end (-1 if none)
+			int scroll_x;         // Horizontal pixel scroll offset (>=0)
 			BGTK_Callback on_change; // Callback for text changes
 		} text_input;
 	} data;

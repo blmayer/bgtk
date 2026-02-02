@@ -12,6 +12,16 @@ create graphical user interfaces by directly writing to a shared graphical buffe
 - Theme support via config files (e.g., colors, fonts).
 
 
+## Available Widgets
+- Text: bgtk_text(ctx, text, options)
+- Label: bgtk_label(ctx, text, options)
+- Button: bgtk_button(ctx, label_widget, callback, options)
+- Scrollable: bgtk_scrollable(ctx, items, widget_count, options)
+- Image: bgtk_image(ctx, path, options)
+- Frame: bgtk_frame(ctx, child, width, height, options)
+- Text input: bgtk_text_input(ctx, initial_text, width, height, options)
+
+
 ## Themes
 Theme config files allow customizing the appearance of BGTK applications.
 To use a theme:
