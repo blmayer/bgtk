@@ -82,6 +82,7 @@ struct BGTK_Widget {
 		struct {
 			struct BGTK_Widget* label;  // Label widget for button
 			BGTK_Callback callback;
+			int pressed;  // non-zero while mouse button is held down on this widget
 		} button;
 		struct {
 			char* text;
@@ -139,10 +140,18 @@ struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, BGTK_Options
 struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx, struct BGTK_Widget** items, int widget_count, BGTK_Options options);
 
 // Creates an image widget.
-struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path, BGTK_Options options);
+// width/height are the OUTER widget dimensions (including padding+margin).
+// Pass 0 for width and/or height to use the image's intrinsic size for that dimension.
+struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path, int width, int height, BGTK_Options options);
+
+// Backward-compatible helper: intrinsic image size.
+static inline struct BGTK_Widget* bgtk_image_auto(struct BGTK_Context* ctx, const char* path, BGTK_Options options) {
+	return bgtk_image(ctx, path, 0, 0, options);
+}
 
 // Creates a frame widget.
 struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, BGTK_Options options);
-
+// Creates a text input widget.
 struct BGTK_Widget* bgtk_text_input(struct BGTK_Context* ctx, char* initial_text, int width, int height, BGTK_Options options);
+
 #endif

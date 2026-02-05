@@ -55,8 +55,15 @@ BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux syste
 
 ## Development Guidelines
 
+- Create top quality code: optimize code for performance.
+- Don't be verbose: prefer solutions with fewer lines of code.
+- Keep good principles in mind: modular design, data structures and good
+  organization matters, suggest if a refactor is beneficial.
+- Keep imports lean: we should only need small and focused libraries.
+ 
 ### Coding Style
 - Follow existing code style (indentation, naming, etc.)
+- Use defensive ifs so code is less indented.
 - Use clear, descriptive variable and function names
 - Keep functions focused on single responsibilities
 - Add comments for complex logic
@@ -96,16 +103,6 @@ BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux syste
 3. Add configuration options if needed
 4. Update documentation
 
-## Testing
-
-### Manual Testing
-- Run the application and interact with widgets
-- Test edge cases (rapid clicks, keyboard input, etc.)
-- Verify visual appearance
-
-### Automated Testing
-- Test scripts are in the `test/` directory
-- Run with `./test/server_client.sh`
 
 ### Debugging Tips
 - Use `printf` for debugging output
@@ -115,16 +112,12 @@ BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux syste
 ## Important Notes for Agents
 
 1. **Event Coordinate System**: Events use absolute screen coordinates. When propagating to children, transform coordinates to be relative to the child widget.
-
 2. **Widget Hierarchy**: The root widget is in `ctx->root_widget`. Child widgets are stored in parent widgets.
-
 3. **Focus Management**: Text input widgets need special handling for keyboard events. Use `bgtk_set_focus()` to manage focus.
-
 4. **Drawing**: Widgets are drawn to `ctx->shm_buffer`. Use the drawing functions in `drawing.c`.
-
 5. **Memory Management**: Widgets are responsible for freeing their own resources in the destructor.
-
 6. **Configuration**: Theme and font settings are loaded from a config file at startup.
+
 
 ## Useful Functions
 

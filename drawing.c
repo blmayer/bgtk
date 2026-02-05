@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "bgtk.h"
 #include "internal.h"
@@ -81,25 +83,33 @@ void calculate_widget_size(struct BGTK_Context* ctx, struct BGTK_Widget* w) {
 		case BGTK_WIDGET_LABEL:
 			if (w->data.label.text) {
 				calculate_widget_size(ctx, w->data.label.text);
-				w->w = w->data.label.text->w + 2 * w->padding;
-				w->h = w->data.label.text->h + 2 * w->padding;
+				w->w = w->data.label.text->w +
+				       2 * (w->padding + w->margin);
+				w->h = w->data.label.text->h +
+				       2 * (w->padding + w->margin);
 			}
 			break;
 		case BGTK_WIDGET_TEXT:
 			if (w->data.text.text) {
 				measure_text(ctx->ft_face, w->data.text.text,
 					     &w->w, &w->h);
-				// Add padding to the text widget
-				w->w += 2 * w->padding;
-				w->h += 2 * w->padding;
+				// Add padding + margin to the text widget
+				// (outer size)
+				w->w += 2 * (w->padding + w->margin);
+				w->h += 2 * (w->padding + w->margin);
 			}
 			break;
 		case BGTK_WIDGET_BUTTON:
 			if (w->data.button.label) {
 				calculate_widget_size(ctx,
 						      w->data.button.label);
-				w->w = w->data.button.label->w + 2 * w->padding;
-				w->h = w->data.button.label->h + 2 * w->padding;
+				// Account for 1px border drawn in
+				// draw_widget().
+				int border_w = 1;
+				w->w = w->data.button.label->w +
+				       2 * (w->margin + w->padding + border_w);
+				w->h = w->data.button.label->h +
+				       2 * (w->margin + w->padding + border_w);
 			}
 			break;
 		case BGTK_WIDGET_SCROLLABLE:
@@ -121,7 +131,8 @@ void calculate_widget_size(struct BGTK_Context* ctx, struct BGTK_Widget* w) {
 			}
 			break;
 		case BGTK_WIDGET_IMAGE:
-			// the widget must have a definite size
+			// Image size is its pixel size + padding + margin
+			// (outer size)
 			break;
 		case BGTK_WIDGET_TEXT_INPUT:
 			// Text input is a fixed-size widget; its size is set by
@@ -202,14 +213,90 @@ void draw_text(struct BGTK_Context* ctx, uint32_t* pixels, const char* text,
 
 static void draw_image(struct BGTK_Context* ctx, struct BGTK_Widget w,
 		       uint32_t* pixels) {
+	if (!ctx || w.w <= 0 || w.h <= 0) {
+		return;
+	}
+
 	int stride = ctx->width;
-	for (int j = 0; j < w.h; j++) {
-		for (int i = 0; i < w.w; i++) {
-			int dx = w.x + i;
-			int dy = w.y + j;
-			pixels[dy * stride + dx] =
-			    w.data.image.pixels[j * w.data.image.img_w + i];
+
+	// Clip to destination buffer to avoid OOB writes.
+	int x0 = w.x;
+	int y0 = w.y;
+	int x1 = w.x + w.w;
+	int y1 = w.y + w.h;
+
+	if (x0 < 0) {
+		x0 = 0;
+	}
+	if (y0 < 0) {
+		y0 = 0;
+	}
+	if (x1 > ctx->width) {
+		x1 = ctx->width;
+	}
+	if (y1 > ctx->height) {
+		y1 = ctx->height;
+	}
+
+	if (x1 <= x0 || y1 <= y0) {
+		return;
+	}
+
+	// Always fill the entire widget area with background first.
+	// This ensures any region not covered by the image is deterministic.
+	for (int dy = y0; dy < y1; dy++) {
+		uint32_t* row = &pixels[dy * stride + x0];
+		for (int dx = x0; dx < x1; dx++) {
+			*row++ = ctx->theme.background;
 		}
+	}
+
+	// Nothing more to do if there's no image.
+	if (!w.data.image.pixels || w.data.image.img_w <= 0 || w.data.image.img_h <= 0) {
+		return;
+	}
+
+	// Blit only the intersection of widget rect and image rect.
+	int blit_w = w.w;
+	int blit_h = w.h;
+	if (blit_w > w.data.image.img_w) {
+		blit_w = w.data.image.img_w;
+	}
+	if (blit_h > w.data.image.img_h) {
+		blit_h = w.data.image.img_h;
+	}
+
+	int bx0 = w.x;
+	int by0 = w.y;
+	int bx1 = w.x + blit_w;
+	int by1 = w.y + blit_h;
+
+	if (bx0 < 0) {
+		bx0 = 0;
+	}
+	if (by0 < 0) {
+		by0 = 0;
+	}
+	if (bx1 > ctx->width) {
+		bx1 = ctx->width;
+	}
+	if (by1 > ctx->height) {
+		by1 = ctx->height;
+	}
+
+	if (bx1 <= bx0 || by1 <= by0) {
+		return;
+	}
+
+	int src_x0 = bx0 - w.x;
+	int src_y0 = by0 - w.y;
+	int copy_w = bx1 - bx0;
+
+	for (int dy = by0; dy < by1; dy++) {
+		int sy = src_y0 + (dy - by0);
+		memcpy(&pixels[dy * stride + bx0],
+		       &w.data.image.pixels[sy * w.data.image.img_w + src_x0],
+		       (size_t)copy_w * sizeof(uint32_t));
 	}
 }
 
@@ -236,13 +323,25 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 				  w->y + w->margin + w->padding,
 				  ctx->theme.button_text);
 			break;
-		case BGTK_WIDGET_BUTTON:
-			// Draw button background
+		case BGTK_WIDGET_BUTTON: {
+			uint32_t bg = ctx->theme.button;
+			if (w->data.button.pressed) {
+				uint8_t a = (bg >> 24) & 0xFF;
+				uint8_t r = (bg >> 16) & 0xFF;
+				uint8_t g = (bg >> 8) & 0xFF;
+				uint8_t b = (bg) & 0xFF;
+				r = (uint8_t)((r * 205) / 255);
+				g = (uint8_t)((g * 205) / 255);
+				b = (uint8_t)((b * 205) / 255);
+				bg = (a << 24) | (r << 16) | (g << 8) | b;
+			}
+
+			// Background (inside margin)
 			draw_rect(ctx, pixels, w->x + w->margin,
 				  w->y + w->margin, w->w - 2 * w->margin,
-				  w->h - 2 * w->margin, ctx->theme.button);
+				  w->h - 2 * w->margin, bg);
 
-			// Draw button border (1px black)
+			// Border (1px)
 			draw_rect(ctx, pixels, w->x + w->margin,
 				  w->y + w->margin, w->w - 2 * w->margin, 1,
 				  ctx->theme.button_text);  // Top
@@ -257,24 +356,56 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 				  w->y + w->margin, 1, w->h - 2 * w->margin,
 				  ctx->theme.button_text);  // Right
 
-			// Draw label widget (offset for padding and margin)
 			if (w->data.button.label) {
-				w->data.button.label->x =
-				    w->x + w->margin + w->padding;
-				w->data.button.label->y =
-				    w->y + w->margin + w->padding;
+				int off = w->data.button.pressed ? 1 : 0;
+				int border_w = 1;
+
+				int inner_x0 = w->x + w->margin + border_w;
+				int inner_y0 = w->y + w->margin + border_w;
+				int inner_w =
+				    w->w - 2 * w->margin - 2 * border_w;
+				int inner_h =
+				    w->h - 2 * w->margin - 2 * border_w;
+				if (inner_w < 0) {
+					inner_w = 0;
+				}
+				if (inner_h < 0) {
+					inner_h = 0;
+				}
+
+				int content_x0 = inner_x0 + w->padding;
+				int content_y0 = inner_y0 + w->padding;
+				int content_w = inner_w - 2 * w->padding;
+				int content_h = inner_h - 2 * w->padding;
+				if (content_w < 0) {
+					content_w = 0;
+				}
+				if (content_h < 0) {
+					content_h = 0;
+				}
+
+				int lx =
+				    content_x0 +
+				    (content_w - w->data.button.label->w) / 2 +
+				    off;
+				int ly =
+				    content_y0 +
+				    (content_h - w->data.button.label->h) / 2 +
+				    off;
+
+				w->data.button.label->x = lx;
+				w->data.button.label->y = ly;
 				draw_widget(ctx, w->data.button.label, pixels);
 			}
 			break;
-		case BGTK_WIDGET_SCROLLABLE:
+		}
+		case BGTK_WIDGET_SCROLLABLE: {
 			int content_height = w->data.scrollable.content_height;
 			if (w->h > content_height) {
 				content_height = w->h;
 			}
 
-			// Allocate or update the off-screen buffer if needed
 			if (!w->data.scrollable.tmp) {
-				// Allocate the off-screen buffer
 				w->data.scrollable.tmp = calloc(
 				    w->w * content_height, sizeof(uint32_t));
 				if (!w->data.scrollable.tmp) {
@@ -287,33 +418,34 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 				       content_height);
 			}
 
-			// Always redraw children into the off-screen buffer so
-			// updates (like changing a label) show up after
-			// scrolling/redraws.
-			draw_rect(ctx, w->data.scrollable.tmp, 0, 0, w->w,
+			// Draw into temp buffer with correct stride.
+			struct BGTK_Context tmp_ctx = *ctx;
+			tmp_ctx.width = w->w;
+			tmp_ctx.height = content_height;
+
+			draw_rect(&tmp_ctx, w->data.scrollable.tmp, 0, 0, w->w,
 				  content_height, ctx->theme.background);
 
-			// Draw child widgets into the off-screen buffer
 			int current_y = 0;
 			for (int i = 0; i < w->data.scrollable.widget_count;
 			     i++) {
 				struct BGTK_Widget* child =
 				    w->data.scrollable.items[i];
 
-				child->x = w->x + w->margin + w->padding;
+				child->x = w->margin + w->padding;
 				if (w->flags & BGTK_FLAG_CENTER) {
 					child->x =
-					    w->x + w->margin +
+					    w->margin +
 					    (w->w - 2 * w->margin - child->w) /
 						2;
 				}
 				child->y = current_y + w->margin;
-				draw_widget(ctx, child, w->data.scrollable.tmp);
+
+				draw_widget(&tmp_ctx, child,
+					    w->data.scrollable.tmp);
 				current_y += child->h + 2 * w->margin;
 			}
 
-			// Copy the off-screen buffer to the framebuffer
-			// according to scroll position
 			uint32_t* buff = ctx->shm_buffer;
 			uint32_t* tmp = w->data.scrollable.tmp;
 			for (int row = 0; row < w->h; row++) {
@@ -324,18 +456,23 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 					       &tmp[src_row * w->w], w->w * 4);
 				}
 			}
-
 			break;
-		case BGTK_WIDGET_IMAGE:
-			// Adjust the widget's x/y to account for margin and
-			// padding
+		}
+		case BGTK_WIDGET_IMAGE: {
 			struct BGTK_Widget adjusted_widget = *w;
 			adjusted_widget.x += w->margin + w->padding;
 			adjusted_widget.y += w->margin + w->padding;
 			adjusted_widget.w -= 2 * (w->margin + w->padding);
 			adjusted_widget.h -= 2 * (w->margin + w->padding);
+			if (adjusted_widget.w < 0) {
+				adjusted_widget.w = 0;
+			}
+			if (adjusted_widget.h < 0) {
+				adjusted_widget.h = 0;
+			}
 			draw_image(ctx, adjusted_widget, pixels);
 			break;
+		}
 		case BGTK_WIDGET_FRAME:
 			// Draw frame background
 			draw_rect(ctx, pixels, w->x + w->margin,
@@ -388,7 +525,6 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 				  w->y + w->margin, w->w - 2 * w->margin,
 				  w->h - 2 * w->margin, 0xFFFFFFFF);
 
-			// Draw border (changes color when focused)
 			int focused = ctx->focused_widget == w;
 			uint32_t border = focused ? 0xFF0066FF : 0xFF000000;
 
@@ -397,15 +533,14 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 				  border);  // Top
 			draw_rect(ctx, pixels, w->x + w->margin,
 				  w->y + w->h - 1 - w->margin,
-				  w->w - 2 * w->margin, 1,
-				  border);  // Bottom
+				  w->w - 2 * w->margin, 1, border);  // Bottom
 			draw_rect(ctx, pixels, w->x + w->margin,
 				  w->y + w->margin, 1, w->h - 2 * w->margin,
 				  border);  // Left
 			draw_rect(ctx, pixels, w->x + w->w - 1 - w->margin,
 				  w->y + w->margin, 1, w->h - 2 * w->margin,
 				  border);  // Right
-			// Draw text (offset for padding) with horizontal scroll
+
 			int inner_x0 = w->x + w->margin + 1;
 			int inner_y0 = w->y + w->margin + 1;
 			int inner_w = w->w - 2 * w->margin - 2;
@@ -424,85 +559,103 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 				scroll_x = 0;
 			}
 
-			// Draw text clipped to the inner rectangle so glyphs don't
-			// render outside the input box when scrolled.
 			int draw_x = text_x - scroll_x;
-			const char* full = w->data.text_input.text ?
-				w->data.text_input.text : "";
+			const char* full = w->data.text_input.text
+					       ? w->data.text_input.text
+					       : "";
 
 			int stride = ctx->width;
 			FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
 			int pen_x = draw_x;
-			int pen_y = text_y + (ctx->ft_face->size->metrics.ascender >> 6);
+			int pen_y = text_y +
+				    (ctx->ft_face->size->metrics.ascender >> 6);
 
 			for (const char* p = full; *p; p++) {
-				FT_UInt index = FT_Get_Char_Index(ctx->ft_face, *p);
+				FT_UInt index =
+				    FT_Get_Char_Index(ctx->ft_face, *p);
 				if (FT_Load_Glyph(ctx->ft_face, index,
-						  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
+						  FT_LOAD_DEFAULT |
+						      FT_LOAD_TARGET_LIGHT)) {
 					continue;
 				}
-				FT_Render_Glyph(ctx->ft_face->glyph, FT_RENDER_MODE_NORMAL);
+				FT_Render_Glyph(ctx->ft_face->glyph,
+						FT_RENDER_MODE_NORMAL);
 
 				FT_GlyphSlot slot = ctx->ft_face->glyph;
 				FT_Bitmap* bitmap = &slot->bitmap;
 				int gx = pen_x + slot->bitmap_left;
 				int gy = pen_y - slot->bitmap_top;
 
-				// If this glyph is entirely left of the visible area, just
-				// advance and continue.
 				int glyph_x0 = gx;
 				int glyph_x1 = gx + (int)bitmap->width;
 				if (glyph_x1 <= inner_x0) {
 					pen_x += slot->advance.x >> 6;
 					continue;
 				}
-				// If this glyph is entirely right of the visible area, we can
-				// stop.
 				if (glyph_x0 >= inner_x0 + inner_w) {
 					break;
 				}
 
-				for (unsigned int row = 0; row < bitmap->rows; row++) {
+				for (unsigned int row = 0; row < bitmap->rows;
+				     row++) {
 					int32_t dy = gy + (int)row;
-					if (dy < inner_y0 || dy >= inner_y0 + inner_h) {
+					if (dy < inner_y0 ||
+					    dy >= inner_y0 + inner_h) {
 						continue;
 					}
-					for (unsigned int col = 0; col < bitmap->width; col++) {
+					for (unsigned int col = 0;
+					     col < bitmap->width; col++) {
 						int32_t dx = gx + (int)col;
-						if (dx < inner_x0 || dx >= inner_x0 + inner_w) {
+						if (dx < inner_x0 ||
+						    dx >= inner_x0 + inner_w) {
 							continue;
 						}
 
-						uint8_t a = bitmap->buffer[row * bitmap->pitch + col];
+						uint8_t a =
+						    bitmap->buffer
+							[row * bitmap->pitch +
+							 col];
 						if (a == 0) {
 							continue;
 						}
 
-						uint32_t dst = pixels[dy * stride + dx];
+						uint32_t dst =
+						    pixels[dy * stride + dx];
 						uint8_t inv = 255 - a;
 
-						uint8_t r_dst = (dst >> 16) & 0xFF;
-						uint8_t g_dst = (dst >> 8) & 0xFF;
+						uint8_t r_dst =
+						    (dst >> 16) & 0xFF;
+						uint8_t g_dst =
+						    (dst >> 8) & 0xFF;
 						uint8_t b_dst = (dst) & 0xFF;
 
-						uint8_t r_src = (0xFF000000 >> 16) & 0xFF;
-						uint8_t g_src = (0xFF000000 >> 8) & 0xFF;
-						uint8_t b_src = (0xFF000000) & 0xFF;
+						uint8_t r_src =
+						    (0xFF000000 >> 16) & 0xFF;
+						uint8_t g_src =
+						    (0xFF000000 >> 8) & 0xFF;
+						uint8_t b_src =
+						    (0xFF000000) & 0xFF;
 
-						uint8_t r = (r_src * a + r_dst * inv) / 255;
-						uint8_t g = (g_src * a + g_dst * inv) / 255;
-						uint8_t b = (b_src * a + b_dst * inv) / 255;
+						uint8_t r =
+						    (r_src * a + r_dst * inv) /
+						    255;
+						uint8_t g =
+						    (g_src * a + g_dst * inv) /
+						    255;
+						uint8_t b =
+						    (b_src * a + b_dst * inv) /
+						    255;
 
-						pixels[dy * stride + dx] = (r << 16) | (g << 8) | b;
+						pixels[dy * stride + dx] =
+						    (r << 16) | (g << 8) | b;
 					}
 				}
 
 				pen_x += slot->advance.x >> 6;
 			}
-			// Draw cursor if focused
+
 			if (focused) {
 				int cursor_x = text_x - scroll_x;
-				// Measure text up to cursor_pos to get cursor_x
 				for (uint32_t i = 0;
 				     i < w->data.text_input.cursor_pos; i++) {
 					FT_UInt index = FT_Get_Char_Index(
@@ -516,8 +669,6 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 					    ctx->ft_face->glyph->advance.x >> 6;
 				}
 
-				// Keep cursor inside the inner border (avoid
-				// drawing outside).
 				if (cursor_x < inner_x0) {
 					cursor_x = inner_x0;
 				}
@@ -525,8 +676,6 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 					cursor_x = inner_x0 + inner_w - 1;
 				}
 
-				// Draw cursor (vertical line) inside the inner
-				// rect
 				draw_rect(ctx, pixels, cursor_x, inner_y0, 1,
 					  inner_h, 0xFF000000);
 			}
@@ -534,5 +683,6 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 		}
 		default:
 			puts("can't draw unknown widget");
+			break;
 	}
 }

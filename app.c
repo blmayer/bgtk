@@ -130,24 +130,23 @@ int main(void) {
 	scrollable_widgets[8] = text_input;
 
 	// Create image widget
-	struct BGTK_Widget* image_widget = bgtk_image(ctx, "example.png",
-						      (BGTK_Options){
-							  .flags = 0,
-							  .padding = 10,
-							  .margin = 5,
-						      });
+	struct BGTK_Widget* image_widget =
+	    bgtk_image(ctx, "example.png", 500, 400,
+		      (BGTK_Options){
+			  .flags = 0,
+			  .padding = 10,
+			  .margin = 5,
+		      });
 	if (image_widget) {
-		image_widget->w = 500;
-		image_widget->h = 400;
 		scrollable_widgets[9] = image_widget;
 	} else {
 		fprintf(stderr, "Failed to load image widget\n");
 		scrollable_widgets[9] = bgtk_text(ctx, "Image failed to load",
-						   (BGTK_Options){
-						       .flags = 0,
-						       .padding = 5,
-						       .margin = 2,
-						   });
+					  (BGTK_Options){
+					      .flags = 0,
+					      .padding = 5,
+					      .margin = 2,
+					  });
 	}
 
 	// Create the scrollable widget with the list of widgets

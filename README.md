@@ -17,11 +17,9 @@ create graphical user interfaces by directly writing to a shared graphical buffe
 - Label: bgtk_label(ctx, text, options)
 - Button: bgtk_button(ctx, label_widget, callback, options)
 - Scrollable: bgtk_scrollable(ctx, items, widget_count, options)
-- Image: bgtk_image(ctx, path, options)
+- Image: bgtk_image(ctx, path, width, height, options)  (use 0,0 for intrinsic size)
 - Frame: bgtk_frame(ctx, child, width, height, options)
 - Text input: bgtk_text_input(ctx, initial_text, width, height, options)
-
-
 ## Themes
 Theme config files allow customizing the appearance of BGTK applications.
 To use a theme:
@@ -40,7 +38,7 @@ font = /opt/fonts/.../DejaVu Sans.otf
 Requirements:
 - A C compiler (GCC or Clang).
 - FreeType development libraries.
-- BGCE server running.
+- BGCE.
 
 ```sh
 make

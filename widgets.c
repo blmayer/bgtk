@@ -37,21 +37,45 @@ static int button_handle_event(struct BGTK_Widget* widget,
 	    widget->type, widget->x, widget->y, widget->w, widget->h, ev.type,
 	    ev.code, ev.value, ev.x, ev.y);
 
-	// First check if the event is within the button's bounds
-	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
-	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
-		return 0;  // Event not in this widget
-	}
+	int inside = (ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
+		      ev.y >= widget->y && ev.y < (widget->y + widget->h));
 
-	// Handle mouse clicks
+	// Mouse down: set pressed state if inside.
 	if (ev.code == BTN_LEFT && ev.value == 1) {
+		if (!inside) {
+			return 0;
+		}
 		bgtk_set_focus(widget->ctx, widget);
 
-		printf("Button clicked!\n");
-		if (widget->data.button.callback) {
-			widget->data.button.callback();
-			return 1;  // Event handled
+		if (!widget->data.button.pressed) {
+			widget->data.button.pressed = 1;
+			if (widget->ctx) {
+				bgtk_draw_widgets(widget->ctx);
+			}
 		}
+		return 1;
+	}
+
+	// Mouse up: always clear pressed state; only fire callback if released
+	// inside.
+	if (ev.code == BTN_LEFT && ev.value == 0) {
+		int was_pressed = widget->data.button.pressed;
+		if (was_pressed) {
+			widget->data.button.pressed = 0;
+			if (widget->ctx) {
+				bgtk_draw_widgets(widget->ctx);
+			}
+		}
+
+		if (was_pressed && inside) {
+			printf("Button clicked!\n");
+			if (widget->data.button.callback) {
+				widget->data.button.callback();
+			}
+			return 1;
+		}
+
+		return was_pressed ? 1 : 0;
 	}
 
 	return 0;  // Event not handled by this specific handler
@@ -588,9 +612,9 @@ void set_label(struct BGTK_Widget* widget, char* label) {
 
 	widget->data.label.text = text_widget;
 
-	// Calculate size based on text widget and padding
-	widget->w = text_widget->w + 2 * widget->padding;
-	widget->h = text_widget->h + 2 * widget->padding;
+	// Calculate size based on text widget and padding + margin (outer size)
+	widget->w = text_widget->w + 2 * (widget->padding + widget->margin);
+	widget->h = text_widget->h + 2 * (widget->padding + widget->margin);
 	draw_widget(widget->ctx, widget, widget->ctx->shm_buffer);
 	printf("BGTK label set\n");
 }
@@ -620,10 +644,9 @@ struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text,
 
 	widget->data.label.text = text_widget;
 
-	// Calculate size based on text widget and padding
-	widget->w = text_widget->w + 2 * widget->padding;
-	widget->h = text_widget->h + 2 * widget->padding;
-
+	// Calculate size based on text widget and padding + margin (outer size)
+	widget->w = text_widget->w + 2 * (widget->padding + widget->margin);
+	widget->h = text_widget->h + 2 * (widget->padding + widget->margin);
 	return widget;
 }
 
@@ -645,10 +668,9 @@ struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text,
 	measure_text(widget->ctx->ft_face, widget->data.text.text, &widget->w,
 		     &widget->h);
 
-	// Add padding to the text widget
-	widget->w += 2 * widget->padding;
-	widget->h += 2 * widget->padding;
-
+	// Add padding + margin to the text widget (outer size)
+	widget->w += 2 * (widget->padding + widget->margin);
+	widget->h += 2 * (widget->padding + widget->margin);
 	return widget;
 }
 
@@ -665,14 +687,15 @@ struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
 
 	widget->data.button.callback = callback;
 	widget->data.button.label = label;
+	widget->data.button.pressed = 0;
 
 	// Override the default event handler with button-specific one
 	widget->handle_event = button_handle_event;
 
-	// Calculate size based on label widget and padding
-	widget->w = label->w + 2 * widget->padding;
-	widget->h = label->h + 2 * widget->padding;
-
+	// Calculate size based on label widget and padding + margin (outer
+	// size)
+	widget->w = label->w + 2 * (widget->padding + widget->margin);
+	widget->h = label->h + 2 * (widget->padding + widget->margin);
 	return widget;
 }
 
@@ -706,12 +729,10 @@ struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
 		    2 * widget->margin;	 // 5px spacing + margin
 	}
 
-	// Initialize tmp buffer to NULL, it will be allocated
-	// during drawing
+	// Initialize tmp buffer to NULL, it will be allocated during drawing
 	widget->data.scrollable.tmp = NULL;
 
-	// Override the default event handler with scrollable-specific
-	// one
+	// Override the default event handler with scrollable-specific one
 	widget->handle_event = scrollable_handle_event;
 
 	printf("BGTK allocated scrollable widget\n");
@@ -720,8 +741,7 @@ struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
 }
 
 struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
-			       BGTK_Options options) {
-	printf("BGTK creating image widget\n");
+			       int width, int height, BGTK_Options options) {
 	struct BGTK_Widget* widget =
 	    widget_new(ctx, BGTK_WIDGET_IMAGE, options);
 	if (!widget) {
@@ -729,21 +749,29 @@ struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
 		return NULL;
 	}
 
-	// Load the image into a pixel buffer
-	uint32_t* pixels = NULL;
-	int img_w, img_h;
-	if (load_image(path, &pixels, &img_w, &img_h) != 0) {
-		free(widget);
-		return NULL;
+	// Set requested widget size (outer size). If a dimension is 0, we will
+	// fill it from the image's intrinsic size once loaded.
+	widget->w = width;
+	widget->h = height;
+
+	if (!path) {
+		return widget;
 	}
 
-	widget->data.image.pixels = pixels;
-	widget->data.image.img_w = img_w;
-	widget->data.image.img_h = img_h;
+	// Load the image into a pixel buffer
+	load_image(path, &widget->data.image.pixels, &widget->data.image.img_w,
+		   &widget->data.image.img_h);
 
-	// Add padding to the image widget
-	widget->w = img_w + 2 * widget->padding;
-	widget->h = img_h + 2 * widget->padding;
+	// Default size to intrinsic image size (plus padding+margin) when not
+	// explicitly provided.
+	if (widget->w == 0) {
+		widget->w = widget->data.image.img_w +
+			    2 * (widget->padding + widget->margin);
+	}
+	if (widget->h == 0) {
+		widget->h = widget->data.image.img_h +
+			    2 * (widget->padding + widget->margin);
+	}
 
 	return widget;
 }
@@ -751,21 +779,14 @@ struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
 struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx,
 			       struct BGTK_Widget* child, int width, int height,
 			       BGTK_Options options) {
-	struct BGTK_Widget* frame =
-	    (struct BGTK_Widget*)malloc(sizeof(struct BGTK_Widget));
+	struct BGTK_Widget* frame = widget_new(ctx, BGTK_WIDGET_FRAME, options);
 	if (!frame) {
+		perror("BGTK Failed to create frame widget");
 		return NULL;
 	}
 
-	frame->ctx = ctx;
-	frame->type = BGTK_WIDGET_FRAME;
-	frame->x = 0;  // Default position, can be adjusted
-	frame->y = 0;
 	frame->w = width;
 	frame->h = height;
-	frame->flags = options.flags;
-	frame->padding = options.padding;
-	frame->margin = options.margin;
 
 	frame->data.frame.child = child;
 	frame->data.frame.border_w = ctx->theme.frame_border_size;
@@ -796,14 +817,60 @@ struct BGTK_Widget* bgtk_text_input(struct BGTK_Context* ctx,
 	widget->data.text_input.selection_end = -1;
 	widget->data.text_input.on_change = NULL;
 
-	// Override the default event handler with text input-specific
-	// one
+	// Override the default event handler with text input-specific one
 	widget->handle_event = text_input_handle_event;
 
-	// Set widget size (width/height are outer dimensions including
-	// padding/border)
-	widget->w = width;
-	widget->h = height;
+	// Set widget size.
+	// width/height are the INNER dimensions (content box).
+	// If width and/or height is 0, that dimension is auto-sized based on
+	// the current font metrics / initial content.
+	// The widget outer dimensions include padding + margin.
+	int inner_w = width;
+	int inner_h = height;
 
+	if (inner_w == 0 || inner_h == 0) {
+		int text_w = 0;
+		int text_h = 0;
+		const char* sample = widget->data.text_input.text;
+		// For empty text, measure a single space so height is non-zero.
+		if (!sample || sample[0] == '\0') {
+			sample = " ";
+		}
+
+		if (ctx && ctx->ft_face) {
+			// Ensure the face metrics match the current font size.
+			FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
+			measure_text(ctx->ft_face, sample, &text_w, &text_h);
+		} else {
+			// Fallback: approximate.
+			text_h =
+			    (ctx && ctx->font_size > 0) ? ctx->font_size : 16;
+			text_w = (int)strlen(sample) * (text_h / 2);
+			if (text_w < 1) {
+				text_w = 1;
+			}
+		}
+
+		if (inner_w == 0) {
+			// +2 accounts for the 1px border on each side used in
+			// draw_widget().
+			inner_w = text_w + 2;
+		}
+		if (inner_h == 0) {
+			// +2 accounts for the 1px border on each side used in
+			// draw_widget().
+			inner_h = text_h + 2;
+		}
+	}
+
+	if (inner_w < 1) {
+		inner_w = 1;
+	}
+	if (inner_h < 1) {
+		inner_h = 1;
+	}
+
+	widget->w = inner_w + 2 * (widget->padding + widget->margin);
+	widget->h = inner_h + 2 * (widget->padding + widget->margin);
 	return widget;
 }
