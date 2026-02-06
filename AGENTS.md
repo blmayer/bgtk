@@ -60,6 +60,7 @@ BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux syste
 - Keep good principles in mind: modular design, data structures and good
   organization matters, suggest if a refactor is beneficial.
 - Keep imports lean: we should only need small and focused libraries.
+- Avoid creating variables, use the fields from structs directly if possible.
  
 ### Coding Style
 - Follow existing code style (indentation, naming, etc.)

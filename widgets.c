@@ -451,40 +451,27 @@ static int scrollable_handle_event(struct BGTK_Widget* widget,
 	}
 
 	// Pass event to child widgets first (if the pointer coordinates match)
+	// Events are absolute screen coordinates, while children in the scrollable
+	// are positioned in scrollable CONTENT coordinates.
+	// Transform the event into content-space before forwarding.
+	struct InputEvent cev = ev;
+	cev.x = ev.x - widget->x;
+	cev.y = ev.y - widget->y + widget->data.scrollable.scroll_y;
+
 	for (int i = 0; i < widget->data.scrollable.widget_count; i++) {
 		struct BGTK_Widget* child = widget->data.scrollable.items[i];
-		// Children are positioned relative to the scrollable content
-		// origin. Hit-test in absolute coordinates, accounting for
-		// scroll_y.
-		int child_abs_x0 = widget->x + child->x;
-		int child_abs_y0 =
-		    widget->y + child->y - widget->data.scrollable.scroll_y;
-		int child_abs_x1 = child_abs_x0 + child->w;
-		int child_abs_y1 = child_abs_y0 + child->h;
 
-		// Only consider children that are at least partially on-screen
-		// within the scrollable's visible rect.
-		int vis_x0 = widget->x;
-		int vis_y0 = widget->y;
-		int vis_x1 = widget->x + widget->w;
-		int vis_y1 = widget->y + widget->h;
-
-		if (child_abs_x1 <= vis_x0 || child_abs_x0 >= vis_x1 ||
-		    child_abs_y1 <= vis_y0 || child_abs_y0 >= vis_y1) {
+		if (!(cev.x >= child->x && cev.x < child->x + child->w &&
+		      cev.y >= child->y && cev.y < child->y + child->h)) {
 			continue;
 		}
 
-		if (!(ev.x >= child_abs_x0 && ev.x < child_abs_x1 &&
-		      ev.y >= child_abs_y0 && ev.y < child_abs_y1)) {
-			continue;
-		}
-
-		if (child->handle_event(child, ev)) {
+		if (child->handle_event(child, cev)) {
 			return 1;  // Event was handled by a child
 		}
 
-		// Coordinates matched this child, but it didn't handle
-		// the event. The scrollable should now try to handle it.
+		// Coordinates matched this child, but it didn't handle the event.
+		// The scrollable should now try to handle it.
 		break;
 	}
 
@@ -548,28 +535,30 @@ static int frame_handle_event(struct BGTK_Widget* widget,
 
 	// Pass event to child widget if it exists
 	if (widget->data.frame.child) {
-		// Adjust event coordinates to be relative to the child
-		// widget
-		struct InputEvent child_ev = ev;
-		child_ev.x -= widget->data.frame.child->x;
-		child_ev.y -= widget->data.frame.child->y;
+		// Events use absolute coordinates.
+		// Only forward to the child if the event is within the child's absolute bounds.
+		int cx0 = widget->data.frame.child->x;
+		int cy0 = widget->data.frame.child->y;
+		int cx1 = cx0 + widget->data.frame.child->w;
+		int cy1 = cy0 + widget->data.frame.child->h;
 
-		printf(
-		    "[BGTK][event] widget=FRAME -> child type=%d "
-		    "child_pos=%d,%d child_size=%dx%d child_ev{x=%d "
-		    "y=%d "
-		    "type=%d code=%d value=%d}\n",
-		    widget->data.frame.child->type, widget->data.frame.child->x,
-		    widget->data.frame.child->y, widget->data.frame.child->w,
-		    widget->data.frame.child->h, child_ev.x, child_ev.y,
-		    child_ev.type, child_ev.code, child_ev.value);
-		// Pass the event to the child
-		return widget->data.frame.child->handle_event(
-		    widget->data.frame.child, child_ev);
+		if (ev.x >= cx0 && ev.x < cx1 && ev.y >= cy0 && ev.y < cy1) {
+			return widget->data.frame.child->handle_event(
+			    widget->data.frame.child, ev);
+		}
+	}
+
+	// If clicked inside the frame but not on the child, focus the frame.
+	if (ev.code == BTN_LEFT && ev.value == 1) {
+		bgtk_set_focus(widget->ctx, widget);
+		return 1;
 	}
 
 	return 0;  // Event not handled
+
 }
+
+
 
 // Helper to create a generic widget
 static struct BGTK_Widget* widget_new(struct BGTK_Context* ctx,

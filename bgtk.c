@@ -59,6 +59,7 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
 	ctx->width = width;
 	ctx->height = height;
 	ctx->root_widget = NULL;
+	ctx->window_focused = 1;
 
 	// Load config file
 	struct config config;
@@ -71,9 +72,13 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
 	} else {
 		// Use defaults if config file is missing or invalid
 		ctx->theme.background = 0xAAAAAAAA;   // Default gray
-		ctx->theme.button = 0x88888888;	      // Default button color
+		ctx->theme.button = 0x88888888;       // Default button color
 		ctx->theme.button_text = 0xFFFFFFFF;  // Default white text
-		ctx->theme.frame_border_size = 1;     // Default border_size
+		ctx->theme.frame_border_size = 4;     // Default frame border size
+		ctx->theme.frame_border_color = 0xFFFFFFFF;
+		ctx->theme.button_border_size = 1;
+		ctx->theme.input_border_size = 1;
+
 		strncpy(ctx->font_path, DEFAULT_FONT_PATH, MAX_PATH_LEN - 1);
 		ctx->font_path[MAX_PATH_LEN - 1] = '\0';
 	}
@@ -157,6 +162,16 @@ void bgtk_destroy(struct BGTK_Context* ctx) {
 	}
 
 	free(ctx);
+}
+
+void bgtk_set_window_focus(struct BGTK_Context* ctx, int focused) {
+	if (!ctx) {
+		return;
+	}
+	ctx->window_focused = focused;
+	printf("[BGTK] Window focus changed: %s\n",
+	       focused ? "focused" : "unfocused");
+	bgtk_draw_widgets(ctx);
 }
 
 // --- Drawing Primitives & Widgets ---

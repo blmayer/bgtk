@@ -190,15 +190,18 @@ int main(void) {
 					    ctx, msg.data.input_event);
 				}
 				break;
+			case MSG_FOCUS_CHANGE:
+				bgtk_set_window_focus(ctx, msg.data.focus_event.state);
+				break;
 			case MSG_BUFFER_CHANGE:
-				// TODO: Handle buffer
-				// resize/move
-				break;	// Redraw
+				// TODO: Handle buffer resize/move
+				break;
 			default:
 				// Ignore other messages for now
 				printf("Ignoring message\n");
 				break;
 		}
+
 		if (res) {
 			bgce_draw(conn_fd);
 		}

@@ -33,11 +33,20 @@ struct BGTK_Context {
 
 	// Currently focused widget (for keyboard input)
 	struct BGTK_Widget* focused_widget;
+
+	// Whether the window/surface is focused according to the server.
+	// 0 = unfocused, 1 = focused.
+	int window_focused;
 };
+
 
 // Sets the focused widget for keyboard input.
 // Passing NULL clears focus.
 void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget);
+
+// Sets window focus state (from server focus events).
+void bgtk_set_window_focus(struct BGTK_Context* ctx, int focused);
+
 
 // BGTK_Widget_Type
 enum BGTK_Widget_Type {

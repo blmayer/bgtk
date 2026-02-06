@@ -23,6 +23,9 @@ typedef struct {
 	uint32_t button;
 	uint32_t button_text;
 	uint32_t frame_border_size;
+	uint32_t button_border_size;
+	uint32_t input_border_size;
+	uint32_t frame_border_color;
 } BGTK_Theme;
 
 // Config structure

@@ -60,6 +60,15 @@ int parse_config(struct config* config) {
 	config->type = BG_COLOR;
 	config->color = 0xAAAAAAAA;  // Default gray
 
+	// Theme defaults
+	config->theme.background = 0xAAAAAAAA;
+	config->theme.button = 0x88888888;
+	config->theme.button_text = 0xFFFFFFFF;
+	config->theme.button_border_size = 1;
+	config->theme.input_border_size = 1;
+	config->theme.frame_border_size = 4;
+	config->theme.frame_border_color = 0xFFFFFFFF;
+
 	char line[1024];
 	char current_section[256] = "";
 
@@ -122,10 +131,17 @@ int parse_config(struct config* config) {
 			} else if (strcmp(key, "button_text") == 0) {
 				config->theme.button_text =
 				    parse_hex_color(value);
+			} else if (strcmp(key, "frame_border_size") == 0) {
+				config->theme.frame_border_size = atoi(value);
+			} else if (strcmp(key, "input_border_size") == 0) {
+				config->theme.input_border_size = atoi(value);
+			} else if (strcmp(key, "button_border_size") == 0) {
+				config->theme.button_border_size = atoi(value);
+			} else if (strcmp(key, "frame_border_color") == 0) {
+				config->theme.frame_border_color = parse_hex_color(value);
 			}
-		} else if (strcmp(key, "frame_border_size") == 0) {
-			config->theme.frame_border_size = atoi(value);
 		} else if (strcmp(current_section, "font") == 0) {
+
 			if (strcmp(key, "path") == 0) {
 				strncpy(config->font_path, value,
 					MAX_PATH_LEN - 1);
