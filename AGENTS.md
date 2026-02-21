@@ -133,3 +133,6 @@ BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux syste
 This is a toolkit for the BGCE display server. It works by directly writing to
 a graphical buffer, this library lets developers create user interfaces easily.
 
+## Current task
+
+It seems the image viewer is not handling keyboard input: when i click on the text input it focuses, but typing does nothing, can you fix?

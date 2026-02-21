@@ -533,6 +533,15 @@ static int frame_handle_event(struct BGTK_Widget* widget,
 		return 0;  // Event not in this widget
 	}
 
+	// Keyboard events don't have meaningful pointer coordinates.
+	// Forward them to the child without bounds checking.
+	if (ev.type == EV_KEY) {
+		if (widget->data.frame.child) {
+			return widget->data.frame.child->handle_event(
+			    widget->data.frame.child, ev);
+		}
+	}
+
 	// Pass event to child widget if it exists
 	if (widget->data.frame.child) {
 		// Events use absolute coordinates.
@@ -547,6 +556,7 @@ static int frame_handle_event(struct BGTK_Widget* widget,
 			    widget->data.frame.child, ev);
 		}
 	}
+
 
 	// If clicked inside the frame but not on the child, focus the frame.
 	if (ev.code == BTN_LEFT && ev.value == 1) {
