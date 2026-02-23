@@ -433,13 +433,8 @@ static int scrollable_handle_event(struct BGTK_Widget* widget,
 	    widget->data.scrollable.content_height, ev.type, ev.code, ev.value,
 	    ev.x, ev.y);
 
-	// First check if the event is within the scrollable's bounds
-	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
-	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
-		return 0;  // Event not in this widget
-	}
-
 	// Keyboard events don't have meaningful pointer coordinates.
+	// Forward them to children without bounds checking.
 	if (ev.type == EV_KEY && ev.code < BTN_MISC) {
 		for (int i = 0; i < widget->data.scrollable.widget_count; i++) {
 			struct BGTK_Widget* child =
@@ -450,7 +445,13 @@ static int scrollable_handle_event(struct BGTK_Widget* widget,
 		}
 	}
 
-	// Pass event to child widgets first (if the pointer coordinates match)
+	// First check if the event is within the scrollable's bounds
+	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
+	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
+		return 0;  // Event not in this widget
+	}
+
+	// Pass event to child widget if it exists
 	// Events are absolute screen coordinates, while children in the scrollable
 	// are positioned in scrollable CONTENT coordinates.
 	// Transform the event into content-space before forwarding.
@@ -527,11 +528,6 @@ static int frame_handle_event(struct BGTK_Widget* widget,
 	    "ev{type=%d code=%d value=%d x=%d y=%d}\n",
 	    widget->type, widget->x, widget->y, widget->w, widget->h, ev.type,
 	    ev.code, ev.value, ev.x, ev.y);
-	// First check if the event is within the frame's bounds
-	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
-	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
-		return 0;  // Event not in this widget
-	}
 
 	// Keyboard events don't have meaningful pointer coordinates.
 	// Forward them to the child without bounds checking.
@@ -540,6 +536,12 @@ static int frame_handle_event(struct BGTK_Widget* widget,
 			return widget->data.frame.child->handle_event(
 			    widget->data.frame.child, ev);
 		}
+	}
+
+	// First check if the event is within the frame's bounds
+	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
+	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
+		return 0;  // Event not in this widget
 	}
 
 	// Pass event to child widget if it exists
