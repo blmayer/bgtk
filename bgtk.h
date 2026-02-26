@@ -54,6 +54,7 @@ enum BGTK_Widget_Type {
 	BGTK_WIDGET_LABEL,
 	BGTK_WIDGET_TEXT,
 	BGTK_WIDGET_SCROLLABLE,
+	BGTK_WIDGET_LIST,
 	BGTK_WIDGET_IMAGE,
 	BGTK_WIDGET_FRAME,
 	BGTK_WIDGET_TEXT_INPUT,
@@ -63,11 +64,18 @@ enum BGTK_Widget_Type {
 // Widget flags
 #define BGTK_FLAG_CENTER (1 << 0)  // Center widgets horizontally
 
+// List widget orientation
+enum BGTK_List_Orientation {
+	BGTK_LIST_VERTICAL,
+	BGTK_LIST_HORIZONTAL,
+};
+
 // BGTK_Options: Options for widget creation (replaces flags).
 typedef struct {
 	int flags;      // Flags for widget behavior (e.g., BGTK_FLAG_CENTER).
-	int padding;   // Internal spacing (pixels).
-	int margin;    // External spacing (pixels).
+	int padding;    // Internal spacing (pixels).
+	int margin;     // External spacing (pixels).
+	enum BGTK_List_Orientation orientation;  // For list widget: vertical or horizontal
 } BGTK_Options;
 
 // BGTK_Widget: Base structure for all widgets
@@ -97,33 +105,39 @@ struct BGTK_Widget {
 			char* text;
 		} text;
 		struct {
-			struct BGTK_Widget* child;
-			int border_w;
-		} frame;
+			uint32_t* pixels;  // Pixel buffer for image
+			int img_w;  // Image intrinsic width
+			int img_h;  // Image intrinsic height
+		} image;
 		struct {
 			struct BGTK_Widget** items;  // List of child widgets
 			int widget_count;
 			int widget_capacity;
 			int scroll_y;	     // Current scroll position
-			int content_height;  // Total height of all
-					     // child widgets
+			int content_height;  // Total height of all child widgets
 			uint32_t* tmp;	     // off-screen buffer
 		} scrollable;
 		struct {
-			uint32_t* pixels;  // Pixel buffer (RGBA)
-			int img_w;	   // Image width
-			int img_h;	   // Image height
-		} image;
+			struct BGTK_Widget** items;  // List of child widgets
+			int widget_count;
+			enum BGTK_List_Orientation orientation;  // vertical or horizontal
+			int content_width;   // Total width of all child widgets
+			int content_height;  // Total height of all child widgets
+		} list_widget;
 		struct {
-			char* text;           // Input text
-			uint32_t cursor_pos;  // Cursor position
-			int selection_start;  // Selection start (-1 if none)
-			int selection_end;    // Selection end (-1 if none)
-			int scroll_x;         // Horizontal pixel scroll offset (>=0)
-			BGTK_Callback on_change; // Callback for text changes
+			struct BGTK_Widget* child;
+			int border_w;
+		} frame;
+		struct {
+			char* text;
+			uint32_t cursor_pos;
+			int selection_start;
+			int selection_end;
+			int scroll_x;
+			void (*on_change)(void);
 		} text_input;
-	} data;
-};
+	} data;  // End of union
+};  // End of BGTK_Widget struct
 
 // --- Core Functions ---
 
@@ -162,5 +176,8 @@ static inline struct BGTK_Widget* bgtk_image_auto(struct BGTK_Context* ctx, cons
 struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, BGTK_Options options);
 // Creates a text input widget.
 struct BGTK_Widget* bgtk_text_input(struct BGTK_Context* ctx, char* initial_text, int width, int height, BGTK_Options options);
+
+// Creates a list widget (arranges children vertically or horizontally without scrolling).
+struct BGTK_Widget* bgtk_list(struct BGTK_Context* ctx, struct BGTK_Widget** items, int widget_count, BGTK_Options options);
 
 #endif

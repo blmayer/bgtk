@@ -19,12 +19,12 @@
 	"InputMono-Regular.ttf"
 #define DEFAULT_FONT_SIZE 12
 
-int take_screenshot(struct BGTK_Context ctx) {
+int take_screenshot(struct BGTK_Context ctx)
+{
 	if (!ctx.shm_buffer) {
 		fprintf(stderr, "No framebuffer available for screenshot.\n");
 		return -1;
 	}
-
 	// Write the framebuffer to a PNG file
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
@@ -44,10 +44,10 @@ int take_screenshot(struct BGTK_Context ctx) {
 	return 0;
 }
 
-struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
-			       int height) {
-	struct BGTK_Context* ctx =
-	    (struct BGTK_Context*)calloc(1, sizeof(struct BGTK_Context));
+struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
+{
+	struct BGTK_Context *ctx =
+	    (struct BGTK_Context *)calloc(1, sizeof(struct BGTK_Context));
 	if (!ctx) {
 		perror("calloc");
 		return NULL;
@@ -71,10 +71,10 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
 		ctx->font_size = config.font_size;
 	} else {
 		// Use defaults if config file is missing or invalid
-		ctx->theme.background = 0xAAAAAAAA;   // Default gray
-		ctx->theme.button = 0x88888888;       // Default button color
-		ctx->theme.button_text = 0xFFFFFFFF;  // Default white text
-		ctx->theme.frame_border_size = 4;     // Default frame border size
+		ctx->theme.background = 0xAAAAAAAA;	// Default gray
+		ctx->theme.button = 0x88888888;	// Default button color
+		ctx->theme.button_text = 0xFFFFFFFF;	// Default white text
+		ctx->theme.frame_border_size = 4;	// Default frame border size
 		ctx->theme.frame_border_color = 0xFFFFFFFF;
 		ctx->theme.button_border_size = 1;
 		ctx->theme.input_border_size = 1;
@@ -90,39 +90,35 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
 		free(ctx);
 		return NULL;
 	}
-
 	// 2. Load Font
 	if (FT_New_Face(ctx->ft_library, ctx->font_path, 0, &ctx->ft_face)) {
 		fprintf(stderr,
 			"bgtk_init: Could not load font %s. Falling back "
-			"to simple "
-			"drawing.\n",
-			ctx->font_path);
+			"to simple " "drawing.\n", ctx->font_path);
 		free(ctx);
 		return NULL;
 	}
-
 	// Set font size
 	FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
 
 	return ctx;
 }
 
-void bgtk_destroy(struct BGTK_Context* ctx) {
+void bgtk_destroy(struct BGTK_Context *ctx)
+{
 	if (!ctx) {
 		return;
 	}
-
 	// Free the root widget and its children recursively
 	if (ctx->root_widget) {
 		if (ctx->root_widget->type == BGTK_WIDGET_SCROLLABLE) {
 			if (ctx->root_widget->data.scrollable.items) {
 				for (int i = 0;
-				     i < ctx->root_widget->data.scrollable
-					     .widget_count;
-				     i++) {
-					free(ctx->root_widget->data.scrollable
-						 .items[i]);
+				     i <
+				     ctx->root_widget->data.scrollable.
+				     widget_count; i++) {
+					free(ctx->root_widget->data.scrollable.
+					     items[i]);
 				}
 				free(ctx->root_widget->data.scrollable.items);
 			}
@@ -131,19 +127,19 @@ void bgtk_destroy(struct BGTK_Context* ctx) {
 			}
 		} else if (ctx->root_widget->type == BGTK_WIDGET_LABEL) {
 			if (ctx->root_widget->data.label.text) {
-				free(ctx->root_widget->data.label.text->data
-					 .text.text);
+				free(ctx->root_widget->data.label.text->data.
+				     text.text);
 				free(ctx->root_widget->data.label.text);
 			}
 		} else if (ctx->root_widget->type == BGTK_WIDGET_BUTTON) {
 			if (ctx->root_widget->data.button.label) {
-				if (ctx->root_widget->data.button.label->data
-					.label.text) {
-					free(ctx->root_widget->data.button
-						 .label->data.label.text->data
-						 .text.text);
-					free(ctx->root_widget->data.button
-						 .label->data.label.text);
+				if (ctx->root_widget->data.button.label->data.
+				    label.text) {
+					free(ctx->root_widget->data.button.
+					     label->data.label.text->data.text.
+					     text);
+					free(ctx->root_widget->data.button.
+					     label->data.label.text);
 				}
 				free(ctx->root_widget->data.button.label);
 			}
@@ -152,7 +148,6 @@ void bgtk_destroy(struct BGTK_Context* ctx) {
 		}
 		free(ctx->root_widget);
 	}
-
 	// Free FreeType resources
 	if (ctx->ft_face) {
 		FT_Done_Face(ctx->ft_face);
@@ -164,7 +159,8 @@ void bgtk_destroy(struct BGTK_Context* ctx) {
 	free(ctx);
 }
 
-void bgtk_set_window_focus(struct BGTK_Context* ctx, int focused) {
+void bgtk_set_window_focus(struct BGTK_Context *ctx, int focused)
+{
 	if (!ctx) {
 		return;
 	}
@@ -176,7 +172,8 @@ void bgtk_set_window_focus(struct BGTK_Context* ctx, int focused) {
 
 // --- Drawing Primitives & Widgets ---
 
-void bgtk_draw_widgets(struct BGTK_Context* ctx) {
+void bgtk_draw_widgets(struct BGTK_Context *ctx)
+{
 	puts("[BGTK] Drawing widgets");
 	clear_buffer(ctx);
 	calculate_widget_size(ctx, ctx->root_widget);
@@ -185,7 +182,8 @@ void bgtk_draw_widgets(struct BGTK_Context* ctx) {
 }
 
 // Handles a single event and returns whether a redraw is needed.
-int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev) {
+int bgtk_handle_input_event(struct BGTK_Context *ctx, struct InputEvent ev)
+{
 	printf("[BGTK] got event from device %s type=%d\n", ev.device.name,
 	       ev.type);
 
@@ -195,12 +193,10 @@ int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev) {
 		take_screenshot(*ctx);
 		return 1;
 	}
-
 	// Start event handling from the root widget
 	if (!ctx->root_widget) {
 		return 0;
 	}
-
 	// Make a copy of the event to avoid modifying the original
 	struct InputEvent widget_ev = ev;
 

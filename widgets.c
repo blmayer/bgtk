@@ -8,13 +8,13 @@
 #include "internal.h"
 
 // Default event handler for widgets
-static int default_handle_event(struct BGTK_Widget* widget,
-				struct InputEvent ev) {
-	printf(
-	    "[BGTK][event] widget=DEFAULT type=%d pos=%d,%d size=%dx%d "
-	    "ev{type=%d code=%d value=%d x=%d y=%d}\n",
-	    widget->type, widget->x, widget->y, widget->w, widget->h, ev.type,
-	    ev.code, ev.value, ev.x, ev.y);
+static int
+default_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+{
+	printf("[BGTK][event] widget=DEFAULT type=%d pos=%d,%d size=%dx%d "
+	       "ev{type=%d code=%d value=%d x=%d y=%d}\n",
+	       widget->type, widget->x, widget->y, widget->w, widget->h,
+	       ev.type, ev.code, ev.value, ev.x, ev.y);
 	// Check if the event coordinates are within the widget's bounds
 	if (ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
 	    ev.y >= widget->y && ev.y < (widget->y + widget->h)) {
@@ -25,17 +25,16 @@ static int default_handle_event(struct BGTK_Widget* widget,
 			return 1;
 		}
 	}
-	return 0;  // Event not handled by this widget
+	return 0;		// Event not handled by this widget
 }
 
 // Button event handler
-static int button_handle_event(struct BGTK_Widget* widget,
-			       struct InputEvent ev) {
-	printf(
-	    "[BGTK][event] widget=BUTTON type=%d pos=%d,%d size=%dx%d "
-	    "ev{type=%d code=%d value=%d x=%d y=%d}\n",
-	    widget->type, widget->x, widget->y, widget->w, widget->h, ev.type,
-	    ev.code, ev.value, ev.x, ev.y);
+static int button_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+{
+	printf("[BGTK][event] widget=BUTTON type=%d pos=%d,%d size=%dx%d "
+	       "ev{type=%d code=%d value=%d x=%d y=%d}\n",
+	       widget->type, widget->x, widget->y, widget->w, widget->h,
+	       ev.type, ev.code, ev.value, ev.x, ev.y);
 
 	int inside = (ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
 		      ev.y >= widget->y && ev.y < (widget->y + widget->h));
@@ -55,7 +54,6 @@ static int button_handle_event(struct BGTK_Widget* widget,
 		}
 		return 1;
 	}
-
 	// Mouse up: always clear pressed state; only fire callback if released
 	// inside.
 	if (ev.code == BTN_LEFT && ev.value == 0) {
@@ -78,18 +76,20 @@ static int button_handle_event(struct BGTK_Widget* widget,
 		return was_pressed ? 1 : 0;
 	}
 
-	return 0;  // Event not handled by this specific handler
+	return 0;		// Event not handled by this specific handler
 }
 
 // Sets the focused widget for keyboard input.
-void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget) {
+void bgtk_set_focus(struct BGTK_Context *ctx, struct BGTK_Widget *widget)
+{
 	ctx->focused_widget = widget;
 	printf("[BGTK] Focus set to widget type: %d\n", widget->type);
 	bgtk_draw_widgets(ctx);
 }
 
 // Returns pixel width of text[0..len-1]
-static int measure_prefix_width(FT_Face face, const char* text, int len) {
+static int measure_prefix_width(FT_Face face, const char *text, int len)
+{
 	int width = 0;
 	if (!face || !text || len <= 0) {
 		return 0;
@@ -103,8 +103,10 @@ static int measure_prefix_width(FT_Face face, const char* text, int len) {
 	return width >> 6;
 }
 
-static void text_input_ensure_cursor_visible(struct BGTK_Context* ctx,
-					     struct BGTK_Widget* widget) {
+static void
+text_input_ensure_cursor_visible(struct BGTK_Context *ctx,
+				 struct BGTK_Widget *widget)
+{
 	if (!ctx || !ctx->ft_face || !widget) {
 		return;
 	}
@@ -120,7 +122,6 @@ static void text_input_ensure_cursor_visible(struct BGTK_Context* ctx,
 	if (scroll_x < 0) {
 		scroll_x = 0;
 	}
-
 	// Keep a small right-side caret margin so the cursor isn't flush.
 	int caret_margin = 2;
 
@@ -137,15 +138,14 @@ static void text_input_ensure_cursor_visible(struct BGTK_Context* ctx,
 }
 
 // Text input event handler
-static int text_input_handle_event(struct BGTK_Widget* widget,
-				   struct InputEvent ev) {
-	printf(
-	    "[BGTK][event] widget=TEXT_INPUT type=%d pos=%d,%d size=%dx%d "
-	    "focused=%s ev{type=%d code=%d value=%d x=%d y=%d}\n",
-	    widget->type, widget->x, widget->y, widget->w, widget->h,
-	    (widget->ctx && widget->ctx->focused_widget == widget) ? "yes"
-								   : "no",
-	    ev.type, ev.code, ev.value, ev.x, ev.y);
+static int
+text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+{
+	printf("[BGTK][event] widget=TEXT_INPUT type=%d pos=%d,%d size=%dx%d "
+	       "focused=%s ev{type=%d code=%d value=%d x=%d y=%d}\n",
+	       widget->type, widget->x, widget->y, widget->w, widget->h,
+	       (widget->ctx && widget->ctx->focused_widget == widget) ? "yes"
+	       : "no", ev.type, ev.code, ev.value, ev.x, ev.y);
 
 	// First check if the click is within the text input's bounds.
 	// For non-pointer events (keyboard), coordinates may be 0/undefined,
@@ -154,9 +154,9 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
 		if (ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
 		    ev.y >= widget->y && ev.y < (widget->y + widget->h)) {
 			bgtk_set_focus(widget->ctx, widget);
-			return 1;  // Event handled
+			return 1;	// Event handled
 		}
-		return 0;  // Event not in this widget
+		return 0;	// Event not in this widget
 	}
 
 	int focused = (widget->ctx && widget->ctx->focused_widget == widget);
@@ -165,7 +165,6 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
 	if (!focused) {
 		return 0;
 	}
-
 	// Handle keyboard events
 	if (ev.type == EV_KEY && ev.value == 1) {
 		// Translate linux input key codes to ASCII where possible.
@@ -173,153 +172,153 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
 		// matches ASCII ordering, so do explicit mapping.
 		char ascii = 0;
 		switch (ev.code) {
-			case KEY_A:
-				ascii = 'a';
-				break;
-			case KEY_B:
-				ascii = 'b';
-				break;
-			case KEY_C:
-				ascii = 'c';
-				break;
-			case KEY_D:
-				ascii = 'd';
-				break;
-			case KEY_E:
-				ascii = 'e';
-				break;
-			case KEY_F:
-				ascii = 'f';
-				break;
-			case KEY_G:
-				ascii = 'g';
-				break;
-			case KEY_H:
-				ascii = 'h';
-				break;
-			case KEY_I:
-				ascii = 'i';
-				break;
-			case KEY_J:
-				ascii = 'j';
-				break;
-			case KEY_K:
-				ascii = 'k';
-				break;
-			case KEY_L:
-				ascii = 'l';
-				break;
-			case KEY_M:
-				ascii = 'm';
-				break;
-			case KEY_N:
-				ascii = 'n';
-				break;
-			case KEY_O:
-				ascii = 'o';
-				break;
-			case KEY_P:
-				ascii = 'p';
-				break;
-			case KEY_Q:
-				ascii = 'q';
-				break;
-			case KEY_R:
-				ascii = 'r';
-				break;
-			case KEY_S:
-				ascii = 's';
-				break;
-			case KEY_T:
-				ascii = 't';
-				break;
-			case KEY_U:
-				ascii = 'u';
-				break;
-			case KEY_V:
-				ascii = 'v';
-				break;
-			case KEY_W:
-				ascii = 'w';
-				break;
-			case KEY_X:
-				ascii = 'x';
-				break;
-			case KEY_Y:
-				ascii = 'y';
-				break;
-			case KEY_Z:
-				ascii = 'z';
-				break;
-			case KEY_1:
-				ascii = '1';
-				break;
-			case KEY_2:
-				ascii = '2';
-				break;
-			case KEY_3:
-				ascii = '3';
-				break;
-			case KEY_4:
-				ascii = '4';
-				break;
-			case KEY_5:
-				ascii = '5';
-				break;
-			case KEY_6:
-				ascii = '6';
-				break;
-			case KEY_7:
-				ascii = '7';
-				break;
-			case KEY_8:
-				ascii = '8';
-				break;
-			case KEY_9:
-				ascii = '9';
-				break;
-			case KEY_0:
-				ascii = '0';
-				break;
-			case KEY_SPACE:
-				ascii = ' ';
-				break;
-			case KEY_MINUS:
-				ascii = '-';
-				break;
-			case KEY_EQUAL:
-				ascii = '=';
-				break;
-			case KEY_LEFTBRACE:
-				ascii = '[';
-				break;
-			case KEY_RIGHTBRACE:
-				ascii = ']';
-				break;
-			case KEY_BACKSLASH:
-				ascii = '\\';
-				break;
-			case KEY_SEMICOLON:
-				ascii = ';';
-				break;
-			case KEY_APOSTROPHE:
-				ascii = '\'';
-				break;
-			case KEY_COMMA:
-				ascii = ',';
-				break;
-			case KEY_DOT:
-				ascii = '.';
-				break;
-			case KEY_SLASH:
-				ascii = '/';
-				break;
-			default:
-				break;
+		case KEY_A:
+			ascii = 'a';
+			break;
+		case KEY_B:
+			ascii = 'b';
+			break;
+		case KEY_C:
+			ascii = 'c';
+			break;
+		case KEY_D:
+			ascii = 'd';
+			break;
+		case KEY_E:
+			ascii = 'e';
+			break;
+		case KEY_F:
+			ascii = 'f';
+			break;
+		case KEY_G:
+			ascii = 'g';
+			break;
+		case KEY_H:
+			ascii = 'h';
+			break;
+		case KEY_I:
+			ascii = 'i';
+			break;
+		case KEY_J:
+			ascii = 'j';
+			break;
+		case KEY_K:
+			ascii = 'k';
+			break;
+		case KEY_L:
+			ascii = 'l';
+			break;
+		case KEY_M:
+			ascii = 'm';
+			break;
+		case KEY_N:
+			ascii = 'n';
+			break;
+		case KEY_O:
+			ascii = 'o';
+			break;
+		case KEY_P:
+			ascii = 'p';
+			break;
+		case KEY_Q:
+			ascii = 'q';
+			break;
+		case KEY_R:
+			ascii = 'r';
+			break;
+		case KEY_S:
+			ascii = 's';
+			break;
+		case KEY_T:
+			ascii = 't';
+			break;
+		case KEY_U:
+			ascii = 'u';
+			break;
+		case KEY_V:
+			ascii = 'v';
+			break;
+		case KEY_W:
+			ascii = 'w';
+			break;
+		case KEY_X:
+			ascii = 'x';
+			break;
+		case KEY_Y:
+			ascii = 'y';
+			break;
+		case KEY_Z:
+			ascii = 'z';
+			break;
+		case KEY_1:
+			ascii = '1';
+			break;
+		case KEY_2:
+			ascii = '2';
+			break;
+		case KEY_3:
+			ascii = '3';
+			break;
+		case KEY_4:
+			ascii = '4';
+			break;
+		case KEY_5:
+			ascii = '5';
+			break;
+		case KEY_6:
+			ascii = '6';
+			break;
+		case KEY_7:
+			ascii = '7';
+			break;
+		case KEY_8:
+			ascii = '8';
+			break;
+		case KEY_9:
+			ascii = '9';
+			break;
+		case KEY_0:
+			ascii = '0';
+			break;
+		case KEY_SPACE:
+			ascii = ' ';
+			break;
+		case KEY_MINUS:
+			ascii = '-';
+			break;
+		case KEY_EQUAL:
+			ascii = '=';
+			break;
+		case KEY_LEFTBRACE:
+			ascii = '[';
+			break;
+		case KEY_RIGHTBRACE:
+			ascii = ']';
+			break;
+		case KEY_BACKSLASH:
+			ascii = '\\';
+			break;
+		case KEY_SEMICOLON:
+			ascii = ';';
+			break;
+		case KEY_APOSTROPHE:
+			ascii = '\'';
+			break;
+		case KEY_COMMA:
+			ascii = ',';
+			break;
+		case KEY_DOT:
+			ascii = '.';
+			break;
+		case KEY_SLASH:
+			ascii = '/';
+			break;
+		default:
+			break;
 		}
 		if (ascii) {
 			// Insert character at cursor_pos
-			char* text = widget->data.text_input.text;
+			char *text = widget->data.text_input.text;
 			int cursor = widget->data.text_input.cursor_pos;
 			int len = strlen(text);
 
@@ -342,12 +341,11 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
 				bgtk_draw_widgets(widget->ctx);
 			}
 
-			return 1;  // Event handled
+			return 1;	// Event handled
 		}
-
 		// Handle backspace
 		if (ev.code == KEY_BACKSPACE) {
-			char* text = widget->data.text_input.text;
+			char *text = widget->data.text_input.text;
 			int cursor = widget->data.text_input.cursor_pos;
 			if (cursor > 0) {
 				memmove(&text[cursor - 1], &text[cursor],
@@ -363,13 +361,12 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
 					bgtk_draw_widgets(widget->ctx);
 				}
 
-				return 1;  // Event handled
+				return 1;	// Event handled
 			}
 		}
-
 		// Handle delete
 		if (ev.code == KEY_DELETE) {
-			char* text = widget->data.text_input.text;
+			char *text = widget->data.text_input.text;
 			uint32_t cursor = widget->data.text_input.cursor_pos;
 			if (cursor < strlen(text)) {
 				memmove(&text[cursor], &text[cursor + 1],
@@ -384,10 +381,9 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
 					bgtk_draw_widgets(widget->ctx);
 				}
 
-				return 1;  // Event handled
+				return 1;	// Event handled
 			}
 		}
-
 		// Handle arrow keys (cursor movement)
 		if (ev.code == KEY_LEFT || ev.code == KEY_RIGHT) {
 			int cursor = widget->data.text_input.cursor_pos;
@@ -397,70 +393,67 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
 			if (ev.code == KEY_LEFT || ev.code == KEY_RIGHT) {
 				if (ev.code == KEY_LEFT && cursor > 0) {
 					widget->data.text_input.cursor_pos--;
-					text_input_ensure_cursor_visible(
-					    widget->ctx, widget);
+					text_input_ensure_cursor_visible
+					    (widget->ctx, widget);
 					if (widget->ctx) {
 						bgtk_draw_widgets(widget->ctx);
 					}
-					return 1;  // Event handled
-				} else if (ev.code == KEY_RIGHT &&
-					   cursor < len) {
+					return 1;	// Event handled
+				} else if (ev.code == KEY_RIGHT && cursor < len) {
 					widget->data.text_input.cursor_pos++;
-					text_input_ensure_cursor_visible(
-					    widget->ctx, widget);
+					text_input_ensure_cursor_visible
+					    (widget->ctx, widget);
 					if (widget->ctx) {
 						bgtk_draw_widgets(widget->ctx);
 					}
-					return 1;  // Event handled
+					return 1;	// Event handled
 				}
 			}
 		}
 	}
 
-	return 0;  // Event not handled by this specific handler
+	return 0;		// Event not handled by this specific handler
 }
 
 // Scrollable event handler
-static int scrollable_handle_event(struct BGTK_Widget* widget,
-				   struct InputEvent ev) {
-	printf(
-	    "[BGTK][event] widget=SCROLLABLE type=%d pos=%d,%d "
-	    "size=%dx%d "
-	    "scroll_y=%d content_h=%d ev{type=%d code=%d value=%d x=%d "
-	    "y=%d}\n",
-	    widget->type, widget->x, widget->y, widget->w, widget->h,
-	    widget->data.scrollable.scroll_y,
-	    widget->data.scrollable.content_height, ev.type, ev.code, ev.value,
-	    ev.x, ev.y);
+static int
+scrollable_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+{
+	printf("[BGTK][event] widget=SCROLLABLE type=%d pos=%d,%d "
+	       "size=%dx%d "
+	       "scroll_y=%d content_h=%d ev{type=%d code=%d value=%d x=%d "
+	       "y=%d}\n",
+	       widget->type, widget->x, widget->y, widget->w, widget->h,
+	       widget->data.scrollable.scroll_y,
+	       widget->data.scrollable.content_height, ev.type, ev.code,
+	       ev.value, ev.x, ev.y);
 
 	// Keyboard events don't have meaningful pointer coordinates.
 	// Forward them to children without bounds checking.
 	if (ev.type == EV_KEY && ev.code < BTN_MISC) {
 		for (int i = 0; i < widget->data.scrollable.widget_count; i++) {
-			struct BGTK_Widget* child =
+			struct BGTK_Widget *child =
 			    widget->data.scrollable.items[i];
 			if (child->handle_event(child, ev)) {
-				return 1;  // Event was handled by a child
+				return 1;	// Event was handled by a child
 			}
 		}
 	}
-
 	// First check if the event is within the scrollable's bounds
 	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
 	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
-		return 0;  // Event not in this widget
+		return 0;	// Event not in this widget
 	}
-
 	// Pass event to child widget if it exists
-	// Events are absolute screen coordinates, while children in the scrollable
-	// are positioned in scrollable CONTENT coordinates.
+	// Events are absolute screen coordinates, while children in the
+	// scrollable are positioned in scrollable CONTENT coordinates.
 	// Transform the event into content-space before forwarding.
 	struct InputEvent cev = ev;
 	cev.x = ev.x - widget->x;
 	cev.y = ev.y - widget->y + widget->data.scrollable.scroll_y;
 
 	for (int i = 0; i < widget->data.scrollable.widget_count; i++) {
-		struct BGTK_Widget* child = widget->data.scrollable.items[i];
+		struct BGTK_Widget *child = widget->data.scrollable.items[i];
 
 		if (!(cev.x >= child->x && cev.x < child->x + child->w &&
 		      cev.y >= child->y && cev.y < child->y + child->h)) {
@@ -468,11 +461,10 @@ static int scrollable_handle_event(struct BGTK_Widget* widget,
 		}
 
 		if (child->handle_event(child, cev)) {
-			return 1;  // Event was handled by a child
+			return 1;	// Event was handled by a child
 		}
-
-		// Coordinates matched this child, but it didn't handle the event.
-		// The scrollable should now try to handle it.
+		// Coordinates matched this child, but it didn't handle the
+		// event. The scrollable should now try to handle it.
 		break;
 	}
 
@@ -481,8 +473,7 @@ static int scrollable_handle_event(struct BGTK_Widget* widget,
 	if (ev.type == EV_REL && ev.code == REL_WHEEL) {
 		int old_scroll_y = widget->data.scrollable.scroll_y;
 
-		widget->data.scrollable.scroll_y -=
-		    ev.value * 10;  // Scroll speed
+		widget->data.scrollable.scroll_y -= ev.value * 10;	// Scroll speed
 
 		// Clamp scroll_y to valid range
 		if (widget->data.scrollable.scroll_y < 0) {
@@ -498,18 +489,16 @@ static int scrollable_handle_event(struct BGTK_Widget* widget,
 		}
 
 		if (widget->data.scrollable.scroll_y == old_scroll_y) {
-			return 0;  // Nothing changed; avoid needless
-				   // redraw/blink
+			return 0;	// Nothing changed; avoid needless
+			// redraw/blink
 		}
 
-		printf(
-		    "[BGTK][event] widget=SCROLLABLE scrolled "
-		    "scroll_y=%d\n",
-		    widget->data.scrollable.scroll_y);
+		printf("[BGTK][event] widget=SCROLLABLE scrolled "
+		       "scroll_y=%d\n", widget->data.scrollable.scroll_y);
 		if (widget->ctx) {
 			bgtk_draw_widgets(widget->ctx);
 		}
-		return 1;  // Event handled
+		return 1;	// Event handled
 	}
 
 	if (ev.code == BTN_LEFT && ev.value == 1) {
@@ -517,67 +506,67 @@ static int scrollable_handle_event(struct BGTK_Widget* widget,
 		return 1;
 	}
 
-	return 0;  // Event not handled
+	return 0;		// Event not handled
 }
 
 // Frame event handler
-static int frame_handle_event(struct BGTK_Widget* widget,
-			      struct InputEvent ev) {
-	printf(
-	    "[BGTK][event] widget=FRAME type=%d pos=%d,%d size=%dx%d "
-	    "ev{type=%d code=%d value=%d x=%d y=%d}\n",
-	    widget->type, widget->x, widget->y, widget->w, widget->h, ev.type,
-	    ev.code, ev.value, ev.x, ev.y);
+static int frame_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+{
+	printf("[BGTK][event] widget=FRAME type=%d pos=%d,%d size=%dx%d "
+	       "ev{type=%d code=%d value=%d x=%d y=%d}\n",
+	       widget->type, widget->x, widget->y, widget->w, widget->h,
+	       ev.type, ev.code, ev.value, ev.x, ev.y);
 
 	// Keyboard events don't have meaningful pointer coordinates.
 	// Forward them to the child without bounds checking.
 	if (ev.type == EV_KEY) {
 		if (widget->data.frame.child) {
-			return widget->data.frame.child->handle_event(
-			    widget->data.frame.child, ev);
+			return widget->data.frame.child->handle_event(widget->
+								      data.
+								      frame.
+								      child,
+								      ev);
 		}
 	}
-
 	// First check if the event is within the frame's bounds
 	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
 	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
-		return 0;  // Event not in this widget
+		return 0;	// Event not in this widget
 	}
-
 	// Pass event to child widget if it exists
 	if (widget->data.frame.child) {
 		// Events use absolute coordinates.
-		// Only forward to the child if the event is within the child's absolute bounds.
+		// Only forward to the child if the event is within the child's
+		// absolute bounds.
 		int cx0 = widget->data.frame.child->x;
 		int cy0 = widget->data.frame.child->y;
 		int cx1 = cx0 + widget->data.frame.child->w;
 		int cy1 = cy0 + widget->data.frame.child->h;
 
 		if (ev.x >= cx0 && ev.x < cx1 && ev.y >= cy0 && ev.y < cy1) {
-			return widget->data.frame.child->handle_event(
-			    widget->data.frame.child, ev);
+			return widget->data.frame.child->handle_event(widget->
+								      data.
+								      frame.
+								      child,
+								      ev);
 		}
 	}
-
-
 	// If clicked inside the frame but not on the child, focus the frame.
 	if (ev.code == BTN_LEFT && ev.value == 1) {
 		bgtk_set_focus(widget->ctx, widget);
 		return 1;
 	}
 
-	return 0;  // Event not handled
-
+	return 0;		// Event not handled
 }
 
-
-
 // Helper to create a generic widget
-static struct BGTK_Widget* widget_new(struct BGTK_Context* ctx,
+static struct BGTK_Widget *widget_new(struct BGTK_Context *ctx,
 				      enum BGTK_Widget_Type type,
-				      BGTK_Options options) {
-	struct BGTK_Widget* widget =
-	    (struct BGTK_Widget*)calloc(1, sizeof(struct BGTK_Widget));
+				      BGTK_Options options)
+{
+	struct BGTK_Widget *widget =
+	    (struct BGTK_Widget *)calloc(1, sizeof(struct BGTK_Widget));
 	if (!widget) {
 		perror("calloc");
 		return NULL;
@@ -587,6 +576,8 @@ static struct BGTK_Widget* widget_new(struct BGTK_Context* ctx,
 	widget->flags = options.flags;
 	widget->padding = options.padding;
 	widget->margin = options.margin;
+	widget->w = 0;
+	widget->h = 0;
 
 	// Set the default event handler
 	widget->handle_event = default_handle_event;
@@ -594,20 +585,18 @@ static struct BGTK_Widget* widget_new(struct BGTK_Context* ctx,
 	return widget;
 }
 
-void set_label(struct BGTK_Widget* widget, char* label) {
+void set_label(struct BGTK_Widget *widget, char *label)
+{
 	printf("BGTK: setting label: %s\n", label);
 	if (widget->data.label.text) {
 		free(widget->data.label.text->data.text.text);
 		free(widget->data.label.text);
 	}
-
 	// Create a new text widget for the label
-	struct BGTK_Widget* text_widget =
-	    bgtk_text(widget->ctx, label, (BGTK_Options){.flags = 0});
+	struct BGTK_Widget *text_widget =
+	    bgtk_text(widget->ctx, label, (BGTK_Options) {.flags = 0 });
 	if (!text_widget) {
-		perror(
-		    "BGTK Failed to create text widget for "
-		    "label");
+		perror("BGTK Failed to create text widget for " "label");
 		return;
 	}
 
@@ -620,9 +609,10 @@ void set_label(struct BGTK_Widget* widget, char* label) {
 	printf("BGTK label set\n");
 }
 
-struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text,
-			       BGTK_Options options) {
-	struct BGTK_Widget* widget =
+struct BGTK_Widget *bgtk_label(struct BGTK_Context *ctx, char *text,
+			       BGTK_Options options)
+{
+	struct BGTK_Widget *widget =
 	    widget_new(ctx, BGTK_WIDGET_LABEL, options);
 	printf("BGTK allocated label\n");
 	if (!widget) {
@@ -633,12 +623,10 @@ struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text,
 	widget->data.label.set_label = set_label;
 
 	// Create a text widget for the label
-	struct BGTK_Widget* text_widget =
-	    bgtk_text(ctx, text, (BGTK_Options){.flags = 0});
+	struct BGTK_Widget *text_widget =
+	    bgtk_text(ctx, text, (BGTK_Options) {.flags = 0 });
 	if (!text_widget) {
-		perror(
-		    "BGTK Failed to create text widget for "
-		    "label");
+		perror("BGTK Failed to create text widget for " "label");
 		free(widget);
 		return NULL;
 	}
@@ -651,17 +639,18 @@ struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text,
 	return widget;
 }
 
-struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text,
-			      BGTK_Options options) {
+struct BGTK_Widget *bgtk_text(struct BGTK_Context *ctx, char *text,
+			      BGTK_Options options)
+{
 	printf("BGTK creating text widget\n");
-	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_TEXT, options);
+	struct BGTK_Widget *widget = widget_new(ctx, BGTK_WIDGET_TEXT, options);
 	printf("BGTK allocated text widget\n");
 	if (!widget) {
 		perror("BGTK Failed to create new widget");
 		return NULL;
 	}
 
-	char* ptr = calloc(1, strlen(text) + 1);
+	char *ptr = calloc(1, strlen(text) + 1);
 	sprintf(ptr, "%s", text);
 	widget->data.text.text = ptr;
 
@@ -675,11 +664,12 @@ struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text,
 	return widget;
 }
 
-struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
-				struct BGTK_Widget* label,
-				BGTK_Callback callback, BGTK_Options options) {
+struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,
+				struct BGTK_Widget *label,
+				BGTK_Callback callback, BGTK_Options options)
+{
 	printf("BGTK creating button widget\n");
-	struct BGTK_Widget* widget =
+	struct BGTK_Widget *widget =
 	    widget_new(ctx, BGTK_WIDGET_BUTTON, options);
 	if (!widget) {
 		perror("BGTK Failed to create new widget");
@@ -700,39 +690,37 @@ struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
 	return widget;
 }
 
-struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
-				    struct BGTK_Widget** items,
-				    int widget_count, BGTK_Options options) {
+struct BGTK_Widget *bgtk_scrollable(struct BGTK_Context *ctx,
+				    struct BGTK_Widget **items,
+				    int widget_count, BGTK_Options options)
+{
 	printf("BGTK creating scrollable widget\n");
-	struct BGTK_Widget* widget =
+	struct BGTK_Widget *widget =
 	    widget_new(ctx, BGTK_WIDGET_SCROLLABLE, options);
 	if (!widget) {
 		perror("BGTK Failed to create scrollable widget");
 		return NULL;
 	}
 
-	widget->data.scrollable.items = (struct BGTK_Widget**)calloc(
-	    widget_count, sizeof(struct BGTK_Widget*));
+	widget->data.scrollable.items =
+	    (struct BGTK_Widget **)calloc(widget_count,
+					  sizeof(struct BGTK_Widget *));
 	if (!widget->data.scrollable.items) {
 		perror("calloc");
 		free(widget);
 		return NULL;
 	}
-
 	// Copy the input widgets into the scrollable container
 	widget->data.scrollable.widget_count = widget_count;
 	widget->data.scrollable.scroll_y = 0;
 	widget->data.scrollable.content_height = 0;
 	for (int i = 0; i < widget_count; i++) {
 		widget->data.scrollable.items[i] = items[i];
-		widget->data.scrollable.content_height +=
-		    items[i]->h + 5 +
-		    2 * widget->margin;	 // 5px spacing + margin
+		widget->data.scrollable.content_height += items[i]->h + 5 + 2 * widget->margin;	// 5px spacing + margin
 	}
 
 	// Initialize tmp buffer to NULL, it will be allocated during drawing
 	widget->data.scrollable.tmp = NULL;
-
 	// Override the default event handler with scrollable-specific one
 	widget->handle_event = scrollable_handle_event;
 
@@ -741,15 +729,131 @@ struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
 	return widget;
 }
 
-struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
-			       int width, int height, BGTK_Options options) {
-	struct BGTK_Widget* widget =
+// List widget event handler (no scrolling - just passes events to children)
+static int
+list_widget_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+{
+	printf("[BGTK][event] widget=LIST type=%d pos=%d,%d size=%dx%d "
+	       "orientation=%d ev{type=%d code=%d value=%d x=%d y=%d}\n",
+	       widget->type, widget->x, widget->y, widget->w, widget->h,
+	       widget->data.list_widget.orientation, ev.type, ev.code, ev.value,
+	       ev.x, ev.y);
+
+	// Keyboard events don't have meaningful pointer coordinates.
+	// Forward them to children without bounds checking.
+	if (ev.type == EV_KEY && ev.code < BTN_MISC) {
+		for (int i = 0; i < widget->data.list_widget.widget_count; i++) {
+			struct BGTK_Widget *child =
+			    widget->data.list_widget.items[i];
+			if (child->handle_event(child, ev)) {
+				return 1;	// Event was handled by a child
+			}
+		}
+	}
+	// First check if the event is within the list's bounds
+	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
+	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
+		return 0;	// Event not in this widget
+	}
+	// Pass event to child widget if it exists
+	// Events use absolute coordinates.
+	for (int i = 0; i < widget->data.list_widget.widget_count; i++) {
+		struct BGTK_Widget *child = widget->data.list_widget.items[i];
+
+		if (!(ev.x >= child->x && ev.x < child->x + child->w &&
+		      ev.y >= child->y && ev.y < child->y + child->h)) {
+			continue;
+		}
+
+		if (child->handle_event(child, ev)) {
+			return 1;	// Event was handled by a child
+		}
+		// Coordinates matched this child, but it didn't handle the
+		// event.
+		break;
+	}
+
+	if (ev.code == BTN_LEFT && ev.value == 1) {
+		bgtk_set_focus(widget->ctx, widget);
+		return 1;
+	}
+
+	return 0;		// Event not handled
+}
+
+struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
+			      struct BGTK_Widget **items, int widget_count,
+			      BGTK_Options options)
+{
+	printf("BGTK creating list widget\n");
+	struct BGTK_Widget *widget = widget_new(ctx, BGTK_WIDGET_LIST, options);
+	if (!widget) {
+		perror("BGTK Failed to create list widget");
+		return NULL;
+	}
+
+	widget->data.list_widget.items =
+	    (struct BGTK_Widget **)calloc(widget_count,
+					  sizeof(struct BGTK_Widget *));
+	if (!widget->data.list_widget.items) {
+		perror("calloc");
+		free(widget);
+		return NULL;
+	}
+	// Copy the input widgets into the list container
+	widget->data.list_widget.widget_count = widget_count;
+	widget->data.list_widget.orientation = options.orientation;
+
+	// Calculate content dimensions based on orientation
+	int max_width = 0;
+	int max_height = 0;
+	for (int i = 0; i < widget_count; i++) {
+		widget->data.list_widget.items[i] = items[i];
+		if (options.orientation == BGTK_LIST_VERTICAL) {
+			widget->h += items[i]->h + 2 * widget->margin;
+			if (items[i]->w > max_width) {
+				max_width = items[i]->w;
+			}
+		} else {	// BGTK_LIST_HORIZONTAL
+			widget->w += items[i]->w + 2 * widget->margin;
+			if (items[i]->h > max_height) {
+				max_height = items[i]->h;
+			}
+		}
+	}
+
+	// Remove the last margin (no margin after the last widget)
+	if (widget_count > 0) {
+		if (options.orientation == BGTK_LIST_VERTICAL) {
+			widget->h -= 2 * widget->margin;
+		} else {
+			widget->w -= 2 * widget->margin;
+		}
+	}
+	// Use max dimensions for the other axis
+	if (options.orientation == BGTK_LIST_VERTICAL) {
+		widget->w = max_width;
+	} else {
+		widget->h = max_height;
+	}
+
+	// Override the default event handler with list-specific one
+	widget->handle_event = list_widget_handle_event;
+
+	printf("BGTK allocated list widget\n");
+
+	return widget;
+}
+
+struct BGTK_Widget *bgtk_image(struct BGTK_Context *ctx, const char *path,
+			       int width, int height, BGTK_Options options)
+{
+	struct BGTK_Widget *widget =
 	    widget_new(ctx, BGTK_WIDGET_IMAGE, options);
 	if (!widget) {
 		perror("BGTK Failed to create image widget");
 		return NULL;
 	}
-
 	// Set requested widget size (outer size). If a dimension is 0, we will
 	// fill it from the image's intrinsic size once loaded.
 	widget->w = width;
@@ -758,7 +862,6 @@ struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
 	if (!path) {
 		return widget;
 	}
-
 	// Load the image into a pixel buffer
 	load_image(path, &widget->data.image.pixels, &widget->data.image.img_w,
 		   &widget->data.image.img_h);
@@ -767,20 +870,21 @@ struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
 	// explicitly provided.
 	if (widget->w == 0) {
 		widget->w = widget->data.image.img_w +
-			    2 * (widget->padding + widget->margin);
+		    2 * (widget->padding + widget->margin);
 	}
 	if (widget->h == 0) {
 		widget->h = widget->data.image.img_h +
-			    2 * (widget->padding + widget->margin);
+		    2 * (widget->padding + widget->margin);
 	}
 
 	return widget;
 }
 
-struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx,
-			       struct BGTK_Widget* child, int width, int height,
-			       BGTK_Options options) {
-	struct BGTK_Widget* frame = widget_new(ctx, BGTK_WIDGET_FRAME, options);
+struct BGTK_Widget *bgtk_frame(struct BGTK_Context *ctx,
+			       struct BGTK_Widget *child, int width, int height,
+			       BGTK_Options options)
+{
+	struct BGTK_Widget *frame = widget_new(ctx, BGTK_WIDGET_FRAME, options);
 	if (!frame) {
 		perror("BGTK Failed to create frame widget");
 		return NULL;
@@ -799,17 +903,17 @@ struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx,
 }
 
 // Creates a text input widget.
-struct BGTK_Widget* bgtk_text_input(struct BGTK_Context* ctx,
-				    char* initial_text, int width, int height,
-				    BGTK_Options options) {
+struct BGTK_Widget *bgtk_text_input(struct BGTK_Context *ctx,
+				    char *initial_text, int width, int height,
+				    BGTK_Options options)
+{
 	printf("BGTK creating text input widget\n");
-	struct BGTK_Widget* widget =
+	struct BGTK_Widget *widget =
 	    widget_new(ctx, BGTK_WIDGET_TEXT_INPUT, options);
 	if (!widget) {
 		perror("BGTK Failed to create text input widget");
 		return NULL;
 	}
-
 	// Initialize text input data
 	widget->data.text_input.text = strdup(initial_text ? initial_text : "");
 	widget->data.text_input.cursor_pos =
@@ -832,7 +936,7 @@ struct BGTK_Widget* bgtk_text_input(struct BGTK_Context* ctx,
 	if (inner_w == 0 || inner_h == 0) {
 		int text_w = 0;
 		int text_h = 0;
-		const char* sample = widget->data.text_input.text;
+		const char *sample = widget->data.text_input.text;
 		// For empty text, measure a single space so height is non-zero.
 		if (!sample || sample[0] == '\0') {
 			sample = " ";
@@ -844,8 +948,8 @@ struct BGTK_Widget* bgtk_text_input(struct BGTK_Context* ctx,
 			measure_text(ctx->ft_face, sample, &text_w, &text_h);
 		} else {
 			// Fallback: approximate.
-			text_h =
-			    (ctx && ctx->font_size > 0) ? ctx->font_size : 16;
+			text_h = (ctx
+				  && ctx->font_size > 0) ? ctx->font_size : 16;
 			text_w = (int)strlen(sample) * (text_h / 2);
 			if (text_w < 1) {
 				text_w = 1;
