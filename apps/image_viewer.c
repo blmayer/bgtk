@@ -8,6 +8,7 @@
 static struct BGTK_Context* ctx = NULL;
 static struct BGTK_Widget* text_input = NULL;
 static struct BGTK_Widget* image_widget = NULL;
+static struct BGTK_Widget* col = NULL;  // Parent list widget
 
 static void load_button_clicked(void) {
 	if (!ctx || !text_input || text_input->type != BGTK_WIDGET_TEXT_INPUT) {
@@ -21,15 +22,17 @@ static void load_button_clicked(void) {
 	}
 
 	struct BGTK_Widget* new_image = bgtk_image(ctx,
-						   path,
-						   800,
-						   520,
-						   (BGTK_Options){
-						       .flags = 0,
-						       .padding = 5,
-						       .margin = 2,
-						   });
+					   path,
+					   800,
+					   520,
+					   (BGTK_Options){
+					       .flags = 0,
+					       .padding = 5,
+					       .margin = 2,
+					   });
 	if (new_image) {
+		// Replace pointer in parent list before freeing old widget
+		col->data.list_widget.items[1] = new_image;
 		free(image_widget);
 		image_widget = new_image;
 	}
@@ -118,8 +121,7 @@ int main(void) {
 
 	struct BGTK_Widget* col_widgets[2] = {row, image_widget};
 
-	struct BGTK_Widget* col =
-	    bgtk_list(ctx,
+	col = bgtk_list(ctx,
 		      col_widgets,
 		      2,
 		      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL});
