@@ -442,10 +442,9 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		    calloc(w->w * content_height, sizeof(uint32_t));
 		if (!w->data.scrollable.tmp) {
 			fprintf(stderr,
-				"Failed to allocate off-screen " "buffer\n");
+				"Failed to allocate off-screen buffer\n");
 			return;
 		}
-		printf("allocated temp buffer %ux%u\n", w->w, content_height);
 	}
 	// Draw into temp buffer with correct stride.
 	struct BGTK_Context tmp_ctx = *ctx;

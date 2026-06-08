@@ -3,7 +3,7 @@
 CFLAGS = -Wall -Wextra -Werror -I. -I/usr/include/freetype2 -fPIC
 LDFLAGS = -lfreetype -lbgce -lm
 
-TARGET = libbgtk.so test_app image_viewer
+TARGET = libbgtk.so test_app image_viewer launcher
 INSTALL_LIB = /usr/lib
 INSTALL_INCLUDE = /usr/include
 
@@ -11,6 +11,7 @@ SRC = bgtk.c drawing.c widgets.c config.c
 LIB_OBJS = bgtk.o drawing.o widgets.o config.o
 TEST_APP_OBJ = apps/test_app.o
 IMAGE_VIEWER_OBJ = apps/image_viewer.o
+LAUNCHER_OBJ = apps/launcher.o
 
 
 .PHONY: all clean test
@@ -26,12 +27,15 @@ test_app: $(TEST_APP_OBJ) $(LIB_OBJS)
 image_viewer: $(IMAGE_VIEWER_OBJ) $(LIB_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
+launcher: $(LAUNCHER_OBJ) $(LIB_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(TARGET) $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ)
+	rm -f $(TARGET) $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ)
 
 
 .PHONY: install

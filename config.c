@@ -117,7 +117,6 @@ int parse_config(struct config *config)
 				   config->type == BG_IMAGE) {
 				if (strcmp(value, "tiled") == 0) {
 					config->mode = IMAGE_TILED;
-					printf("[BGTK] image tiled\n");
 				} else if (strcmp(value, "scaled") == 0) {
 					config->mode = IMAGE_SCALED;
 				}

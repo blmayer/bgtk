@@ -37,6 +37,9 @@ struct BGTK_Context {
 	// Whether the window/surface is focused according to the server.
 	// 0 = unfocused, 1 = focused.
 	int window_focused;
+
+	// Modifier state for text input (uppercase etc).
+	int shift_held;
 };
 
 
@@ -135,6 +138,8 @@ struct BGTK_Widget {
 			int selection_end;
 			int scroll_x;
 			void (*on_change)(void);
+			void (*on_tab)(void);
+			void (*on_enter)(void);
 		} text_input;
 	} data;  // End of union
 };  // End of BGTK_Widget struct

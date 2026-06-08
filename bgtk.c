@@ -60,6 +60,7 @@ struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
 	ctx->height = height;
 	ctx->root_widget = NULL;
 	ctx->window_focused = 1;
+	ctx->shift_held = 0;
 
 	// Load config file
 	struct config config;
@@ -104,49 +105,17 @@ struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
 	return ctx;
 }
 
+static void destroy_widget(struct BGTK_Widget *w);
+
 void bgtk_destroy(struct BGTK_Context *ctx)
 {
 	if (!ctx) {
 		return;
 	}
-	// Free the root widget and its children recursively
 	if (ctx->root_widget) {
-		if (ctx->root_widget->type == BGTK_WIDGET_SCROLLABLE) {
-			if (ctx->root_widget->data.scrollable.items) {
-				for (int i = 0;
-				     i <
-				     ctx->root_widget->data.scrollable.
-				     widget_count; i++) {
-					free(ctx->root_widget->data.scrollable.
-					     items[i]);
-				}
-				free(ctx->root_widget->data.scrollable.items);
-			}
-			if (ctx->root_widget->data.scrollable.tmp) {
-				free(ctx->root_widget->data.scrollable.tmp);
-			}
-		} else if (ctx->root_widget->type == BGTK_WIDGET_LABEL) {
-			if (ctx->root_widget->data.label.text) {
-				free(ctx->root_widget->data.label.text->data.
-				     text.text);
-				free(ctx->root_widget->data.label.text);
-			}
-		} else if (ctx->root_widget->type == BGTK_WIDGET_BUTTON) {
-			if (ctx->root_widget->data.button.label) {
-				if (ctx->root_widget->data.button.label->data.
-				    label.text) {
-					free(ctx->root_widget->data.button.
-					     label->data.label.text->data.text.
-					     text);
-					free(ctx->root_widget->data.button.
-					     label->data.label.text);
-				}
-				free(ctx->root_widget->data.button.label);
-			}
-		} else if (ctx->root_widget->type == BGTK_WIDGET_TEXT) {
-			free(ctx->root_widget->data.text.text);
-		}
-		free(ctx->root_widget);
+		destroy_widget(ctx->root_widget);
+		ctx->root_widget = NULL;
+		ctx->focused_widget = NULL;
 	}
 	// Free FreeType resources
 	if (ctx->ft_face) {
@@ -159,14 +128,71 @@ void bgtk_destroy(struct BGTK_Context *ctx)
 	free(ctx);
 }
 
+static void destroy_widget(struct BGTK_Widget *w)
+{
+	if (!w) {
+		return;
+	}
+
+	switch (w->type) {
+	case BGTK_WIDGET_SCROLLABLE:
+		if (w->data.scrollable.items) {
+			for (int i = 0; i < w->data.scrollable.widget_count; i++) {
+				destroy_widget(w->data.scrollable.items[i]);
+			}
+			free(w->data.scrollable.items);
+		}
+		if (w->data.scrollable.tmp) {
+			free(w->data.scrollable.tmp);
+		}
+		break;
+	case BGTK_WIDGET_LIST:
+		if (w->data.list_widget.items) {
+			for (int i = 0; i < w->data.list_widget.widget_count; i++) {
+				destroy_widget(w->data.list_widget.items[i]);
+			}
+			free(w->data.list_widget.items);
+		}
+		break;
+	case BGTK_WIDGET_FRAME:
+		if (w->data.frame.child) {
+			destroy_widget(w->data.frame.child);
+		}
+		break;
+	case BGTK_WIDGET_BUTTON:
+		if (w->data.button.label) {
+			destroy_widget(w->data.button.label);
+		}
+		break;
+	case BGTK_WIDGET_LABEL:
+		if (w->data.label.text) {
+			destroy_widget(w->data.label.text);
+		}
+		break;
+	case BGTK_WIDGET_TEXT:
+		free(w->data.text.text);
+		break;
+	case BGTK_WIDGET_TEXT_INPUT:
+		free(w->data.text_input.text);
+		break;
+	case BGTK_WIDGET_IMAGE:
+		if (w->data.image.pixels) {
+			free(w->data.image.pixels);
+		}
+		break;
+	default:
+		break;
+	}
+
+	free(w);
+}
+
 void bgtk_set_window_focus(struct BGTK_Context *ctx, int focused)
 {
 	if (!ctx) {
 		return;
 	}
 	ctx->window_focused = focused;
-	printf("[BGTK] Window focus changed: %s\n",
-	       focused ? "focused" : "unfocused");
 	bgtk_draw_widgets(ctx);
 }
 
@@ -174,7 +200,6 @@ void bgtk_set_window_focus(struct BGTK_Context *ctx, int focused)
 
 void bgtk_draw_widgets(struct BGTK_Context *ctx)
 {
-	puts("[BGTK] Drawing widgets");
 	clear_buffer(ctx);
 	calculate_widget_size(ctx, ctx->root_widget);
 	draw_widget(ctx, ctx->root_widget, ctx->shm_buffer);
@@ -184,14 +209,16 @@ void bgtk_draw_widgets(struct BGTK_Context *ctx)
 // Handles a single event and returns whether a redraw is needed.
 int bgtk_handle_input_event(struct BGTK_Context *ctx, struct InputEvent ev)
 {
-	printf("[BGTK] got event from device %s type=%d\n", ev.device.name,
-	       ev.type);
-
 	// Handle some keys
 	if (ev.code == KEY_SYSRQ) {
-		printf("[BGTK] Print Screen key pressed, taking screenshot.\n");
 		take_screenshot(*ctx);
 		return 1;
+	}
+	// Track shift for text input uppercase support. Do not consume the event.
+	if (ev.type == EV_KEY) {
+		if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT) {
+			ctx->shift_held = (ev.value != 0);
+		}
 	}
 	// Start event handling from the root widget
 	if (!ctx->root_widget) {
