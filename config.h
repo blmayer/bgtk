@@ -5,6 +5,10 @@
 
 #define MAX_PATH_LEN 512
 
+// Forward declaration so config can declare functions that take BGTK_Context
+// without including the full bgtk.h (avoids include-order issues).
+struct BGTK_Context;
+
 // Background type
 typedef enum {
 	BG_COLOR,
@@ -42,6 +46,10 @@ struct config {
 };
 
 int parse_config(struct config* config);
+
+// Initialize a config struct with built-in sane defaults (theme, font size, etc.).
+// Called by parse_config and bgtk_init so that init only loads/overrides.
+void init_config_defaults(struct config *config);
 
 #endif // CONFIG_H
 

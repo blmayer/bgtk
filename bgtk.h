@@ -149,12 +149,25 @@ struct BGTK_Widget {
 void bgtk_draw_widgets(struct BGTK_Context* ctx);
 
 void bgtk_destroy(struct BGTK_Context* ctx);
+void bgtk_destroy_mock(struct BGTK_Context* ctx);
 
-// Initializes BGTK with given dimensions.
+// Initializes BGTK with given dimensions (real server path, caller provides buffer).
 struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width, int height);
+
+// Initializes BGTK in mock/headless mode for testing. Owns an internal framebuffer.
+// Use take_screenshot(ctx, "foo.png") after draws to inspect rendered output as an image.
+struct BGTK_Context* bgtk_init_mock(int width, int height);
 
 // Handles a single event and returns whether a redraw is needed.
 int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev);
+
+// Take a screenshot of the current framebuffer to a PNG file.
+// If path is NULL, a timestamped name is generated automatically (for KEY_SYSRQ).
+int take_screenshot(struct BGTK_Context* ctx, const char* path);
+
+// Inject a synthetic input event (for testing). Coordinates are absolute widget coords.
+// Returns non-zero if a redraw was triggered.
+int bgtk_inject_event(struct BGTK_Context* ctx, struct InputEvent ev);
 
 // --- Widget Creation Functions ---
 // Creates a label widget.

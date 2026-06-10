@@ -1,9 +1,13 @@
 #include "config.h"
 
+#include "bgtk.h"
+#include "internal.h"
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>  // for access() in default font selection
 
 // Helper: trim whitespace
 static char *trim(char *str)
@@ -43,9 +47,61 @@ static uint32_t parse_hex_color(const char *str)
 	return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
+void init_config_defaults(struct config *config)
+{
+	config->type = BG_COLOR;
+	config->color = 0xAAAAAAAA;	// Default gray
+
+	// Theme defaults
+	config->theme.background = 0xAAAAAAAA;
+	config->theme.button = 0x88888888;
+	config->theme.button_text = 0xFFFFFFFF;
+	config->theme.button_border_size = 1;
+	config->theme.input_border_size = 1;
+	config->theme.frame_border_size = 4;
+	config->theme.frame_border_color = 0xFFFFFFFF;
+
+	// Font defaults (loaded at runtime from the config file under [font]).
+	// If the user does not provide a path, we select a sane platform default here
+	// (the #ifdefs live in the config package).
+	config->font_path[0] = '\0';
+	config->font_size = 12;
+
+	// Background image fields (safe defaults)
+	config->path[0] = '\0';
+	config->mode = IMAGE_TILED;
+
+	// Default font selection (platform-specific). This used to be "n2" in
+	// bgtk_init_resources. We pick the first accessible one if no path was
+	// given in the config file.
+	if (config->font_path[0] == '\0') {
+		static const char *d[] = {
+#ifdef __linux__
+			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+			"/usr/share/fonts/TTF/DejaVuSans.ttf",
+#endif
+#ifdef __APPLE__
+			"/System/Library/Fonts/SFNSMono.ttf",
+#endif
+			NULL
+		};
+		for (int i = 0; d[i]; i++) {
+			if (access(d[i], R_OK) == 0) {
+				strncpy(config->font_path, d[i], MAX_PATH_LEN - 1);
+				config->font_path[MAX_PATH_LEN - 1] = '\0';
+				break;
+			}
+		}
+	}
+}
+
+
+
 // Parse config file
 int parse_config(struct config *config)
 {
+	init_config_defaults(config);
+
 	const char *home = getenv("HOME");
 	char user_config[512];
 	if (!home) {
@@ -58,18 +114,6 @@ int parse_config(struct config *config)
 		perror("[BGTK] Open config file");
 		return -1;
 	}
-	// Initialize with defaults
-	config->type = BG_COLOR;
-	config->color = 0xAAAAAAAA;	// Default gray
-
-	// Theme defaults
-	config->theme.background = 0xAAAAAAAA;
-	config->theme.button = 0x88888888;
-	config->theme.button_text = 0xFFFFFFFF;
-	config->theme.button_border_size = 1;
-	config->theme.input_border_size = 1;
-	config->theme.frame_border_size = 4;
-	config->theme.frame_border_color = 0xFFFFFFFF;
 
 	char line[1024];
 	char current_section[256] = "";

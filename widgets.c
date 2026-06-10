@@ -77,12 +77,12 @@ void bgtk_set_focus(struct BGTK_Context *ctx, struct BGTK_Widget *widget)
 // Returns pixel width of text[0..len-1]
 static int measure_prefix_width(FT_Face face, const char *text, int len)
 {
-	int width = 0;
 	if (!face || !text || len <= 0) {
-		return 0;
+		return len > 0 ? len * 7 : 0;  /* crude fallback */
 	}
+	int width = 0;
 	for (int i = 0; i < len && text[i]; i++) {
-		if (FT_Load_Char(face, text[i], FT_LOAD_DEFAULT)) {
+		if (FT_Load_Char(face, (unsigned char)text[i], FT_LOAD_DEFAULT)) {
 			continue;
 		}
 		width += face->glyph->advance.x;

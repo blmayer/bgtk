@@ -20,6 +20,64 @@ create graphical user interfaces by directly writing to a shared graphical buffe
 - Image: bgtk_image(ctx, path, width, height, options)  (use 0,0 for intrinsic size)
 - Frame: bgtk_frame(ctx, child, width, height, options)
 - Text input: bgtk_text_input(ctx, initial_text, width, height, options)
+
+## Key Testing APIs
+
+When using mocks, the following functions are the primary tools:
+
+- `bgtk_init_mock(width, height)` — create a context with its own in-memory framebuffer.
+- `take_screenshot(ctx, "name.png")` — dump the current buffer to a PNG (pass `NULL` for a timestamped name).
+- `bgtk_inject_event(ctx, ev)` — feed synthetic mouse/keyboard events.
+- `bgtk_destroy_mock(ctx)` — clean up a mock context (frees the internal buffer).
+
+## Testing with Mocks (Headless Mode)
+
+BGTK supports a mock/headless mode so you can develop, debug, and visually inspect UIs **without** a running BGCE server, real display, or input devices.
+
+This is the recommended way to test widgets in isolation:
+
+```c
+struct BGTK_Context *ctx = bgtk_init_mock(600, 400);
+
+// Build your widget tree exactly as you would in a real app
+ctx->root_widget = my_ui_builder(ctx);
+bgtk_draw_widgets(ctx);
+
+// Dump the current rendered state to a PNG you can open in any viewer
+take_screenshot(ctx, "before.png");
+
+// Simulate user input (mouse clicks, keyboard, etc.)
+struct InputEvent click = {
+    .type = EV_KEY,
+    .code = BTN_LEFT,
+    .value = 1,
+    .x = 120,
+    .y = 80,
+};
+bgtk_inject_event(ctx, click);
+
+take_screenshot(ctx, "after_click.png");
+
+bgtk_destroy_mock(ctx);
+```
+
+### Built-in headless test
+
+```sh
+make headless
+./headless
+```
+
+This builds `test/headless.c` and generates several `headless_*.png` files demonstrating:
+- Layout and widget sizing
+- Button press / callback
+- Text input focus + typing (via injected key events)
+- Backspace, etc.
+
+Open the PNGs to see exactly what the UI looked like at each step. This is extremely useful for catching layout or rendering bugs quickly on a development machine (works on both Linux and macOS).
+
+No `bgce` process or special permissions are required.
+
 ## Themes
 Theme config files allow customizing the appearance of BGTK applications.
 To use a theme:
@@ -38,26 +96,39 @@ font = /opt/fonts/.../DejaVu Sans.otf
 Requirements:
 - A C compiler (GCC or Clang).
 - FreeType development libraries.
-- BGCE.
 
 ```sh
 make
 ```
 
+Note: A running BGCE server is only required for real applications. The headless/mock test binary (`make headless`) does not require BGCE at all.
+
 
 ## Running
 
-Start the BGCE server, then run the demo application:
+### Real applications (with BGCE)
+
+You need a running BGCE compositor. See the example programs in `apps/` (e.g. `image_viewer`, `launcher`, `test_app`).
+
+### Headless testing / development (recommended for UI work)
+
+No server or display needed. Use the built-in test:
 
 ```sh
-./app
+make headless
+./headless
 ```
+
+This produces `headless_*.png` files you can open to visually inspect the rendered UI at each step (layout, interaction, text input, etc.).
+
+See the "Testing with Mocks" section above for how to integrate this style of testing into your own code.
 
 
 ## Project Structure
 - `bgtk.h`: Public API and type definitions.
-- `bgtk.c`: Core implementation.
-- `app.c`: Demo application.
-- `Makefile`: Build system.
+- `bgtk.c`, `drawing.c`, `widgets.c`, `config.c`: Core implementation.
+- `apps/`: Example real applications (require BGCE).
+- `test/headless.c`: Standalone headless test (no BGCE required). Produces PNG snapshots.
+- `Makefile`: Build system (including `make headless`).
 - `.clang-format`: Code style configuration.
 

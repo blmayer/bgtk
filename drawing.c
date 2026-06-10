@@ -56,10 +56,18 @@ void draw_rect(struct BGTK_Context *ctx, uint32_t *pixels, int x, int y, int w,
 void measure_text(FT_Face face, const char *text, int *out_width,
 		  int *out_height)
 {
+	if (!face || !text) {
+		/* Degraded / no-font fallback: rough width from strlen */
+		int n = text ? (int)strlen(text) : 0;
+		*out_width = n * 7;   /* ~7px per char at typical size */
+		*out_height = 12;
+		return;
+	}
+
 	int width = 0;
 
 	for (const char *p = text; *p; p++) {
-		if (FT_Load_Char(face, *p, FT_LOAD_DEFAULT)) {
+		if (FT_Load_Char(face, (unsigned char)*p, FT_LOAD_DEFAULT)) {
 			continue;
 		}
 
@@ -202,7 +210,7 @@ void draw_text(struct BGTK_Context *ctx, uint32_t *pixels, const char *text,
 
 	int stride = ctx->width;
 	for (const char *p = text; *p; p++) {
-		FT_UInt index = FT_Get_Char_Index(ctx->ft_face, *p);
+		FT_UInt index = FT_Get_Char_Index(ctx->ft_face, (unsigned char)*p);
 
 		if (FT_Load_Glyph(ctx->ft_face, index,
 				  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
@@ -630,7 +638,7 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	int pen_y = text_y + (ctx->ft_face->size->metrics.ascender >> 6);
 
 	for (const char *p = full; *p; p++) {
-		FT_UInt index = FT_Get_Char_Index(ctx->ft_face, *p);
+		FT_UInt index = FT_Get_Char_Index(ctx->ft_face, (unsigned char)*p);
 		if (FT_Load_Glyph(ctx->ft_face, index,
 				  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
 			continue;
@@ -697,7 +705,7 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		for (uint32_t i = 0; i < w->data.text_input.cursor_pos; i++) {
 			FT_UInt index =
 			    FT_Get_Char_Index(ctx->ft_face,
-					      w->data.text_input.text[i]);
+					      (unsigned char)w->data.text_input.text[i]);
 			if (FT_Load_Glyph(ctx->ft_face, index, FT_LOAD_DEFAULT)) {
 				continue;
 			}

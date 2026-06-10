@@ -13,35 +13,137 @@
 #include "config.h"
 #include "internal.h"
 
-// The font path is hardcoded for simplicity.
-#define DEFAULT_FONT_PATH                                 \
-	"/usr/share/fonts/ttf-input/InputMono/InputMono/" \
-	"InputMono-Regular.ttf"
-#define DEFAULT_FONT_SIZE 12
-
-int take_screenshot(struct BGTK_Context ctx)
+int take_screenshot(struct BGTK_Context *ctx, const char *path)
 {
-	if (!ctx.shm_buffer) {
-		fprintf(stderr, "No framebuffer available for screenshot.\n");
+	if (!ctx || !ctx->shm_buffer) {
 		return -1;
 	}
-	// Write the framebuffer to a PNG file
-	struct timeval tv;
-	gettimeofday(&tv, NULL);
 	char filename[256];
-	snprintf(filename, sizeof(filename), "screenshot_%ld_%06ld.png",
-		 tv.tv_sec, tv.tv_usec);
-	int result = stbi_write_png(filename, ctx.width, ctx.height,
-				    BGCE_BYTES_PER_PIXEL, ctx.shm_buffer,
-				    ctx.width * BGCE_BYTES_PER_PIXEL);
-
+	const char *out_path = path;
+	if (!out_path) {
+		// Timestamped name for SYSRQ / convenience
+		struct timeval tv;
+		gettimeofday(&tv, NULL);
+		snprintf(filename, sizeof(filename), "screenshot_%ld_%06d.png",
+			 (long)tv.tv_sec, (int)tv.tv_usec);
+		out_path = filename;
+	}
+	int result = stbi_write_png(out_path, ctx->width, ctx->height,
+				    BGCE_BYTES_PER_PIXEL, ctx->shm_buffer,
+				    ctx->width * BGCE_BYTES_PER_PIXEL);
 	if (!result) {
-		fprintf(stderr, "Failed to save screenshot to %s.\n", filename);
+		fprintf(stderr, "Failed to save frame to %s.\n", out_path);
 		return -1;
 	}
-
-	printf("Screenshot saved to %s.\n", filename);
+	printf("Frame written to %s.\n", out_path);
 	return 0;
+}
+
+static void bgtk_init_resources(struct BGTK_Context *ctx);
+
+// Public mock init: full implementation for headless/testing. Owns its framebuffer.
+struct BGTK_Context *bgtk_init_mock(int width, int height)
+{
+	struct BGTK_Context *ctx =
+	    (struct BGTK_Context *)calloc(1, sizeof(struct BGTK_Context));
+	if (!ctx) {
+		perror("calloc");
+		return NULL;
+	}
+
+	ctx->conn_fd = -1;
+	ctx->width = width;
+	ctx->height = height;
+	ctx->shm_buffer = calloc((size_t)width * height * BGCE_BYTES_PER_PIXEL, 1);
+	if (!ctx->shm_buffer) {
+		perror("calloc framebuffer");
+		free(ctx);
+		return NULL;
+	}
+
+	bgtk_init_resources(ctx);
+	if (!ctx->ft_library) {
+		free(ctx->shm_buffer);
+		free(ctx);
+		return NULL;
+	}
+	return ctx;
+}
+
+// Public: feed a synthetic event for testing (clicks, keys, etc).
+// Redraws automatically if the handler requests it.
+int bgtk_inject_event(struct BGTK_Context *ctx, struct InputEvent ev)
+{
+	if (!ctx) {
+		return 0;
+	}
+	int res = bgtk_handle_input_event(ctx, ev);
+	if (res) {
+		bgtk_draw_widgets(ctx);
+	}
+	return res;
+}
+
+// Common resource setup (config, freetype, font) after buffer/conn/ dims are set.
+// Used by both real bgtk_init and bgtk_init_mock.
+static void bgtk_init_resources(struct BGTK_Context *ctx)
+{
+	ctx->root_widget = NULL;
+	ctx->window_focused = 1;
+	ctx->shift_held = 0;
+
+	// Load config (parse_config now always starts from defaults via init_config_defaults).
+	struct config config = {0};
+	parse_config(&config);
+	ctx->theme = config.theme;
+	strncpy(ctx->font_path, config.font_path, MAX_PATH_LEN - 1);
+	ctx->font_path[MAX_PATH_LEN - 1] = '\0';
+	ctx->font_size = config.font_size;
+
+	// 1. Initialize FreeType
+	if (FT_Init_FreeType(&ctx->ft_library)) {
+		fprintf(stderr,
+			"bgtk_init: Could not init FreeType library.\n");
+	}
+	if (!ctx->ft_library) {
+		return;
+	}
+
+	// 2. The actual FT loading (New_Face, Select, sizing, validation) lives here
+	//    in init_resources. The default *selection* (with #ifdefs) was done in
+	//    init_config_defaults.
+	if (ctx->font_path[0] != '\0') {
+		if (FT_New_Face(ctx->ft_library, ctx->font_path, 0, &ctx->ft_face) != 0) {
+			fprintf(stderr, "bgtk_init: Could not load font from config: %s\n"
+			                "             Using placeholder drawing.\n",
+			        ctx->font_path);
+			ctx->font_path[0] = '\0';
+		} else {
+			fprintf(stderr, "bgtk_init: Using font: %s\n", ctx->font_path);
+		}
+	}
+
+	if (ctx->ft_face) {
+		// Force a Unicode charmap if the font has one. This prevents
+		// "symbol" or other cmap encodings from mapping ASCII to the
+		// wrong glyphs (which often look like triangles/boxes for .notdef).
+		FT_Select_Charmap(ctx->ft_face, FT_ENCODING_UNICODE);
+
+		FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
+
+		// Validate that the loaded face actually produces glyph metrics.
+		// Catches .ttc wrong face, symbol fonts, or broken files that
+		// "load" without error but produce no visible text.
+		int tw = 0, th = 0;
+		measure_text(ctx->ft_face, "Ag", &tw, &th);
+		if (tw <= 0 || th <= 0) {
+			fprintf(stderr, "bgtk_init: Font '%s' loaded but has no usable glyphs. "
+			                "Using placeholder drawing.\n", ctx->font_path);
+			FT_Done_Face(ctx->ft_face);
+			ctx->ft_face = NULL;
+			ctx->font_path[0] = '\0';
+		}
+	}
 }
 
 struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
@@ -55,53 +157,20 @@ struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
 
 	ctx->conn_fd = conn_fd;
 	ctx->shm_buffer = buffer;
-	ctx->font_size = DEFAULT_FONT_SIZE;
+	if (!ctx->shm_buffer) {
+		// Real server path requires caller-provided buffer.
+		free(ctx);
+		return NULL;
+	}
 	ctx->width = width;
 	ctx->height = height;
-	ctx->root_widget = NULL;
-	ctx->window_focused = 1;
-	ctx->shift_held = 0;
 
-	// Load config file
-	struct config config;
-	if (parse_config(&config) == 0) {
-		// Store theme data
-		ctx->theme = config.theme;
-		strncpy(ctx->font_path, config.font_path, MAX_PATH_LEN - 1);
-		ctx->font_path[MAX_PATH_LEN - 1] = '\0';
-		ctx->font_size = config.font_size;
-	} else {
-		// Use defaults if config file is missing or invalid
-		ctx->theme.background = 0xAAAAAAAA;	// Default gray
-		ctx->theme.button = 0x88888888;	// Default button color
-		ctx->theme.button_text = 0xFFFFFFFF;	// Default white text
-		ctx->theme.frame_border_size = 4;	// Default frame border size
-		ctx->theme.frame_border_color = 0xFFFFFFFF;
-		ctx->theme.button_border_size = 1;
-		ctx->theme.input_border_size = 1;
-
-		strncpy(ctx->font_path, DEFAULT_FONT_PATH, MAX_PATH_LEN - 1);
-		ctx->font_path[MAX_PATH_LEN - 1] = '\0';
-	}
-
-	// 1. Initialize FreeType
-	if (FT_Init_FreeType(&ctx->ft_library)) {
-		fprintf(stderr,
-			"bgtk_init: Could not init FreeType library.\n");
+	bgtk_init_resources(ctx);
+	if (!ctx->ft_library) {
+		// freetype failed; buffer is caller-owned for real init.
 		free(ctx);
 		return NULL;
 	}
-	// 2. Load Font
-	if (FT_New_Face(ctx->ft_library, ctx->font_path, 0, &ctx->ft_face)) {
-		fprintf(stderr,
-			"bgtk_init: Could not load font %s. Falling back "
-			"to simple " "drawing.\n", ctx->font_path);
-		free(ctx);
-		return NULL;
-	}
-	// Set font size
-	FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
-
 	return ctx;
 }
 
@@ -117,7 +186,8 @@ void bgtk_destroy(struct BGTK_Context *ctx)
 		ctx->root_widget = NULL;
 		ctx->focused_widget = NULL;
 	}
-	// Free FreeType resources
+	// Free FreeType resources (buffer ownership is with caller for real init,
+	// or handled in bgtk_destroy_mock for headless).
 	if (ctx->ft_face) {
 		FT_Done_Face(ctx->ft_face);
 	}
@@ -126,6 +196,17 @@ void bgtk_destroy(struct BGTK_Context *ctx)
 	}
 
 	free(ctx);
+}
+
+void bgtk_destroy_mock(struct BGTK_Context *ctx)
+{
+	if (ctx) {
+		if (ctx->shm_buffer) {
+			free(ctx->shm_buffer);
+			ctx->shm_buffer = NULL;
+		}
+	}
+	bgtk_destroy(ctx);
 }
 
 static void destroy_widget(struct BGTK_Widget *w)
@@ -203,7 +284,9 @@ void bgtk_draw_widgets(struct BGTK_Context *ctx)
 	clear_buffer(ctx);
 	calculate_widget_size(ctx, ctx->root_widget);
 	draw_widget(ctx, ctx->root_widget, ctx->shm_buffer);
-	bgce_draw(ctx->conn_fd);
+	if (ctx && ctx->conn_fd >= 0) {
+		bgce_draw(ctx->conn_fd);
+	}
 }
 
 // Handles a single event and returns whether a redraw is needed.
@@ -211,7 +294,7 @@ int bgtk_handle_input_event(struct BGTK_Context *ctx, struct InputEvent ev)
 {
 	// Handle some keys
 	if (ev.code == KEY_SYSRQ) {
-		take_screenshot(*ctx);
+		take_screenshot(ctx, NULL);
 		return 1;
 	}
 	// Track shift for text input uppercase support. Do not consume the event.
