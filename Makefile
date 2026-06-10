@@ -9,18 +9,30 @@ ifeq ($(FREETYPE_CFLAGS),)
 endif
 
 FREETYPE_LIBS := $(shell pkg-config --libs freetype2 2>/dev/null)
+FREETYPE_LIBDIRS :=
 ifeq ($(FREETYPE_LIBS),)
   # Common fallbacks: Linux default + macOS Homebrew (Apple Silicon + Intel)
   FREETYPE_LIBS := -lfreetype
-  FREETYPE_LIBDIRS := -L/opt/homebrew/lib -L/usr/local/lib
+  FREETYPE_LIBDIRS := -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
 endif
 
 CFLAGS = -Wall -Wextra -Werror -I. $(FREETYPE_CFLAGS) -fPIC
 
 # Full LDFLAGS are only for real (Linux + bgce server) binaries.
-LDFLAGS = -lfreetype -lbgce -lm
+# Include detected FREETYPE paths so linking works on macOS (Homebrew)
+# as well as Linux. FREETYPE_LIBDIRS may be empty when pkg-config succeeds
+# (because pkg-config --libs usually includes -L...).
+LDFLAGS = $(FREETYPE_LIBDIRS) $(FREETYPE_LIBS) -lbgce -lm
 
-TARGET = libbgtk.so test_app image_viewer launcher headless
+TARGET = libbgtk.so test_app image_viewer launcher terminal headless
+# On macOS (Darwin), plain `make` will try to build libbgtk.so and real
+# apps which require the bgce library (Linux-specific). Default to
+# headless/test targets so `make` succeeds for development on mac.
+# You can still do `make terminal` (or the others) explicitly if you have
+# a bgce build for your platform.
+ifeq ($(shell uname),Darwin)
+  TARGET = headless test_terminal
+endif
 INSTALL_LIB = /usr/lib
 INSTALL_INCLUDE = /usr/include
 
@@ -29,6 +41,8 @@ LIB_OBJS = bgtk.o drawing.o widgets.o config.o
 TEST_APP_OBJ = apps/test_app.o
 IMAGE_VIEWER_OBJ = apps/image_viewer.o
 LAUNCHER_OBJ = apps/launcher.o
+TERMINAL_OBJ = apps/terminal.o
+TERM_CORE_OBJ = apps/term_core.o
 
 # ---------- Headless / mock testing support ----------
 # "make headless" builds a standalone binary that uses bgtk_init_mock +
@@ -42,6 +56,7 @@ HEADLESS_CFLAGS := $(CFLAGS) -I$(COMPAT_DIR)
 HEADLESS_LDFLAGS := $(FREETYPE_LIBS) $(FREETYPE_LIBDIRS) -lm
 HEADLESS_STUB := $(COMPAT_DIR)/bgce_stub.o
 HEADLESS_OBJ := test/headless.o
+TEST_TERMINAL_OBJ := test/test_terminal.o
 
 .PHONY: all clean test
 
@@ -59,6 +74,9 @@ image_viewer: $(IMAGE_VIEWER_OBJ) $(LIB_OBJS)
 launcher: $(LAUNCHER_OBJ) $(LIB_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
+terminal: $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS)
+	$(CC) $(CFLAGS) -Iapps -o $@ $^ $(LDFLAGS)
+
 # Headless target links the bgce stub instead of the real library and
 # pulls in the compat headers via -I so that <bgce.h> and <linux/input.h>
 # resolve on non-Linux platforms.
@@ -67,7 +85,7 @@ launcher: $(LAUNCHER_OBJ) $(LIB_OBJS)
 # prerequisites of the "headless" target. This way normal Linux server
 # binaries (test_app, image_viewer, ...) continue to use the real system
 # bgce headers if present.
-$(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB): CFLAGS += -I$(COMPAT_DIR)
+$(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ): CFLAGS += -I$(COMPAT_DIR)
 
 $(HEADLESS_STUB): $(COMPAT_DIR)/bgce_stub.c
 	$(CC) $(HEADLESS_CFLAGS) -c -o $@ $<
@@ -75,11 +93,24 @@ $(HEADLESS_STUB): $(COMPAT_DIR)/bgce_stub.c
 headless: $(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 	$(CC) $(HEADLESS_CFLAGS) -o $@ $^ $(HEADLESS_LDFLAGS)
 
+# Terminal objects need -Iapps for terminal.h
+$(TERMINAL_OBJ): apps/terminal.c apps/terminal.h
+	$(CC) $(CFLAGS) -Iapps -c -o $@ $<
+
+$(TERM_CORE_OBJ): apps/term_core.c apps/terminal.h
+	$(CC) $(CFLAGS) -Iapps -c -o $@ $<
+
+$(TEST_TERMINAL_OBJ): test/test_terminal.c apps/terminal.h
+	$(CC) $(CFLAGS) -Iapps -c -o $@ $<
+
+test_terminal: $(TEST_TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
+	$(CC) $(HEADLESS_CFLAGS) -Iapps -o $@ $^ $(HEADLESS_LDFLAGS)
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(TARGET) $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB)
+	rm -f $(TARGET) terminal test_terminal $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ)
 
 
 .PHONY: install
