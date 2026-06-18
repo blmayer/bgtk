@@ -638,6 +638,7 @@ struct BGTK_Widget *bgtk_text(struct BGTK_Context *ctx, char *text,
 	char *ptr = calloc(1, strlen(text) + 1);
 	sprintf(ptr, "%s", text);
 	widget->data.text.text = ptr;
+	widget->data.text.header_level = 0;
 
 	// Calculate size based on text
 	measure_text(widget->ctx->ft_face, widget->data.text.text, &widget->w,

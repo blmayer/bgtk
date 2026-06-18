@@ -16,6 +16,13 @@ ifeq ($(FREETYPE_LIBS),)
   FREETYPE_LIBDIRS := -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
 endif
 
+OPENSSL_CFLAGS := $(shell pkg-config --cflags openssl 2>/dev/null)
+ifeq ($(OPENSSL_CFLAGS),)
+  OPENSSL_CFLAGS := -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/include -I/usr/local/opt/openssl/include
+endif
+OPENSSL_LIBDIRS := -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/lib -L/usr/local/opt/openssl/lib -L/usr/local/lib
+OPENSSL_LIBS := -lssl -lcrypto
+
 CFLAGS = -Wall -Wextra -Werror -I. $(FREETYPE_CFLAGS) -fPIC
 
 # Full LDFLAGS are only for real (Linux + bgce server) binaries.
@@ -24,7 +31,7 @@ CFLAGS = -Wall -Wextra -Werror -I. $(FREETYPE_CFLAGS) -fPIC
 # (because pkg-config --libs usually includes -L...).
 LDFLAGS = $(FREETYPE_LIBDIRS) $(FREETYPE_LIBS) -lbgce -lm
 
-TARGET = libbgtk.so test_app image_viewer launcher terminal headless
+TARGET = libbgtk.so test_app image_viewer launcher terminal gemini_browser headless
 # On macOS (Darwin), plain `make` will try to build libbgtk.so and real
 # apps which require the bgce library (Linux-specific). Default to
 # headless/test targets so `make` succeeds for development on mac.
@@ -43,6 +50,7 @@ IMAGE_VIEWER_OBJ = apps/image_viewer.o
 LAUNCHER_OBJ = apps/launcher.o
 TERMINAL_OBJ = apps/terminal.o
 TERM_CORE_OBJ = apps/term_core.o
+GEMINI_BROWSER_OBJ = apps/gemini_browser.o
 
 # ---------- Headless / mock testing support ----------
 # "make headless" builds a standalone binary that uses bgtk_init_mock +
@@ -57,6 +65,7 @@ HEADLESS_LDFLAGS := $(FREETYPE_LIBS) $(FREETYPE_LIBDIRS) -lm
 HEADLESS_STUB := $(COMPAT_DIR)/bgce_stub.o
 HEADLESS_OBJ := test/headless.o
 TEST_TERMINAL_OBJ := test/test_terminal.o
+TEST_GEMINI_OBJ := test/test_gemini_browser.o
 
 .PHONY: all clean test
 
@@ -74,6 +83,9 @@ image_viewer: $(IMAGE_VIEWER_OBJ) $(LIB_OBJS)
 launcher: $(LAUNCHER_OBJ) $(LIB_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
+gemini_browser: $(GEMINI_BROWSER_OBJ) $(LIB_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(OPENSSL_LIBDIRS) $(OPENSSL_LIBS)
+
 terminal: $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS)
 	$(CC) $(CFLAGS) -Iapps -o $@ $^ $(LDFLAGS)
 
@@ -85,7 +97,7 @@ terminal: $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS)
 # prerequisites of the "headless" target. This way normal Linux server
 # binaries (test_app, image_viewer, ...) continue to use the real system
 # bgce headers if present.
-$(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ): CFLAGS += -I$(COMPAT_DIR)
+$(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(TEST_GEMINI_OBJ): CFLAGS += -I$(COMPAT_DIR)
 
 $(HEADLESS_STUB): $(COMPAT_DIR)/bgce_stub.c
 	$(CC) $(HEADLESS_CFLAGS) -c -o $@ $<
@@ -103,14 +115,23 @@ $(TERM_CORE_OBJ): apps/term_core.c apps/terminal.h
 $(TEST_TERMINAL_OBJ): test/test_terminal.c apps/terminal.h
 	$(CC) $(CFLAGS) -Iapps -c -o $@ $<
 
+$(TEST_GEMINI_OBJ): CFLAGS += $(OPENSSL_CFLAGS)
+$(TEST_GEMINI_OBJ): test/test_gemini_browser.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(GEMINI_BROWSER_OBJ): CFLAGS += -I$(COMPAT_DIR) $(OPENSSL_CFLAGS)
+
 test_terminal: $(TEST_TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 	$(CC) $(HEADLESS_CFLAGS) -Iapps -o $@ $^ $(HEADLESS_LDFLAGS)
+
+test_gemini_browser: $(TEST_GEMINI_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
+	$(CC) $(HEADLESS_CFLAGS) $(OPENSSL_CFLAGS) -o $@ $^ $(HEADLESS_LDFLAGS) $(OPENSSL_LIBDIRS) $(OPENSSL_LIBS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(TARGET) terminal test_terminal $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ)
+	rm -f $(TARGET) terminal test_terminal test_gemini_browser gemini_browser $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ)
 
 
 .PHONY: install

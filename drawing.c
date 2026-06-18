@@ -368,8 +368,29 @@ static void draw_label(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 			     uint32_t *pixels)
 {
+	int level = w->data.text.header_level;
+	const char *t = w->data.text.text ? w->data.text.text : "";
+	uint32_t color = ctx->theme.button_text;
+	int old_size = ctx->font_size;
+	if (level > 0) {
+		color = 0xFFFF00FF;  // fuchsia for headers
+		ctx->font_size = ctx->font_size + (4 - level);  // h1 biggest
+	} else if (t[0] == '=' && t[1] == '>' && t[2] == ' ') {
+		color = 0xFFFF00FF;  // fuchsia for links
+	} else if (strncmp(t, "\xe2\x80\xa2 ", 4) == 0) {
+		color = 0xFFFF00FF;  // fuchsia for bullet points
+	}
+	if (level > 0) {
+		// cheap bold effect via 1px offset
+		draw_text(ctx, pixels, w->data.text.text,
+			  w->x + w->margin + w->padding + 1,
+			  w->y + w->margin + w->padding + 1, color);
+	}
 	draw_text(ctx, pixels, w->data.text.text, w->x + w->margin + w->padding,
-		  w->y + w->margin + w->padding, ctx->theme.button_text);
+		  w->y + w->margin + w->padding, color);
+	if (level > 0) {
+		ctx->font_size = old_size;
+	}
 }
 
 static void draw_button(struct BGTK_Context *ctx, struct BGTK_Widget *w,

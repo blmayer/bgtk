@@ -106,6 +106,7 @@ struct BGTK_Widget {
 		} button;
 		struct {
 			char* text;
+			int header_level;  // 0=normal, 1/2/3 for # headers (for bigger/bold/colored rendering)
 		} text;
 		struct {
 			uint32_t* pixels;  // Pixel buffer for image

@@ -55,7 +55,7 @@ void init_config_defaults(struct config *config)
 	// Theme defaults
 	config->theme.background = 0xAAAAAAAA;
 	config->theme.button = 0x88888888;
-	config->theme.button_text = 0xFFFFFFFF;
+	config->theme.button_text = 0xFF000000;
 	config->theme.button_border_size = 1;
 	config->theme.input_border_size = 1;
 	config->theme.frame_border_size = 4;
