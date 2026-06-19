@@ -31,7 +31,8 @@ void clear_buffer(struct BGTK_Context *ctx)
 	uint32_t *pixels = (uint32_t *) ctx->shm_buffer;
 	size_t size = (size_t)ctx->width * ctx->height;
 	for (size_t i = 0; i < size; i++) {
-		pixels[i] = ctx->theme.background;
+		uint32_t bg = ctx->theme.background;
+		pixels[i] = (0xFFu << 24) | (bg & 0x00FFFFFF);  // force full alpha
 	}
 }
 
@@ -46,9 +47,10 @@ void draw_rect(struct BGTK_Context *ctx, uint32_t *pixels, int x, int y, int w,
 
 	// TODO: stride can be of a tmp buffer != from ctx
 	int stride = ctx->width;
+	uint32_t c = (0xFFu << 24) | (color & 0x00FFFFFF);  // force full alpha for mock/PNG
 	for (int j = y1; j < y2; j++) {
 		for (int i = x1; i < x2; i++) {
-			pixels[j * stride + i] = color;
+			pixels[j * stride + i] = c;
 		}
 	}
 }
@@ -253,7 +255,7 @@ void draw_text(struct BGTK_Context *ctx, uint32_t *pixels, const char *text,
 				uint8_t b = (b_src * a + b_dst * inv) / 255;
 
 				pixels[dy * stride + dx] =
-				    (r << 16) | (g << 8) | b;
+				    (0xFFu << 24) | (r << 16) | (g << 8) | b;
 			}
 		}
 
@@ -372,15 +374,15 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	const char *t = w->data.text.text ? w->data.text.text : "";
 	uint32_t color = ctx->theme.button_text;
 	int old_size = ctx->font_size;
-	if (level > 0) {
-		color = 0xFFFF00FF;  // fuchsia for headers
+	bool is_header = (level > 0 && level <= 3);
+	bool is_colored_text = (level == 10) || (t[0] == '=' && t[1] == '>' && t[2] == ' ') || (strncmp(t, "\xe2\x80\xa2 ", 4) == 0);
+	if (is_header) {
+		color = BGTK_COLOR_FUCHSIA;
 		ctx->font_size = ctx->font_size + (4 - level);  // h1 biggest
-	} else if (t[0] == '=' && t[1] == '>' && t[2] == ' ') {
-		color = 0xFFFF00FF;  // fuchsia for links
-	} else if (strncmp(t, "\xe2\x80\xa2 ", 4) == 0) {
-		color = 0xFFFF00FF;  // fuchsia for bullet points
+	} else if (is_colored_text) {
+		color = BGTK_COLOR_FUCHSIA;
 	}
-	if (level > 0) {
+	if (is_header) {
 		// cheap bold effect via 1px offset
 		draw_text(ctx, pixels, w->data.text.text,
 			  w->x + w->margin + w->padding + 1,
@@ -388,7 +390,7 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	}
 	draw_text(ctx, pixels, w->data.text.text, w->x + w->margin + w->padding,
 		  w->y + w->margin + w->padding, color);
-	if (level > 0) {
+	if (is_header) {
 		ctx->font_size = old_size;
 	}
 }
@@ -714,7 +716,7 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 				uint8_t b = (b_src * a + b_dst * inv) / 255;
 
 				pixels[dy * stride + dx] =
-				    (r << 16) | (g << 8) | b;
+				    (0xFFu << 24) | (r << 16) | (g << 8) | b;
 			}
 		}
 

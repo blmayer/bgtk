@@ -28,9 +28,29 @@ int take_screenshot(struct BGTK_Context *ctx, const char *path)
 			 (long)tv.tv_sec, (int)tv.tv_usec);
 		out_path = filename;
 	}
+
+	// Convert internal 0xAARRGGBB buffer (alpha may vary) to proper
+	// opaque RGBA byte layout for the PNG writer. This ensures colors
+	// (including fuchsia headers/links etc.) appear correctly in mock
+	// screenshots instead of being lost to alpha=0 or channel order.
+	unsigned char *rgba = (unsigned char *)malloc((size_t)ctx->width * ctx->height * 4);
+	if (!rgba) {
+		fprintf(stderr, "take_screenshot: out of memory for RGBA conversion\n");
+		return -1;
+	}
+	uint32_t *src = (uint32_t *)ctx->shm_buffer;
+	for (int i = 0; i < ctx->width * ctx->height; i++) {
+		uint32_t p = src[i];
+		rgba[i*4 + 0] = (p >> 16) & 0xFF; // R
+		rgba[i*4 + 1] = (p >>  8) & 0xFF; // G
+		rgba[i*4 + 2] = p & 0xFF;         // B
+		rgba[i*4 + 3] = 0xFF;             // force opaque
+	}
+
 	int result = stbi_write_png(out_path, ctx->width, ctx->height,
-				    BGCE_BYTES_PER_PIXEL, ctx->shm_buffer,
-				    ctx->width * BGCE_BYTES_PER_PIXEL);
+				    4, rgba, ctx->width * 4);
+	free(rgba);
+
 	if (!result) {
 		fprintf(stderr, "Failed to save frame to %s.\n", out_path);
 		return -1;

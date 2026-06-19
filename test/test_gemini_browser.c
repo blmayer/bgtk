@@ -308,6 +308,7 @@ static void rebuild_content_from_gemtext(const char *body)
 		int is_link = 0;
 		char link_to[512] = {0};
 		int header_level = 0;
+		int item_color = 0;
 
 		if (in_pre) {
 			snprintf(vis, sizeof(vis), "  %s", line);
@@ -328,6 +329,7 @@ static void rebuild_content_from_gemtext(const char *body)
 			snprintf(vis, sizeof(vis), "=> %s", disp);
 			strncpy(link_to, tgt, sizeof(link_to)-1);
 			is_link = 1;
+			item_color = 10;
 		} else if (!strncmp(line, "# ", 2)) {
 			snprintf(vis, sizeof(vis), "%s", line + 2);
 			header_level = 1;
@@ -341,6 +343,7 @@ static void rebuild_content_from_gemtext(const char *body)
 			snprintf(vis, sizeof(vis), "%s", line[0]=='*' ? "\xe2\x80\xa2 " : "");
 			if (line[0]=='*') strncat(vis, line+2, sizeof(vis)-strlen(vis)-1);
 			else strncat(vis, line, sizeof(vis)-strlen(vis)-1);
+			if (line[0]=='*') item_color = 10;
 		} else {
 			snprintf(vis, sizeof(vis), "%s", line);
 		}
@@ -364,6 +367,9 @@ static void rebuild_content_from_gemtext(const char *body)
 				if (!tw) continue;
 				if (header_level > 0) {
 					tw->data.text.header_level = header_level;
+				}
+				if (item_color) {
+					tw->data.text.header_level = item_color;
 				}
 				if (is_link && num_page_links < 128) {
 					link_target_widgets[num_page_links] = tw;
