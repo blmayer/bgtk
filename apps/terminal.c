@@ -92,12 +92,17 @@ int main(void)
 		return 1;
 	}
 
+	/* Compute inner area (frame border eats into the window) */
+	int bw = ctx->theme.frame_border_size;
+	int inner_w = width - 2 * bw;
+	int inner_h = height - 2 * bw;
+
 	/* Compute cell size and terminal dimensions */
 	struct Term_State tmp_ts = {0};
 	tmp_ts.cols = tmp_ts.rows = 1;
 	term_measure_cell(&tmp_ts, ctx);
-	int cols = width / tmp_ts.cell_w;
-	int rows = height / tmp_ts.cell_h;
+	int cols = inner_w / tmp_ts.cell_w;
+	int rows = inner_h / tmp_ts.cell_h;
 	if (cols < 1) cols = 1;
 	if (rows < 1) rows = 1;
 
@@ -106,13 +111,16 @@ int main(void)
 	ts->cell_w = tmp_ts.cell_w;
 	ts->cell_h = tmp_ts.cell_h;
 
-	/* Create image widget as the drawing surface */
-	struct BGTK_Widget *img = bgtk_image(ctx, NULL, width, height,
+	/* Create image widget as the drawing surface, wrapped in a frame */
+	struct BGTK_Widget *img = bgtk_image(ctx, NULL, inner_w, inner_h,
 					     (BGTK_Options){0});
-	img->data.image.pixels = calloc((size_t)width * height, sizeof(uint32_t));
-	img->data.image.img_w = width;
-	img->data.image.img_h = height;
-	ctx->root_widget = img;
+	img->data.image.pixels = calloc((size_t)inner_w * inner_h,
+					sizeof(uint32_t));
+	img->data.image.img_w = inner_w;
+	img->data.image.img_h = inner_h;
+	struct BGTK_Widget *frame = bgtk_frame(ctx, img, width, height,
+					       (BGTK_Options){0});
+	ctx->root_widget = frame;
 
 	/* Open PTY */
 	int master_fd;
@@ -124,7 +132,7 @@ int main(void)
 	ts->pty_fd = master_fd;
 
 	/* Initial render */
-	term_render(ts, ctx, img->data.image.pixels, width, height);
+	term_render(ts, ctx, img->data.image.pixels, inner_w, inner_h);
 	bgtk_draw_widgets(ctx);
 
 	/* Main loop: poll BGCE connection and PTY */
@@ -152,7 +160,7 @@ int main(void)
 			if (n > 0) {
 				term_feed(ts, buf, (int)n);
 				term_render(ts, ctx, img->data.image.pixels,
-					    width, height);
+					    inner_w, inner_h);
 				bgtk_draw_widgets(ctx);
 			} else if (n == 0 ||
 				   (n < 0 && errno != EAGAIN && errno != EINTR)) {
