@@ -1,0 +1,629 @@
+/*
+ * html.c - HTML-to-BGTK widget tree parser.
+ *
+ * Uses libxml2 to parse HTML and maps common tags to real BGTK widgets
+ * so users can describe their UI in standard HTML.
+ *
+ * Supported tags:
+ *   h1..h6, p, b, i, a, span    -> BGTK_WIDGET_TEXT (with header_level / bold)
+ *   ul, ol, li                   -> BGTK_WIDGET_LIST (vertical, with bullet/number)
+ *   button                       -> BGTK_WIDGET_BUTTON
+ *   input[type=text]             -> BGTK_WIDGET_TEXT_INPUT
+ *   input[type=checkbox]         -> BGTK_WIDGET_BUTTON (toggle)
+ *   select                       -> BGTK_WIDGET_LIST (dropdown placeholder)
+ *   img                          -> BGTK_WIDGET_IMAGE
+ *   div, section, article, body  -> BGTK_WIDGET_LIST (vertical container)
+ *   header, nav, footer          -> BGTK_WIDGET_LIST (vertical container)
+ *
+ * Layout is strictly top-down (block elements stack vertically).
+ * Inline elements within a block are collected into a horizontal list row.
+ *
+ * Attributes:  width, height, padding, margin  (in pixels)
+ *              onclick / onchange             -> callbacks are left NULL
+ *              (the user wires them in code via the returned widget tree)
+ */
+
+#include "html.h"
+#include "internal.h"
+
+#include <ctype.h>
+#include <libxml/HTMLparser.h>
+#include <libxml/tree.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+// Read an integer attribute (width, height, padding, margin) or return def.
+static int attr_int(xmlNode *node, const char *name, int def)
+{
+	xmlChar *val = xmlGetProp(node, (const xmlChar *)name);
+	if (!val)
+		return def;
+	int r = atoi((const char *)val);
+	xmlFree(val);
+	return r;
+}
+
+// Read a string attribute; caller must xmlFree the result.
+static xmlChar *attr_str(xmlNode *node, const char *name)
+{
+	return xmlGetProp(node, (const xmlChar *)name);
+}
+
+// Collect all text content from a node (direct text + child text nodes).
+static char *collect_text(xmlNode *node)
+{
+	xmlChar *raw = xmlNodeGetContent(node);
+	if (!raw)
+		return strdup("");
+
+	// Trim leading/trailing whitespace.
+	char *s = (char *)raw;
+	while (*s && isspace((unsigned char)*s))
+		s++;
+	int len = (int)strlen(s);
+	while (len > 0 && isspace((unsigned char)s[len - 1]))
+		len--;
+
+	char *out = strndup(s, len);
+	xmlFree(raw);
+	return out ? out : strdup("");
+}
+
+// Build an BGTK_Options from common HTML attributes on a node.
+static BGTK_Options opts_from_node(xmlNode *node, int def_pad, int def_margin)
+{
+	return (BGTK_Options){
+		.flags   = 0,
+		.padding = attr_int(node, "padding", def_pad),
+		.margin  = attr_int(node, "margin", def_margin),
+	};
+}
+
+/* ------------------------------------------------------------------ */
+/* Inline vs block classification                                      */
+/* ------------------------------------------------------------------ */
+
+static int is_inline_tag(const char *tag)
+{
+	if (!tag)
+		return 0;
+	return strcmp(tag, "b") == 0 || strcmp(tag, "i") == 0 ||
+	       strcmp(tag, "a") == 0 || strcmp(tag, "span") == 0 ||
+	       strcmp(tag, "strong") == 0 || strcmp(tag, "em") == 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Forward declarations                                                */
+/* ------------------------------------------------------------------ */
+
+static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
+					xmlNode *node, int avail_w);
+
+/* ------------------------------------------------------------------ */
+/* Inline text helpers                                                 */
+/* ------------------------------------------------------------------ */
+
+// Create a text widget for a raw text node (XML_TEXT_NODE).
+static struct BGTK_Widget *make_text_widget(struct BGTK_Context *ctx,
+					    const char *raw)
+{
+	// Trim whitespace.
+	const char *s = raw;
+	while (*s && isspace((unsigned char)*s))
+		s++;
+	int len = (int)strlen(s);
+	while (len > 0 && isspace((unsigned char)s[len - 1]))
+		len--;
+	if (len <= 0)
+		return NULL;
+
+	char *txt = strndup(s, len);
+	if (!txt)
+		return NULL;
+	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){.padding = 0, .margin = 0});
+	free(txt);
+	return w;
+}
+
+/* ------------------------------------------------------------------ */
+/* Tag converters                                                      */
+/* ------------------------------------------------------------------ */
+
+// h1..h6 -> text widget with header_level set.
+static struct BGTK_Widget *convert_heading(struct BGTK_Context *ctx,
+					   xmlNode *node, int level)
+{
+	char *txt = collect_text(node);
+	if (!txt || !*txt) {
+		free(txt);
+		return NULL;
+	}
+	BGTK_Options opts = opts_from_node(node, 2, 4);
+	struct BGTK_Widget *w = bgtk_text(ctx, txt, opts);
+	free(txt);
+	if (w)
+		w->data.text.header_level = level;
+	return w;
+}
+
+// <p> -> text widget (block, normal level).
+static struct BGTK_Widget *convert_p(struct BGTK_Context *ctx, xmlNode *node)
+{
+	char *txt = collect_text(node);
+	if (!txt || !*txt) {
+		free(txt);
+		return NULL;
+	}
+	BGTK_Options opts = opts_from_node(node, 0, 4);
+	struct BGTK_Widget *w = bgtk_text(ctx, txt, opts);
+	free(txt);
+	return w;
+}
+
+// <b>/<strong> -> text widget with pseudo-bold (header_level 10 triggers
+// the existing fuchsia/bold path in draw_text_widget).
+static struct BGTK_Widget *convert_bold(struct BGTK_Context *ctx, xmlNode *node)
+{
+	char *txt = collect_text(node);
+	if (!txt || !*txt) {
+		free(txt);
+		return NULL;
+	}
+	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){0});
+	free(txt);
+	if (w)
+		w->data.text.header_level = 10; // fuchsia bold marker
+	return w;
+}
+
+// <i>/<em> -> regular text (italic not supported yet; rendered as normal).
+static struct BGTK_Widget *convert_italic(struct BGTK_Context *ctx,
+					  xmlNode *node)
+{
+	char *txt = collect_text(node);
+	if (!txt || !*txt) {
+		free(txt);
+		return NULL;
+	}
+	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){0});
+	free(txt);
+	return w;
+}
+
+// <a> -> text widget (styled like a link: header_level 10 = fuchsia).
+static struct BGTK_Widget *convert_a(struct BGTK_Context *ctx, xmlNode *node)
+{
+	char *txt = collect_text(node);
+	if (!txt || !*txt) {
+		free(txt);
+		return NULL;
+	}
+	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){0});
+	free(txt);
+	if (w)
+		w->data.text.header_level = 10; // fuchsia = link color
+	return w;
+}
+
+// <button> -> BGTK_WIDGET_BUTTON. Callback is NULL; user wires it later.
+static struct BGTK_Widget *convert_button(struct BGTK_Context *ctx,
+					  xmlNode *node)
+{
+	char *txt = collect_text(node);
+	if (!txt || !*txt) {
+		free(txt);
+		txt = strdup("button");
+	}
+	BGTK_Options opts = opts_from_node(node, 6, 4);
+	struct BGTK_Widget *label = bgtk_text(ctx, txt, (BGTK_Options){0});
+	free(txt);
+	if (!label)
+		return NULL;
+	return bgtk_button(ctx, label, NULL, opts);
+}
+
+// <input type="text"> -> BGTK_WIDGET_TEXT_INPUT.
+static struct BGTK_Widget *convert_text_input(struct BGTK_Context *ctx,
+					      xmlNode *node)
+{
+	xmlChar *val = attr_str(node, "value");
+	char *initial = val ? (char *)val : "";
+	int w = attr_int(node, "width", 200);
+	int h = attr_int(node, "height", 0);
+	BGTK_Options opts = opts_from_node(node, 4, 4);
+	struct BGTK_Widget *ti = bgtk_text_input(ctx, initial, w, h, opts);
+	if (val)
+		xmlFree(val);
+	return ti;
+}
+
+// <input type="checkbox"> -> toggle button (label = [ ] or [x]).
+static struct BGTK_Widget *convert_checkbox(struct BGTK_Context *ctx,
+					    xmlNode *node)
+{
+	xmlChar *checked = attr_str(node, "checked");
+	const char *txt = checked ? "[x]" : "[ ]";
+	if (checked)
+		xmlFree(checked);
+	BGTK_Options opts = opts_from_node(node, 4, 4);
+	struct BGTK_Widget *label = bgtk_text(ctx, (char *)txt, (BGTK_Options){0});
+	if (!label)
+		return NULL;
+	return bgtk_button(ctx, label, NULL, opts);
+}
+
+// <select> with <option> children -> vertical list of labels.
+static struct BGTK_Widget *convert_select(struct BGTK_Context *ctx,
+					  xmlNode *node)
+{
+	int cap = 8, count = 0;
+	struct BGTK_Widget **items = calloc(cap, sizeof(struct BGTK_Widget *));
+	if (!items)
+		return NULL;
+
+	for (xmlNode *child = node->children; child; child = child->next) {
+		if (child->type != XML_ELEMENT_NODE)
+			continue;
+		if (strcmp((const char *)child->name, "option") != 0)
+			continue;
+		char *txt = collect_text(child);
+		if (!txt || !*txt) {
+			free(txt);
+			continue;
+		}
+		struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){.padding = 2, .margin = 1});
+		free(txt);
+		if (!w)
+			continue;
+		if (count >= cap) {
+			cap *= 2;
+			items = realloc(items, cap * sizeof(struct BGTK_Widget *));
+		}
+		items[count++] = w;
+	}
+
+	if (count == 0) {
+		free(items);
+		return NULL;
+	}
+	BGTK_Options opts = opts_from_node(node, 2, 4);
+	opts.orientation = BGTK_LIST_VERTICAL;
+	struct BGTK_Widget *list = bgtk_list(ctx, items, count, opts);
+	free(items);
+	return list;
+}
+
+// <img> -> BGTK_WIDGET_IMAGE.
+static struct BGTK_Widget *convert_img(struct BGTK_Context *ctx, xmlNode *node)
+{
+	xmlChar *src = attr_str(node, "src");
+	if (!src)
+		return NULL;
+	int w = attr_int(node, "width", 0);
+	int h = attr_int(node, "height", 0);
+	BGTK_Options opts = opts_from_node(node, 0, 4);
+	struct BGTK_Widget *img = bgtk_image(ctx, (const char *)src, w, h, opts);
+	xmlFree(src);
+	return img;
+}
+
+// <input> dispatcher based on type attribute.
+static struct BGTK_Widget *convert_input(struct BGTK_Context *ctx,
+					 xmlNode *node)
+{
+	xmlChar *type = attr_str(node, "type");
+	const char *t = type ? (const char *)type : "text";
+	struct BGTK_Widget *w = NULL;
+
+	if (strcmp(t, "checkbox") == 0)
+		w = convert_checkbox(ctx, node);
+	else
+		w = convert_text_input(ctx, node);
+
+	if (type)
+		xmlFree(type);
+	return w;
+}
+
+/* ------------------------------------------------------------------ */
+/* Container / block-level converter                                   */
+/* ------------------------------------------------------------------ */
+
+// Convert children of a container node into an array of widgets.
+// Inline siblings are grouped into horizontal list rows.
+static int convert_children(struct BGTK_Context *ctx, xmlNode *parent,
+			    int avail_w, struct BGTK_Widget ***out_items,
+			    int *out_count)
+{
+	int cap = 16, count = 0;
+	struct BGTK_Widget **items = calloc(cap, sizeof(struct BGTK_Widget *));
+	if (!items)
+		return -1;
+
+	// Temporary buffer for grouping inline widgets.
+	int inline_cap = 16, inline_count = 0;
+	struct BGTK_Widget **inline_buf = calloc(inline_cap, sizeof(struct BGTK_Widget *));
+
+	// Flush inline_buf into a single horizontal list and append to items.
+	#define FLUSH_INLINE() do { \
+		if (inline_count > 0) { \
+			BGTK_Options hopts = {.orientation = BGTK_LIST_HORIZONTAL, .margin = 0}; \
+			struct BGTK_Widget *row = bgtk_list(ctx, inline_buf, inline_count, hopts); \
+			if (row) { \
+				if (count >= cap) { cap *= 2; items = realloc(items, cap * sizeof(struct BGTK_Widget *)); } \
+				items[count++] = row; \
+			} \
+			inline_count = 0; \
+		} \
+	} while (0)
+
+	for (xmlNode *child = parent->children; child; child = child->next) {
+		// Pure text node -> inline text widget.
+		if (child->type == XML_TEXT_NODE) {
+			struct BGTK_Widget *tw = make_text_widget(ctx, (const char *)child->content);
+			if (tw) {
+				if (inline_count >= inline_cap) {
+					inline_cap *= 2;
+					inline_buf = realloc(inline_buf, inline_cap * sizeof(struct BGTK_Widget *));
+				}
+				inline_buf[inline_count++] = tw;
+			}
+			continue;
+		}
+
+		if (child->type != XML_ELEMENT_NODE)
+			continue;
+
+		const char *tag = (const char *)child->name;
+
+		if (is_inline_tag(tag)) {
+			struct BGTK_Widget *w = convert_node(ctx, child, avail_w);
+			if (w) {
+				if (inline_count >= inline_cap) {
+					inline_cap *= 2;
+					inline_buf = realloc(inline_buf, inline_cap * sizeof(struct BGTK_Widget *));
+				}
+				inline_buf[inline_count++] = w;
+			}
+			continue;
+		}
+
+		// Block element: flush any pending inlines, then convert.
+		FLUSH_INLINE();
+		struct BGTK_Widget *w = convert_node(ctx, child, avail_w);
+		if (w) {
+			if (count >= cap) {
+				cap *= 2;
+				items = realloc(items, cap * sizeof(struct BGTK_Widget *));
+			}
+			items[count++] = w;
+		}
+	}
+	FLUSH_INLINE();
+	#undef FLUSH_INLINE
+
+	free(inline_buf);
+	*out_items = items;
+	*out_count = count;
+	return 0;
+}
+
+// Generic block container (div, section, body, ul, ol, ...).
+static struct BGTK_Widget *convert_container(struct BGTK_Context *ctx,
+					     xmlNode *node, int avail_w)
+{
+	struct BGTK_Widget **items = NULL;
+	int count = 0;
+	if (convert_children(ctx, node, avail_w, &items, &count) < 0)
+		return NULL;
+
+	if (count == 0) {
+		free(items);
+		return NULL;
+	}
+	// Single child: return directly to avoid unnecessary nesting.
+	if (count == 1) {
+		struct BGTK_Widget *only = items[0];
+		free(items);
+		return only;
+	}
+
+	BGTK_Options opts = opts_from_node(node, 0, 0);
+	opts.orientation = BGTK_LIST_VERTICAL;
+	struct BGTK_Widget *list = bgtk_list(ctx, items, count, opts);
+	free(items);
+	return list;
+}
+
+// <li> -> bullet/number prefix + content in a horizontal row.
+static struct BGTK_Widget *convert_li(struct BGTK_Context *ctx, xmlNode *node,
+				      int avail_w, int ordered, int index)
+{
+	char prefix[16];
+	if (ordered)
+		snprintf(prefix, sizeof(prefix), "%d. ", index);
+	else
+		snprintf(prefix, sizeof(prefix), "- ");
+
+	struct BGTK_Widget *bullet = bgtk_text(ctx, prefix, (BGTK_Options){.margin = 2});
+	if (!bullet)
+		return NULL;
+
+	// The li content itself can be complex (nested blocks).
+	struct BGTK_Widget *content = convert_container(ctx, node, avail_w);
+	if (!content) {
+		// Fallback: try collecting text directly.
+		char *txt = collect_text(node);
+		if (txt && *txt) {
+			content = bgtk_text(ctx, txt, (BGTK_Options){.margin = 0});
+		}
+		free(txt);
+		if (!content)
+			return bullet; // degenerate: just the bullet
+	}
+
+	struct BGTK_Widget *row_items[2] = {bullet, content};
+	return bgtk_list(ctx, row_items, 2,
+			 (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .margin = 2});
+}
+
+// <ul> / <ol> -> vertical list of <li> items.
+static struct BGTK_Widget *convert_list(struct BGTK_Context *ctx, xmlNode *node,
+					int avail_w, int ordered)
+{
+	int cap = 16, count = 0;
+	struct BGTK_Widget **items = calloc(cap, sizeof(struct BGTK_Widget *));
+	if (!items)
+		return NULL;
+
+	int idx = 1;
+	for (xmlNode *child = node->children; child; child = child->next) {
+		if (child->type != XML_ELEMENT_NODE)
+			continue;
+		if (strcmp((const char *)child->name, "li") != 0)
+			continue;
+		struct BGTK_Widget *w = convert_li(ctx, child, avail_w, ordered, idx);
+		if (!w)
+			continue;
+		if (count >= cap) {
+			cap *= 2;
+			items = realloc(items, cap * sizeof(struct BGTK_Widget *));
+		}
+		items[count++] = w;
+		idx++;
+	}
+
+	if (count == 0) {
+		free(items);
+		return NULL;
+	}
+	BGTK_Options opts = opts_from_node(node, 0, 4);
+	opts.orientation = BGTK_LIST_VERTICAL;
+	struct BGTK_Widget *list = bgtk_list(ctx, items, count, opts);
+	free(items);
+	return list;
+}
+
+/* ------------------------------------------------------------------ */
+/* Main node dispatcher                                                */
+/* ------------------------------------------------------------------ */
+
+static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
+					xmlNode *node, int avail_w)
+{
+	if (!node)
+		return NULL;
+
+	// Pure text -> inline text widget.
+	if (node->type == XML_TEXT_NODE)
+		return make_text_widget(ctx, (const char *)node->content);
+
+	if (node->type != XML_ELEMENT_NODE)
+		return NULL;
+
+	const char *tag = (const char *)node->name;
+
+	if (strcmp(tag, "h1") == 0) return convert_heading(ctx, node, 1);
+	if (strcmp(tag, "h2") == 0) return convert_heading(ctx, node, 2);
+	if (strcmp(tag, "h3") == 0) return convert_heading(ctx, node, 3);
+	if (strcmp(tag, "h4") == 0) return convert_heading(ctx, node, 3);
+	if (strcmp(tag, "h5") == 0) return convert_heading(ctx, node, 3);
+	if (strcmp(tag, "h6") == 0) return convert_heading(ctx, node, 3);
+
+	if (strcmp(tag, "p") == 0)      return convert_p(ctx, node);
+	if (strcmp(tag, "b") == 0)      return convert_bold(ctx, node);
+	if (strcmp(tag, "strong") == 0) return convert_bold(ctx, node);
+	if (strcmp(tag, "i") == 0)      return convert_italic(ctx, node);
+	if (strcmp(tag, "em") == 0)     return convert_italic(ctx, node);
+	if (strcmp(tag, "a") == 0)      return convert_a(ctx, node);
+	if (strcmp(tag, "span") == 0)   return convert_italic(ctx, node); // plain text
+	if (strcmp(tag, "button") == 0) return convert_button(ctx, node);
+	if (strcmp(tag, "input") == 0)  return convert_input(ctx, node);
+	if (strcmp(tag, "select") == 0) return convert_select(ctx, node);
+	if (strcmp(tag, "img") == 0)    return convert_img(ctx, node);
+	if (strcmp(tag, "ul") == 0)     return convert_list(ctx, node, avail_w, 0);
+	if (strcmp(tag, "ol") == 0)     return convert_list(ctx, node, avail_w, 1);
+
+	// Generic containers: div, section, article, body, html, header, nav, footer, form, ...
+	return convert_container(ctx, node, avail_w);
+}
+
+/* ------------------------------------------------------------------ */
+/* Public API                                                          */
+/* ------------------------------------------------------------------ */
+
+static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
+				     int width, int height)
+{
+	if (!doc)
+		return NULL;
+
+	xmlNode *root = xmlDocGetRootElement(doc);
+	if (!root)
+		return NULL;
+
+	// Find <body> if present, otherwise use the root element.
+	xmlNode *body = NULL;
+	for (xmlNode *c = root->children; c; c = c->next) {
+		if (c->type == XML_ELEMENT_NODE &&
+		    strcmp((const char *)c->name, "body") == 0) {
+			body = c;
+			break;
+		}
+	}
+	if (!body)
+		body = root;
+
+	struct BGTK_Widget *content = convert_container(ctx, body, width);
+	if (!content) {
+		xmlFreeDoc(doc);
+		return NULL;
+	}
+
+	// Wrap in a scrollable frame so the page can scroll if content overflows.
+	struct BGTK_Widget **items = malloc(sizeof(struct BGTK_Widget *));
+	items[0] = content;
+	struct BGTK_Widget *scroll = bgtk_scrollable(ctx, items, 1,
+		(BGTK_Options){.padding = 4, .margin = 0});
+	free(items);
+	if (!scroll) {
+		xmlFreeDoc(doc);
+		return content; // fallback
+	}
+	scroll->w = width;
+	scroll->h = height;
+
+	struct BGTK_Widget *frame = bgtk_frame(ctx, scroll, width, height,
+		(BGTK_Options){.padding = 0, .margin = 0});
+
+	xmlFreeDoc(doc);
+	return frame ? frame : scroll;
+}
+
+struct BGTK_Widget *bgtk_html_parse(struct BGTK_Context *ctx,
+				    const char *path, int width, int height)
+{
+	if (!ctx || !path)
+		return NULL;
+
+	htmlDocPtr doc = htmlReadFile(path, NULL,
+		HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING | HTML_PARSE_RECOVER);
+	return parse_doc(ctx, doc, width, height);
+}
+
+struct BGTK_Widget *bgtk_html_parse_inline(struct BGTK_Context *ctx,
+					   const char *html, int width,
+					   int height)
+{
+	if (!ctx || !html)
+		return NULL;
+
+	htmlDocPtr doc = htmlReadMemory(html, (int)strlen(html), "inline.html",
+		NULL, HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING | HTML_PARSE_RECOVER);
+	return parse_doc(ctx, doc, width, height);
+}

@@ -23,13 +23,19 @@ endif
 OPENSSL_LIBDIRS := -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/lib -L/usr/local/opt/openssl/lib -L/usr/local/lib
 OPENSSL_LIBS := -lssl -lcrypto
 
-CFLAGS = -Wall -Wextra -Werror -I. $(FREETYPE_CFLAGS) -fPIC
+LIBXML2_CFLAGS := $(shell pkg-config --cflags libxml-2.0 2>/dev/null)
+LIBXML2_LIBS := $(shell pkg-config --libs libxml-2.0 2>/dev/null)
+ifeq ($(LIBXML2_LIBS),)
+  LIBXML2_LIBS := -lxml2
+endif
+
+CFLAGS = -Wall -Wextra -Werror -I. $(FREETYPE_CFLAGS) $(LIBXML2_CFLAGS) -fPIC
 
 # Full LDFLAGS are only for real (Linux + bgce server) binaries.
 # Include detected FREETYPE paths so linking works on macOS (Homebrew)
 # as well as Linux. FREETYPE_LIBDIRS may be empty when pkg-config succeeds
 # (because pkg-config --libs usually includes -L...).
-LDFLAGS = $(FREETYPE_LIBDIRS) $(FREETYPE_LIBS) -lbgce -lm
+LDFLAGS = $(FREETYPE_LIBDIRS) $(FREETYPE_LIBS) $(LIBXML2_LIBS) -lbgce -lm
 
 TARGET = libbgtk.so test_app image_viewer launcher terminal gemini_browser headless
 # On macOS (Darwin), plain `make` will try to build libbgtk.so and real
@@ -38,13 +44,13 @@ TARGET = libbgtk.so test_app image_viewer launcher terminal gemini_browser headl
 # You can still do `make terminal` (or the others) explicitly if you have
 # a bgce build for your platform.
 ifeq ($(shell uname),Darwin)
-  TARGET = headless test_terminal
+  TARGET = headless test_terminal test_html
 endif
 INSTALL_LIB = /usr/lib
 INSTALL_INCLUDE = /usr/include
 
-SRC = bgtk.c drawing.c widgets.c config.c
-LIB_OBJS = bgtk.o drawing.o widgets.o config.o
+SRC = bgtk.c drawing.c widgets.c config.c html.c
+LIB_OBJS = bgtk.o drawing.o widgets.o config.o html.o
 TEST_APP_OBJ = apps/test_app.o
 IMAGE_VIEWER_OBJ = apps/image_viewer.o
 LAUNCHER_OBJ = apps/launcher.o
@@ -61,11 +67,12 @@ GEMINI_BROWSER_OBJ = apps/gemini_browser.o
 # widget tree and visually inspect output by looking at the generated PNGs.
 COMPAT_DIR := compat
 HEADLESS_CFLAGS := $(CFLAGS) -I$(COMPAT_DIR)
-HEADLESS_LDFLAGS := $(FREETYPE_LIBS) $(FREETYPE_LIBDIRS) -lm
+HEADLESS_LDFLAGS := $(FREETYPE_LIBS) $(FREETYPE_LIBDIRS) $(LIBXML2_LIBS) -lm
 HEADLESS_STUB := $(COMPAT_DIR)/bgce_stub.o
 HEADLESS_OBJ := test/headless.o
 TEST_TERMINAL_OBJ := test/test_terminal.o
 TEST_GEMINI_OBJ := test/test_gemini_browser.o
+TEST_HTML_OBJ := test/test_html.o
 
 .PHONY: all clean test
 
@@ -97,7 +104,7 @@ terminal: $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS)
 # prerequisites of the "headless" target. This way normal Linux server
 # binaries (test_app, image_viewer, ...) continue to use the real system
 # bgce headers if present.
-$(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(TEST_GEMINI_OBJ): CFLAGS += -I$(COMPAT_DIR)
+$(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ): CFLAGS += -I$(COMPAT_DIR)
 
 $(HEADLESS_STUB): $(COMPAT_DIR)/bgce_stub.c
 	$(CC) $(HEADLESS_CFLAGS) -c -o $@ $<
@@ -127,11 +134,14 @@ test_terminal: $(TEST_TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS) $(HEADLESS_STUB
 test_gemini_browser: $(TEST_GEMINI_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 	$(CC) $(HEADLESS_CFLAGS) $(OPENSSL_CFLAGS) -o $@ $^ $(HEADLESS_LDFLAGS) $(OPENSSL_LIBDIRS) $(OPENSSL_LIBS)
 
+test_html: $(TEST_HTML_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
+	$(CC) $(HEADLESS_CFLAGS) -o $@ $^ $(HEADLESS_LDFLAGS)
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(TARGET) terminal test_terminal test_gemini_browser gemini_browser $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ)
+	rm -f $(TARGET) terminal test_terminal test_gemini_browser gemini_browser test_html $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ)
 
 
 .PHONY: install

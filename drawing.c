@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "bgtk.h"
 #include "internal.h"
@@ -371,15 +372,14 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 			     uint32_t *pixels)
 {
 	int level = w->data.text.header_level;
-	const char *t = w->data.text.text ? w->data.text.text : "";
 	uint32_t color = ctx->theme.button_text;
 	int old_size = ctx->font_size;
 	bool is_header = (level > 0 && level <= 3);
-	bool is_colored_text = (level == 10) || (t[0] == '=' && t[1] == '>' && t[2] == ' ') || (strncmp(t, "\xe2\x80\xa2 ", 4) == 0);
+	bool is_fuchsia_line = (level == 10);
 	if (is_header) {
 		color = BGTK_COLOR_FUCHSIA;
 		ctx->font_size = ctx->font_size + (4 - level);  // h1 biggest
-	} else if (is_colored_text) {
+	} else if (is_fuchsia_line) {
 		color = BGTK_COLOR_FUCHSIA;
 	}
 	if (is_header) {
