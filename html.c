@@ -510,6 +510,186 @@ static struct BGTK_Widget *convert_list(struct BGTK_Context *ctx, xmlNode *node,
 }
 
 /* ------------------------------------------------------------------ */
+/* Table converter                                                     */
+/* ------------------------------------------------------------------ */
+
+// Convert a single <td>/<th> cell into a frame widget with a 1px border.
+// For <th>, content gets bold styling.
+static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
+					xmlNode *node, int avail_w, int is_header)
+{
+	struct BGTK_Widget *content = convert_container(ctx, node, avail_w);
+	if (!content) {
+		char *txt = collect_text(node);
+		if (!txt || !*txt) {
+			free(txt);
+			txt = strdup(" ");
+		}
+		content = bgtk_text(ctx, txt, (BGTK_Options){0});
+		free(txt);
+		if (!content)
+			return NULL;
+	}
+	if (is_header && content->type == BGTK_WIDGET_TEXT)
+		content->data.text.header_level = 10;
+
+	int cell_pad = 4;
+	struct BGTK_Widget *frame = bgtk_frame(ctx, content,
+		content->w + 2 * cell_pad + 2, content->h + 2 * cell_pad + 2,
+		(BGTK_Options){.padding = cell_pad, .margin = 0});
+	if (frame) {
+		frame->data.frame.border_w = 1;
+		frame->data.frame.border_color = BGTK_COLOR_BLACK;
+	}
+	return frame;
+}
+
+// Collect all <tr> rows from a <table>, including those inside <thead>/<tbody>/<tfoot>.
+static int collect_rows(xmlNode *table, xmlNode ***out, int *out_count)
+{
+	int cap = 16, count = 0;
+	xmlNode **rows = calloc(cap, sizeof(xmlNode *));
+	if (!rows)
+		return -1;
+
+	for (xmlNode *child = table->children; child; child = child->next) {
+		if (child->type != XML_ELEMENT_NODE)
+			continue;
+		const char *n = (const char *)child->name;
+		if (strcmp(n, "tr") == 0) {
+			if (count >= cap) { cap *= 2; rows = realloc(rows, cap * sizeof(xmlNode *)); }
+			rows[count++] = child;
+		} else if (strcmp(n, "thead") == 0 || strcmp(n, "tbody") == 0 || strcmp(n, "tfoot") == 0) {
+			for (xmlNode *gc = child->children; gc; gc = gc->next) {
+				if (gc->type == XML_ELEMENT_NODE && strcmp((const char *)gc->name, "tr") == 0) {
+					if (count >= cap) { cap *= 2; rows = realloc(rows, cap * sizeof(xmlNode *)); }
+					rows[count++] = gc;
+				}
+			}
+		}
+	}
+	*out = rows;
+	*out_count = count;
+	return 0;
+}
+
+// <table> -> vertical list of horizontal rows with aligned column widths.
+static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
+					 xmlNode *node, int avail_w)
+{
+	xmlNode **tr_nodes = NULL;
+	int num_rows = 0;
+	if (collect_rows(node, &tr_nodes, &num_rows) < 0 || num_rows == 0) {
+		free(tr_nodes);
+		return NULL;
+	}
+
+	// Find the max column count across all rows.
+	int max_cols = 0;
+	for (int r = 0; r < num_rows; r++) {
+		int cols = 0;
+		for (xmlNode *c = tr_nodes[r]->children; c; c = c->next)
+			if (c->type == XML_ELEMENT_NODE &&
+			    (strcmp((const char *)c->name, "td") == 0 ||
+			     strcmp((const char *)c->name, "th") == 0))
+				cols++;
+		if (cols > max_cols)
+			max_cols = cols;
+	}
+	if (max_cols == 0) {
+		free(tr_nodes);
+		return NULL;
+	}
+
+	// Build a 2D array of cell widgets (num_rows x max_cols).
+	struct BGTK_Widget ***cells = calloc(num_rows, sizeof(struct BGTK_Widget **));
+	int *row_cols = calloc(num_rows, sizeof(int));
+	for (int r = 0; r < num_rows; r++) {
+		cells[r] = calloc(max_cols, sizeof(struct BGTK_Widget *));
+		int col = 0;
+		for (xmlNode *c = tr_nodes[r]->children; c; c = c->next) {
+			if (c->type != XML_ELEMENT_NODE)
+				continue;
+			const char *tn = (const char *)c->name;
+			if (strcmp(tn, "td") != 0 && strcmp(tn, "th") != 0)
+				continue;
+			if (col >= max_cols)
+				break;
+			cells[r][col] = convert_cell(ctx, c, avail_w / max_cols,
+						     strcmp(tn, "th") == 0);
+			col++;
+		}
+		row_cols[r] = col;
+	}
+
+	// Compute max width per column and max height per row.
+	int *col_widths = calloc(max_cols, sizeof(int));
+	int *row_heights = calloc(num_rows, sizeof(int));
+	for (int r = 0; r < num_rows; r++) {
+		for (int c = 0; c < row_cols[r]; c++) {
+			if (!cells[r][c])
+				continue;
+			if (cells[r][c]->w > col_widths[c])
+				col_widths[c] = cells[r][c]->w;
+			if (cells[r][c]->h > row_heights[r])
+				row_heights[r] = cells[r][c]->h;
+		}
+	}
+
+	// Equalize: every cell in a column gets the same width,
+	// every cell in a row gets the same height.
+	for (int r = 0; r < num_rows; r++) {
+		for (int c = 0; c < row_cols[r]; c++) {
+			if (!cells[r][c])
+				continue;
+			cells[r][c]->w = col_widths[c];
+			cells[r][c]->h = row_heights[r];
+		}
+	}
+	free(row_heights);
+
+	// Build horizontal list per row, then vertical list of rows.
+	struct BGTK_Widget **rows = calloc(num_rows, sizeof(struct BGTK_Widget *));
+	int valid_rows = 0;
+	for (int r = 0; r < num_rows; r++) {
+		if (row_cols[r] == 0)
+			continue;
+		rows[valid_rows] = bgtk_list(ctx, cells[r], row_cols[r],
+			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .margin = 0});
+		if (rows[valid_rows])
+			valid_rows++;
+	}
+
+	struct BGTK_Widget *table = NULL;
+	if (valid_rows > 0) {
+		// Inner list: zero margin so rows share borders.
+		BGTK_Options inner = {.orientation = BGTK_LIST_VERTICAL, .margin = 0};
+		struct BGTK_Widget *grid = bgtk_list(ctx, rows, valid_rows, inner);
+		if (grid) {
+			// Wrap in a frame for outer margin (like block-level HTML).
+			int tm = attr_int(node, "margin", 8);
+			table = bgtk_frame(ctx, grid,
+				grid->w + 2 * tm, grid->h + 2 * tm,
+				(BGTK_Options){.padding = 0, .margin = tm});
+			if (table) {
+				table->data.frame.border_w = 0;
+				table->data.frame.border_color = 0;
+			}
+		}
+	}
+
+	// Cleanup temp arrays (widget pointers are owned by the tree now).
+	for (int r = 0; r < num_rows; r++)
+		free(cells[r]);
+	free(cells);
+	free(row_cols);
+	free(col_widths);
+	free(rows);
+	free(tr_nodes);
+	return table;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main node dispatcher                                                */
 /* ------------------------------------------------------------------ */
 
@@ -548,6 +728,7 @@ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
 	if (strcmp(tag, "img") == 0)    return convert_img(ctx, node);
 	if (strcmp(tag, "ul") == 0)     return convert_list(ctx, node, avail_w, 0);
 	if (strcmp(tag, "ol") == 0)     return convert_list(ctx, node, avail_w, 1);
+	if (strcmp(tag, "table") == 0)  return convert_table(ctx, node, avail_w);
 
 	// Generic containers: div, section, article, body, html, header, nav, footer, form, ...
 	return convert_container(ctx, node, avail_w);

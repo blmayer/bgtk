@@ -571,7 +571,8 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		  w->w - 2 * w->margin, w->h - 2 * w->margin,
 		  ctx->theme.background);
 
-	uint32_t border = ctx->theme.frame_border_color;
+	uint32_t border = w->data.frame.border_color ? w->data.frame.border_color
+						     : ctx->theme.frame_border_color;
 
 	// If the whole window is unfocused, dim
 	// heavily.

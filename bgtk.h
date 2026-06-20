@@ -285,6 +285,7 @@ struct BGTK_Widget {
 		struct {
 			struct BGTK_Widget* child;
 			int border_w;
+			uint32_t border_color; // 0 = use theme default
 		} frame;
 		struct {
 			char* text;

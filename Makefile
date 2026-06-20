@@ -137,6 +137,13 @@ test_gemini_browser: $(TEST_GEMINI_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 test_html: $(TEST_HTML_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 	$(CC) $(HEADLESS_CFLAGS) -o $@ $^ $(HEADLESS_LDFLAGS)
 
+# Header dependencies so touching a .h triggers recompilation.
+CORE_HEADERS = bgtk.h internal.h config.h
+$(LIB_OBJS): $(CORE_HEADERS)
+html.o: html.h
+$(TEST_HTML_OBJ): html.h bgtk.h
+$(HEADLESS_OBJ): bgtk.h
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
