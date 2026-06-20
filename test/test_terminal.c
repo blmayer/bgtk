@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* test/test_terminal.c
  *
  * Headless test for the terminal emulator.
@@ -14,7 +15,6 @@
 #include <unistd.h>
 #include <poll.h>
 #include <fcntl.h>
-#include <termios.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 
@@ -55,15 +55,6 @@ static int open_pty_and_fork(int *out_master, int cols, int rows)
 		if (sfd < 0) _exit(127);
 		struct winsize ws = { .ws_row = rows, .ws_col = cols };
 		ioctl(sfd, TIOCSWINSZ, &ws);
-
-		/* Raw mode on slave so the shell controls echo/line editing */
-		struct termios tio;
-		if (tcgetattr(sfd, &tio) == 0) {
-			cfmakeraw(&tio);
-			tio.c_cc[VMIN] = 1;
-			tio.c_cc[VTIME] = 0;
-			tcsetattr(sfd, TCSANOW, &tio);
-		}
 
 		dup2(sfd, 0);
 		dup2(sfd, 1);

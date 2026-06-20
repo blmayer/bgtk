@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* apps/terminal.c
  *
  * Minimal terminal emulator – real-server entry point.
@@ -18,7 +19,6 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
-#include <termios.h>
 #include <unistd.h>
 
 #include "internal.h"
@@ -46,18 +46,6 @@ static int open_pty_and_fork(int *master_fd, int cols, int rows)
 		if (sfd < 0) _exit(127);
 		struct winsize ws = { .ws_row = rows, .ws_col = cols };
 		ioctl(sfd, TIOCSWINSZ, &ws);
-
-		/* Set slave to raw mode so the shell controls echo, editing, etc.
-		 * This is critical for proper terminal emulator behavior.
-		 */
-		struct termios tio;
-		if (tcgetattr(sfd, &tio) == 0) {
-			cfmakeraw(&tio);
-			/* Make sure we have at least some sane settings */
-			tio.c_cc[VMIN] = 1;
-			tio.c_cc[VTIME] = 0;
-			tcsetattr(sfd, TCSANOW, &tio);
-		}
 
 		dup2(sfd, 0);
 		dup2(sfd, 1);
