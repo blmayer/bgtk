@@ -78,17 +78,37 @@ Open the PNGs to see exactly what the UI looked like at each step. This is extre
 
 No `bgce` process or special permissions are required.
 
-## Themes
-Theme config files allow customizing the appearance of BGTK applications.
-To use a theme:
-1. Create a config file in `~/.config/bgtk.conf`.
-2. Define theme properties like colors and fonts in key-value pairs:
+## Configuration
 
+BGTK is configured via `~/.config/bgtk.conf`. Example with all options and their defaults:
+
+```ini
+# Background settings
+[background]
+type = color
+color = #AAAAAA
+# Or use an image:
+# type = image
+# path = /path/to/wallpaper.png
+# mode = tiled
+
+# Theme colors and border sizes
+[theme]
+background = #AAAAAA
+button = #888888
+button_text = #000000
+button_border_size = 1
+input_border_size = 1
+frame_border_size = 4
+frame_border_color = #FFFFFF
+
+# Font settings
+[font]
+path = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+size = 12
 ```
-background_color = #282828
-text_color = #ebdbb2
-font = /opt/fonts/.../DejaVu Sans.otf
-```
+
+Colors use `#RRGGBB` or `#RRGGBBAA` format. Lines starting with `#` or `;` are comments.
 
 
 ## Building

@@ -36,15 +36,32 @@ To keep track of the develoment check the commit log
 on the <a href=feed.xml>feed</a>.
 
 
-<b>Themes</b>
+<b>Configuration</b>
 
-BGTK supports themes via config the file. Define
-colors, fonts, and other visual properties in
-~/.config/bgtk.conf. Here's an example:
+BGTK is configured via ~/.config/bgtk.conf.
+Colors use #RRGGBB or #RRGGBBAA format.
+Example with all options and their defaults:
 
-	background_color = #282828
-	text_color = #ebdbb2
-	font = /opt/fonts/.../DejaVu Sans.otf
+	[background]
+	type = color
+	color = #AAAAAA
+	# Or use an image:
+	# type = image
+	# path = /path/to/wallpaper.png
+	# mode = tiled
+
+	[theme]
+	background = #AAAAAA
+	button = #888888
+	button_text = #000000
+	button_border_size = 1
+	input_border_size = 1
+	frame_border_size = 4
+	frame_border_color = #FFFFFF
+
+	[font]
+	path = /usr/share/fonts/.../DejaVuSans.ttf
+	size = 12
 
 
 <b>Build Instructions</b>
