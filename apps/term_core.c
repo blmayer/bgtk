@@ -248,14 +248,18 @@ static void csi_dispatch(struct Term_State *t, char final,
 	case 'n':
 		if (p0 == 6 && t->pty_fd >= 0) {
 			char buf[32];
-			int n = snprintf(buf, sizeof(buf), "\033[%d;%dR",
+			int n = snprintf(buf, sizeof(buf),
+					 t->csi_priv ? "\033[?%d;%dR"
+						     : "\033[%d;%dR",
 					 t->cur_row + 1, t->cur_col + 1);
 			(void)write(t->pty_fd, buf, n);
 		}
 		break;
 	case 'c':
 		if (t->pty_fd >= 0) {
-			const char *resp = "\033[?1;2c";
+			const char *resp = t->csi_priv
+				? "\033[>0;0;0c"   /* Secondary DA */
+				: "\033[?1;2c";    /* Primary DA */
 			(void)write(t->pty_fd, resp, strlen(resp));
 		}
 		break;
