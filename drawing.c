@@ -97,20 +97,25 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 	case BGTK_WIDGET_LABEL:
 		if (w->data.label.text) {
 			calculate_widget_size(ctx, w->data.label.text);
-			w->w = w->data.label.text->w +
+			int nw = w->data.label.text->w +
 			    2 * (w->padding + w->margin);
-			w->h = w->data.label.text->h +
+			int nh = w->data.label.text->h +
 			    2 * (w->padding + w->margin);
+			// Keep a larger pre-set width (for text_align room).
+			if (w->w < nw)
+				w->w = nw;
+			w->h = nh;
 		}
 		break;
 	case BGTK_WIDGET_TEXT:
 		if (w->data.text.text) {
-			measure_text(ctx->ft_face, w->data.text.text,
-				     &w->w, &w->h);
-			// Add padding + margin to the text widget
-			// (outer size)
-			w->w += 2 * (w->padding + w->margin);
-			w->h += 2 * (w->padding + w->margin);
+			int tw = 0, th = 0;
+			measure_text(ctx->ft_face, w->data.text.text, &tw, &th);
+			int nw = tw + 2 * (w->padding + w->margin);
+			int nh = th + 2 * (w->padding + w->margin);
+			if (w->w < nw)
+				w->w = nw;
+			w->h = nh;
 		}
 		break;
 	case BGTK_WIDGET_BUTTON:
@@ -121,10 +126,13 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 			if (border_w < 1) {
 				border_w = 1;
 			}
-			w->w = w->data.button.label->w +
+			int nw = w->data.button.label->w +
 			    2 * (w->margin + w->padding + border_w);
-			w->h = w->data.button.label->h +
+			int nh = w->data.button.label->h +
 			    2 * (w->margin + w->padding + border_w);
+			if (w->w < nw)
+				w->w = nw;
+			w->h = nh;
 		}
 		break;
 
@@ -353,6 +361,20 @@ static void draw_image(struct BGTK_Context *ctx, struct BGTK_Widget w,
 	}
 }
 
+// Compute horizontal offset for text_align within a content box of width
+// content_w given measured text width text_w.
+static int text_align_offset(enum BGTK_Text_Align align, int content_w,
+			     int text_w)
+{
+	if (content_w <= text_w)
+		return 0;
+	if (align == BGTK_ALIGN_CENTER)
+		return (content_w - text_w) / 2;
+	if (align == BGTK_ALIGN_RIGHT)
+		return content_w - text_w;
+	return 0;  // BGTK_ALIGN_LEFT
+}
+
 static void draw_label(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		       uint32_t *pixels)
 {
@@ -360,9 +382,13 @@ static void draw_label(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
 		  w->w - 2 * w->margin, w->h - 2 * w->margin,
 		  ctx->theme.background);
-	// Draw text widget (offset for padding and margin)
+	// Draw text widget (offset for padding and margin + alignment)
 	if (w->data.label.text) {
-		w->data.label.text->x = w->x + w->margin + w->padding;
+		int content_x0 = w->x + w->margin + w->padding;
+		int content_w = w->w - 2 * (w->margin + w->padding);
+		int ax = text_align_offset(w->text_align, content_w,
+					   w->data.label.text->w);
+		w->data.label.text->x = content_x0 + ax;
 		w->data.label.text->y = w->y + w->margin + w->padding;
 		draw_widget(ctx, w->data.label.text, pixels);
 	}
@@ -382,14 +408,21 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	} else if (is_fuchsia_line) {
 		color = BGTK_COLOR_FUCHSIA;
 	}
+
+	int content_x0 = w->x + w->margin + w->padding;
+	int content_y0 = w->y + w->margin + w->padding;
+	int content_w = w->w - 2 * (w->margin + w->padding);
+	int tw = 0, th = 0;
+	measure_text(ctx->ft_face, w->data.text.text, &tw, &th);
+	int ax = text_align_offset(w->text_align, content_w, tw);
+	int tx = content_x0 + ax;
+	int ty = content_y0;
+
 	if (is_header) {
 		// cheap bold effect via 1px offset
-		draw_text(ctx, pixels, w->data.text.text,
-			  w->x + w->margin + w->padding + 1,
-			  w->y + w->margin + w->padding + 1, color);
+		draw_text(ctx, pixels, w->data.text.text, tx + 1, ty + 1, color);
 	}
-	draw_text(ctx, pixels, w->data.text.text, w->x + w->margin + w->padding,
-		  w->y + w->margin + w->padding, color);
+	draw_text(ctx, pixels, w->data.text.text, tx, ty, color);
 	if (is_header) {
 		ctx->font_size = old_size;
 	}
@@ -448,8 +481,10 @@ static void draw_button(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 			content_h = 0;
 		}
 
+		// Horizontal: respect text_align; vertical: always center
 		int lx = content_x0 +
-		    (content_w - w->data.button.label->w) / 2 + off;
+		    text_align_offset(w->text_align, content_w,
+				      w->data.button.label->w) + off;
 		int ly = content_y0 +
 		    (content_h - w->data.button.label->h) / 2 + off;
 
@@ -648,13 +683,26 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		scroll_x = 0;
 	}
 
-	int draw_x = text_x - scroll_x;
 	const char *full =
 	    w->data.text_input.text ? w->data.text_input.text : "";
 
 	if (!ctx->ft_face) {
 		return;
 	}
+
+	// Align text within the inner content area when it fits without scroll.
+	int content_w = inner_w - 2 * w->padding;
+	if (content_w < 1) {
+		content_w = 1;
+	}
+	int tw = 0, th = 0;
+	measure_text(ctx->ft_face, full, &tw, &th);
+	int align_off = 0;
+	if (scroll_x == 0 && tw < content_w) {
+		align_off = text_align_offset(w->text_align, content_w, tw);
+	}
+
+	int draw_x = text_x - scroll_x + align_off;
 
 	int stride = ctx->width;
 	FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
@@ -725,7 +773,7 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	}
 
 	if (focused) {
-		int cursor_x = text_x - scroll_x;
+		int cursor_x = text_x - scroll_x + align_off;
 		for (uint32_t i = 0; i < w->data.text_input.cursor_pos; i++) {
 			FT_UInt index =
 			    FT_Get_Char_Index(ctx->ft_face,

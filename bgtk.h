@@ -219,7 +219,14 @@ enum BGTK_Widget_Type {
 };
 
 // Widget flags
-#define BGTK_FLAG_CENTER (1 << 0)  // Center widgets horizontally
+#define BGTK_FLAG_CENTER (1 << 0)  // Center child widgets horizontally (containers)
+
+// Text alignment within a widget's content area (like CSS text-align)
+enum BGTK_Text_Align {
+	BGTK_ALIGN_LEFT = 0,
+	BGTK_ALIGN_CENTER,
+	BGTK_ALIGN_RIGHT,
+};
 
 // List widget orientation
 enum BGTK_List_Orientation {
@@ -232,6 +239,7 @@ typedef struct {
 	int flags;      // Flags for widget behavior (e.g., BGTK_FLAG_CENTER).
 	int padding;    // Internal spacing (pixels).
 	int margin;     // External spacing (pixels).
+	enum BGTK_Text_Align text_align;  // Horizontal text alignment (default: left)
 	enum BGTK_List_Orientation orientation;  // For list widget: vertical or horizontal
 } BGTK_Options;
 
@@ -243,6 +251,7 @@ struct BGTK_Widget {
 	int flags;          // Flags for widget behavior
 	int padding;        // Internal spacing (pixels)
 	int margin;         // External spacing (pixels)
+	enum BGTK_Text_Align text_align;  // Horizontal text alignment
 	
 	// Function pointer for event handling
 	int (*handle_event)(struct BGTK_Widget* widget, struct InputEvent ev);

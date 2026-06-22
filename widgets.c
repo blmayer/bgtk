@@ -566,6 +566,7 @@ static struct BGTK_Widget *widget_new(struct BGTK_Context *ctx,
 	widget->flags = options.flags;
 	widget->padding = options.padding;
 	widget->margin = options.margin;
+	widget->text_align = options.text_align;
 	widget->w = 0;
 	widget->h = 0;
 
@@ -581,9 +582,10 @@ void set_label(struct BGTK_Widget *widget, char *label)
 		free(widget->data.label.text->data.text.text);
 		free(widget->data.label.text);
 	}
-	// Create a new text widget for the label
+	// Create a new text widget for the label (inherit alignment)
 	struct BGTK_Widget *text_widget =
-	    bgtk_text(widget->ctx, label, (BGTK_Options) {.flags = 0 });
+	    bgtk_text(widget->ctx, label,
+		      (BGTK_Options) {.text_align = widget->text_align });
 	if (!text_widget) {
 		perror("BGTK Failed to create text widget for " "label");
 		return;
@@ -609,9 +611,10 @@ struct BGTK_Widget *bgtk_label(struct BGTK_Context *ctx, char *text,
 
 	widget->data.label.set_label = set_label;
 
-	// Create a text widget for the label
+	// Create a text widget for the label (inherit alignment)
 	struct BGTK_Widget *text_widget =
-	    bgtk_text(ctx, text, (BGTK_Options) {.flags = 0 });
+	    bgtk_text(ctx, text,
+		      (BGTK_Options) {.text_align = options.text_align });
 	if (!text_widget) {
 		perror("BGTK Failed to create text widget for " "label");
 		free(widget);
