@@ -525,7 +525,7 @@ int main(void)
 
 	/* create button first to know its size, then size the input to make the row (address bar + button) full width */
 	struct BGTK_Widget *go_label = bgtk_text(ctx, "Go", (BGTK_Options){.padding = 2, .margin = 0});
-	struct BGTK_Widget *go_btn = bgtk_button(ctx, go_label, NULL,
+	struct BGTK_Widget *go_btn = bgtk_button(ctx, go_label, NULL, NULL,
 						 (BGTK_Options){.padding = 4, .margin = 2});
 	int input_w = usable_w - go_btn->w - 16;  /* leave room for row padding/margins */
 	addr_input = bgtk_text_input(ctx, "gemini://geminiprotocol.net/", input_w > 100 ? input_w : 400, 0,

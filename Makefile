@@ -44,7 +44,7 @@ TARGET = libbgtk.so test_app image_viewer launcher terminal gemini_browser headl
 # You can still do `make terminal` (or the others) explicitly if you have
 # a bgce build for your platform.
 ifeq ($(shell uname),Darwin)
-  TARGET = headless test_terminal test_html
+  TARGET = headless test_terminal test_html test_settings
 endif
 INSTALL_LIB = /usr/lib
 INSTALL_INCLUDE = /usr/include
@@ -73,6 +73,8 @@ HEADLESS_OBJ := test/headless.o
 TEST_TERMINAL_OBJ := test/test_terminal.o
 TEST_GEMINI_OBJ := test/test_gemini_browser.o
 TEST_HTML_OBJ := test/test_html.o
+SETTINGS_OBJ := apps/settings.o
+TEST_SETTINGS_OBJ := test/test_settings.o
 
 .PHONY: all clean test
 
@@ -104,7 +106,7 @@ terminal: $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS)
 # prerequisites of the "headless" target. This way normal Linux server
 # binaries (test_app, image_viewer, ...) continue to use the real system
 # bgce headers if present.
-$(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ): CFLAGS += -I$(COMPAT_DIR)
+$(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ) $(SETTINGS_OBJ) $(TEST_SETTINGS_OBJ) apps/settings_test.o: CFLAGS += -I$(COMPAT_DIR)
 
 $(HEADLESS_STUB): $(COMPAT_DIR)/bgce_stub.c
 	$(CC) $(HEADLESS_CFLAGS) -c -o $@ $<
@@ -137,18 +139,38 @@ test_gemini_browser: $(TEST_GEMINI_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 test_html: $(TEST_HTML_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 	$(CC) $(HEADLESS_CFLAGS) -o $@ $^ $(HEADLESS_LDFLAGS)
 
+# Settings app (real BGCE)
+settings: $(SETTINGS_OBJ) $(LIB_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# Settings headless test: compile apps/settings.c with SETTINGS_TEST_MODE
+# so its main() is excluded, then link test_settings.c as the driver.
+SETTINGS_TEST_OBJ := apps/settings_test.o
+
+$(SETTINGS_TEST_OBJ): apps/settings.c
+	$(CC) $(CFLAGS) -DSETTINGS_TEST_MODE -c -o $@ $<
+
+$(TEST_SETTINGS_OBJ): test/test_settings.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+test_settings: $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
+	$(CC) $(HEADLESS_CFLAGS) -o $@ $^ $(HEADLESS_LDFLAGS)
+
 # Header dependencies so touching a .h triggers recompilation.
 CORE_HEADERS = bgtk.h internal.h config.h
 $(LIB_OBJS): $(CORE_HEADERS)
 html.o: html.h
 $(TEST_HTML_OBJ): html.h bgtk.h
 $(HEADLESS_OBJ): bgtk.h
+$(SETTINGS_OBJ): html.h bgtk.h config.h
+$(SETTINGS_TEST_OBJ): html.h bgtk.h config.h
+$(TEST_SETTINGS_OBJ): html.h bgtk.h config.h
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(TARGET) terminal test_terminal test_gemini_browser gemini_browser test_html $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ)
+	rm -f $(TARGET) terminal test_terminal test_gemini_browser gemini_browser test_html test_settings settings $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ) $(SETTINGS_OBJ) $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ)
 
 
 .PHONY: install

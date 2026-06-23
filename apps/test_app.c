@@ -10,7 +10,8 @@ static struct BGTK_Widget* counter_label = NULL;
 static struct BGTK_Widget* text_input = NULL;
 struct BGTK_Context* ctx = NULL;
 
-void button_callback(void) {
+void button_callback(void *userdata) {
+	(void)userdata;
 	counter++;
 	printf("Button clicked! Counter: %d\n", counter);
 
@@ -85,7 +86,7 @@ int main(void) {
 						     });
 
 	struct BGTK_Widget* button =
-	    bgtk_button(ctx, button_label, button_callback,
+	    bgtk_button(ctx, button_label, button_callback, NULL,
 			(BGTK_Options){
 			    .flags = 0,
 			    .padding = 10,

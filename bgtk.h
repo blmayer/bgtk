@@ -164,7 +164,7 @@ enum BGTK_Color {
 };
 
 // Function pointer for button callbacks
-typedef void (*BGTK_Callback)(void);
+typedef void (*BGTK_Callback)(void *userdata);
 
 // BGTK_Context: Holds the state of the BGTK application
 struct BGTK_Context {
@@ -265,7 +265,9 @@ struct BGTK_Widget {
 		struct {
 			struct BGTK_Widget* label;  // Label widget for button
 			BGTK_Callback callback;
+			void *cb_data;  // user data forwarded to callback
 			int pressed;  // non-zero while mouse button is held down on this widget
+			uint32_t bg_override;  // 0 = use theme, non-zero = custom bg color
 		} button;
 		struct {
 			char* text;
@@ -339,7 +341,8 @@ int bgtk_inject_event(struct BGTK_Context* ctx, struct InputEvent ev);
 struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text, BGTK_Options options);
 struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
 			struct BGTK_Widget* text,
-			BGTK_Callback callback, BGTK_Options options);
+			BGTK_Callback callback, void *cb_data,
+			BGTK_Options options);
 
 struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, BGTK_Options options);
 

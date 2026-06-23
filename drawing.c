@@ -431,7 +431,7 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 static void draw_button(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 			uint32_t *pixels)
 {
-	uint32_t bg = ctx->theme.button;
+	uint32_t bg = w->data.button.bg_override ? w->data.button.bg_override : ctx->theme.button;
 	if (w->data.button.pressed) {
 		// TODO: create a config them for this color
 		uint8_t a = (bg >> 24) & 0xFF;

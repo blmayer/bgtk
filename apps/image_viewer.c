@@ -10,7 +10,8 @@ static struct BGTK_Widget* text_input = NULL;
 static struct BGTK_Widget* image_widget = NULL;
 static struct BGTK_Widget* col = NULL;  // Parent list widget
 
-static void load_button_clicked(void) {
+static void load_button_clicked(void *userdata) {
+	(void)userdata;
 	if (!ctx || !text_input || text_input->type != BGTK_WIDGET_TEXT_INPUT) {
 		return;
 	}
@@ -85,7 +86,7 @@ int main(void) {
 						     });
 	struct BGTK_Widget* button = bgtk_button(ctx,
 						 button_label,
-						 load_button_clicked,
+						 load_button_clicked, NULL,
 						 (BGTK_Options){
 						     .flags = 0,
 						     .padding = 5,

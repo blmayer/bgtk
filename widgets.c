@@ -56,7 +56,7 @@ static int button_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 
 		if (was_pressed && inside) {
 			if (widget->data.button.callback) {
-				widget->data.button.callback();
+				widget->data.button.callback(widget->data.button.cb_data);
 			}
 			return 1;
 		}
@@ -655,7 +655,8 @@ struct BGTK_Widget *bgtk_text(struct BGTK_Context *ctx, char *text,
 
 struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,
 				struct BGTK_Widget *label,
-				BGTK_Callback callback, BGTK_Options options)
+				BGTK_Callback callback, void *cb_data,
+				BGTK_Options options)
 {
 	struct BGTK_Widget *widget =
 	    widget_new(ctx, BGTK_WIDGET_BUTTON, options);
@@ -665,6 +666,7 @@ struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,
 	}
 
 	widget->data.button.callback = callback;
+	widget->data.button.cb_data = cb_data;
 	widget->data.button.label = label;
 	widget->data.button.pressed = 0;
 

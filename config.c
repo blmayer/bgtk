@@ -97,6 +97,63 @@ void init_config_defaults(struct config *config)
 
 
 
+void format_hex_color(uint32_t color, char *buf, int buflen)
+{
+	unsigned r = (color >> 16) & 0xFF;
+	unsigned g = (color >> 8) & 0xFF;
+	unsigned b = color & 0xFF;
+	snprintf(buf, buflen, "#%02X%02X%02X", r, g, b);
+}
+
+int write_config(const struct config *config)
+{
+	const char *home = getenv("HOME");
+	if (!home)
+		return -1;
+
+	char path[512];
+	snprintf(path, sizeof(path), "%s/.config/bgtk.conf", home);
+	FILE *f = fopen(path, "w");
+	if (!f) {
+		perror("[BGTK] Write config file");
+		return -1;
+	}
+
+	char c[16];
+
+	fprintf(f, "[background]\n");
+	if (config->type == BG_IMAGE) {
+		fprintf(f, "type = image\n");
+		fprintf(f, "path = %s\n", config->path);
+		fprintf(f, "mode = %s\n", config->mode == IMAGE_SCALED ? "scaled" : "tiled");
+	} else {
+		fprintf(f, "type = color\n");
+		format_hex_color(config->color, c, sizeof(c));
+		fprintf(f, "color = %s\n", c);
+	}
+
+	fprintf(f, "\n[theme]\n");
+	format_hex_color(config->theme.background, c, sizeof(c));
+	fprintf(f, "background = %s\n", c);
+	format_hex_color(config->theme.button, c, sizeof(c));
+	fprintf(f, "button = %s\n", c);
+	format_hex_color(config->theme.button_text, c, sizeof(c));
+	fprintf(f, "button_text = %s\n", c);
+	fprintf(f, "button_border_size = %u\n", config->theme.button_border_size);
+	fprintf(f, "input_border_size = %u\n", config->theme.input_border_size);
+	fprintf(f, "frame_border_size = %u\n", config->theme.frame_border_size);
+	format_hex_color(config->theme.frame_border_color, c, sizeof(c));
+	fprintf(f, "frame_border_color = %s\n", c);
+
+	fprintf(f, "\n[font]\n");
+	if (config->font_path[0])
+		fprintf(f, "path = %s\n", config->font_path);
+	fprintf(f, "size = %d\n", config->font_size);
+
+	fclose(f);
+	return 0;
+}
+
 // Parse config file
 int parse_config(struct config *config)
 {

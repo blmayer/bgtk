@@ -26,8 +26,9 @@
 static int clicks = 0;
 static struct BGTK_Widget *counter_label = NULL;
 
-static void on_click(void)
+static void on_click(void *userdata)
 {
+	(void)userdata;
 	clicks++;
 	if (counter_label && counter_label->data.label.set_label) {
 		char buf[64];
@@ -60,7 +61,7 @@ static struct BGTK_Widget *align_column(struct BGTK_Context *ctx,
 	struct BGTK_Widget *l = fix_w(bgtk_label(ctx, "label", ao), row_w);
 	struct BGTK_Widget *bl = bgtk_text(ctx, "btn", (BGTK_Options){.padding = 2, .text_align = align});
 	struct BGTK_Widget *b = fix_w(
-		bgtk_button(ctx, bl, NULL, (BGTK_Options){.padding = 6, .margin = 2, .text_align = align}),
+		bgtk_button(ctx, bl, NULL, NULL, (BGTK_Options){.padding = 6, .margin = 2, .text_align = align}),
 		row_w);
 	struct BGTK_Widget *ti = bgtk_text_input(ctx, "input", row_w, 0, ao);
 	if (out_input)
@@ -127,7 +128,7 @@ int main(void)
 	struct BGTK_Widget *title = bgtk_text(ctx, "headless test", (BGTK_Options){.padding = 4, .margin = 2});
 
 	struct BGTK_Widget *btn_label = bgtk_text(ctx, "click me", (BGTK_Options){.padding = 2});
-	struct BGTK_Widget *btn = bgtk_button(ctx, btn_label, on_click, (BGTK_Options){.padding = 8, .margin = 4});
+	struct BGTK_Widget *btn = bgtk_button(ctx, btn_label, on_click, NULL, (BGTK_Options){.padding = 8, .margin = 4});
 
 	counter_label = bgtk_label(ctx, "clicks: 0", (BGTK_Options){.padding = 2, .margin = 2});
 

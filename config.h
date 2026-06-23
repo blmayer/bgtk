@@ -47,6 +47,12 @@ struct config {
 
 int parse_config(struct config* config);
 
+// Write the config struct back to ~/.config/bgtk.conf.
+int write_config(const struct config* config);
+
+// Format a 0xAARRGGBB color as #RRGGBB (buf must be >= 8 bytes).
+void format_hex_color(uint32_t color, char *buf, int buflen);
+
 // Initialize a config struct with built-in sane defaults (theme, font size, etc.).
 // Called by parse_config and bgtk_init so that init only loads/overrides.
 void init_config_defaults(struct config *config);

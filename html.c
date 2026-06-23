@@ -224,7 +224,7 @@ static struct BGTK_Widget *convert_button(struct BGTK_Context *ctx,
 	free(txt);
 	if (!label)
 		return NULL;
-	return bgtk_button(ctx, label, NULL, opts);
+	return bgtk_button(ctx, label, NULL, NULL, opts);
 }
 
 // <input type="text"> -> BGTK_WIDGET_TEXT_INPUT.
@@ -254,7 +254,7 @@ static struct BGTK_Widget *convert_checkbox(struct BGTK_Context *ctx,
 	struct BGTK_Widget *label = bgtk_text(ctx, (char *)txt, (BGTK_Options){0});
 	if (!label)
 		return NULL;
-	return bgtk_button(ctx, label, NULL, opts);
+	return bgtk_button(ctx, label, NULL, NULL, opts);
 }
 
 // <select> with <option> children -> vertical list of labels.
