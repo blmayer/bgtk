@@ -120,6 +120,9 @@ static int scan_fonts(char ***out)
 {
 	static const char *dirs[] = {
 #ifdef __linux__
+		"/share/fonts/truetype",
+		"/share/fonts/TTF",
+		"/share/fonts/opentype",
 		"/usr/share/fonts/truetype",
 		"/usr/share/fonts/TTF",
 		"/usr/share/fonts/opentype",

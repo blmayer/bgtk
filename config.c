@@ -77,6 +77,8 @@ void init_config_defaults(struct config *config)
 	if (config->font_path[0] == '\0') {
 		static const char *d[] = {
 #ifdef __linux__
+			"/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+			"/share/fonts/TTF/DejaVuSans.ttf",
 			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 			"/usr/share/fonts/TTF/DejaVuSans.ttf",
 #endif

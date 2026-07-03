@@ -104,7 +104,7 @@ frame_border_color = #FFFFFF
 
 # Font settings
 [font]
-path = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+path = /share/fonts/truetype/dejavu/DejaVuSans.ttf
 size = 12
 ```
 
@@ -114,14 +114,18 @@ Colors use `#RRGGBB` or `#RRGGBBAA` format. Lines starting with `#` or `;` are c
 ## Building
 
 Requirements:
-- A C compiler (GCC or Clang).
-- FreeType development libraries.
+- A C compiler (`cc` on lin0 / TinyCC, or GCC/Clang elsewhere).
+- FreeType and libxml2 libraries/headers.
+- BGCE (`libbgce`, `bgce.h`) for real apps.
+
+On lin0 (flat `/bin` `/lib` `/include`, compiler `/bin/cc`):
 
 ```sh
-make
+make CC=cc
+make install
 ```
 
-Note: A running BGCE server is only required for real applications. The headless/mock test binary (`make headless`) does not require BGCE at all.
+Defaults install to `/lib` and `/include` (override with `INSTALL_LIB` / `INSTALL_INCLUDE` / `INSTALL_BIN`). A running BGCE server is only required for real applications; `make headless` does not need BGCE.
 
 
 ## Running

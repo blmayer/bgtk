@@ -3,17 +3,19 @@
 # Base flags. Freetype path is discovered via pkg-config when available
 # (works on Linux and on macOS with Homebrew). The hardcoded fallback is
 # the common Linux location.
+CC ?= cc
+
 FREETYPE_CFLAGS := $(shell pkg-config --cflags freetype2 2>/dev/null)
 ifeq ($(FREETYPE_CFLAGS),)
-  FREETYPE_CFLAGS := -I/usr/include/freetype2
+  FREETYPE_CFLAGS := -I/include/freetype2
 endif
 
 FREETYPE_LIBS := $(shell pkg-config --libs freetype2 2>/dev/null)
 FREETYPE_LIBDIRS :=
 ifeq ($(FREETYPE_LIBS),)
-  # Common fallbacks: Linux default + macOS Homebrew (Apple Silicon + Intel)
+  # Flat /lib (lin0) plus macOS Homebrew fallbacks for dev hosts
   FREETYPE_LIBS := -lfreetype
-  FREETYPE_LIBDIRS := -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
+  FREETYPE_LIBDIRS := -L/lib -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
 endif
 
 OPENSSL_CFLAGS := $(shell pkg-config --cflags openssl 2>/dev/null)
@@ -24,6 +26,9 @@ OPENSSL_LIBDIRS := -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/openssl@3
 OPENSSL_LIBS := -lssl -lcrypto
 
 LIBXML2_CFLAGS := $(shell pkg-config --cflags libxml-2.0 2>/dev/null)
+ifeq ($(LIBXML2_CFLAGS),)
+  LIBXML2_CFLAGS := -I/include/libxml2
+endif
 LIBXML2_LIBS := $(shell pkg-config --libs libxml-2.0 2>/dev/null)
 ifeq ($(LIBXML2_LIBS),)
   LIBXML2_LIBS := -lxml2
@@ -46,8 +51,9 @@ TARGET = libbgtk.so test_app image_viewer launcher terminal gemini_browser headl
 ifeq ($(shell uname),Darwin)
   TARGET = headless test_terminal test_html test_settings
 endif
-INSTALL_LIB = /usr/lib
-INSTALL_INCLUDE = /usr/include
+INSTALL_LIB = /lib
+INSTALL_INCLUDE = /include
+INSTALL_BIN = /bin
 
 SRC = bgtk.c drawing.c widgets.c config.c html.c
 LIB_OBJS = bgtk.o drawing.o widgets.o config.o html.o
@@ -179,7 +185,11 @@ install: libbgtk.so bgtk.h
 	install -m 755 libbgtk.so $(INSTALL_LIB)
 	install -d $(INSTALL_INCLUDE)
 	install -m 644 bgtk.h $(INSTALL_INCLUDE)
-	ldconfig
+	-install -d $(INSTALL_BIN)
+	-for f in test_app image_viewer launcher terminal settings; do \
+		if [ -f $$f ]; then install -m 755 $$f $(INSTALL_BIN); fi; \
+	done
+	-ldconfig 2>/dev/null || true
 
 .PHONY: test
 test: test_app image_viewer
