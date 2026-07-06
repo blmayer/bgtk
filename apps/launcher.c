@@ -21,6 +21,8 @@ static int num_programs = 0;
 static char* match_ptrs[16];
 static int num_matches = 0;
 static int selected = -1;
+/* Set after a successful spawn so main can tear down and exit. */
+static int quit_after_launch = 0;
 
 static void load_programs(void)
 {
@@ -143,14 +145,14 @@ static void on_tab_pressed(void)
 }
 
 /* Spawn a program without inheriting the launcher's BGCE socket (or any
- * other fds). Inheriting the compositor connection and then exit()'ing the
- * parent was crashing the session when launching apps. */
-static void spawn_program(const char *prog)
+ * other fds). Closing those in the child is what prevents a session crash
+ * when the launcher then exits. */
+static int spawn_program(const char *prog)
 {
 	pid_t pid = fork();
 	if (pid < 0) {
 		bgtk_log_errno("fork to launch '%s'", prog);
-		return;
+		return -1;
 	}
 	if (pid == 0) {
 		/* New session: not a child of the launcher process group. */
@@ -177,15 +179,16 @@ static void spawn_program(const char *prog)
 		/* exec failed — cannot log (fds closed); hard-exit. */
 		_exit(127);
 	}
-	/* Parent keeps running as the launcher. */
-	bgtk_log("spawned '%s' as pid=%ld", prog, (long)pid);
+	bgtk_log("spawned '%s' as pid=%ld; launcher will exit", prog, (long)pid);
+	return 0;
 }
 
 static void on_enter_pressed(void)
 {
 	if (selected < 0 || selected >= num_matches)
 		return;
-	spawn_program(match_ptrs[selected]);
+	if (spawn_program(match_ptrs[selected]) == 0)
+		quit_after_launch = 1;
 }
 
 /* Size input + match list to fill the current window. */
@@ -276,7 +279,7 @@ int main(void)
 	int quit = 0;
 	struct BGCEMessage msg;
 	ssize_t bytes;
-	while (!quit) {
+	while (!quit && !quit_after_launch) {
 		bytes = bgce_recv_msg(ctx->conn_fd, &msg);
 		if (bytes <= 0) {
 			if (bytes == 0)
@@ -315,10 +318,14 @@ int main(void)
 			break;
 		}
 
-		if (need_draw)
+		if (need_draw && !quit_after_launch)
 			bgtk_draw_widgets(ctx);
 	}
 
+	/* Clean disconnect so BGCE does not see a half-dead client after spawn. */
+	int conn = ctx->conn_fd;
 	bgtk_destroy(ctx);
+	if (conn >= 0)
+		bgce_disconnect(conn);
 	return 0;
 }
