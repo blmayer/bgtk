@@ -914,10 +914,17 @@ int main(void)
 	struct BGCEMessage msg;
 	while (bgce_recv_msg(conn, &msg) > 0) {
 		if (msg.type == MSG_INPUT_EVENT) {
-			bgtk_handle_input_event(c, msg.data.input_event);
-			bgtk_draw_widgets(c);
+			/* Ignore pure pointer motion — redrawing every move
+			 * freezes the UI under hover. Only key/button (and
+			 * wheel, handled inside widgets) need handling. */
+			if (msg.data.input_event.type == EV_REL ||
+			    msg.data.input_event.type == EV_ABS)
+				continue;
+			if (bgtk_handle_input_event(c, msg.data.input_event))
+				bgtk_draw_widgets(c);
 		} else if (msg.type == MSG_FOCUS_CHANGE) {
 			bgtk_set_window_focus(c, msg.data.focus_event.state);
+			/* set_window_focus already redraws */
 		} else if (msg.type == MSG_BUFFER_CHANGE) {
 			if (bgtk_handle_buffer_change(c, &msg.data.buffer_reply) == 0)
 				bgtk_draw_widgets(c);
