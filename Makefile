@@ -5,42 +5,53 @@
 # the common Linux location.
 CC ?= cc
 
-FREETYPE_CFLAGS := $(shell pkg-config --cflags freetype2 2>/dev/null)
+# User-local prefix (bgce, freetype, libxml, etc. under a home install).
+HOME_LOCAL ?= $(HOME)/.local
+# FreeType headers live in include/freetype2, not only include/.
+HOME_LOCAL_CFLAGS = -I$(HOME_LOCAL)/include -I$(HOME_LOCAL)/include/freetype2 \
+	-I$(HOME_LOCAL)/include/libxml2
+HOME_LOCAL_LDFLAGS = -L$(HOME_LOCAL)/lib
+# So pkg-config finds .pc files from a home-prefix install.
+PKG_CONFIG_ENV = PKG_CONFIG_PATH="$(HOME_LOCAL)/lib/pkgconfig:$(HOME_LOCAL)/share/pkgconfig:$${PKG_CONFIG_PATH}"
+
+FREETYPE_CFLAGS := $(shell $(PKG_CONFIG_ENV) pkg-config --cflags freetype2 2>/dev/null)
 ifeq ($(FREETYPE_CFLAGS),)
-  FREETYPE_CFLAGS := -I/include/freetype2
+  FREETYPE_CFLAGS := -I$(HOME_LOCAL)/include/freetype2 -I$(HOME_LOCAL)/include \
+	-I/include/freetype2
 endif
 
-FREETYPE_LIBS := $(shell pkg-config --libs freetype2 2>/dev/null)
-FREETYPE_LIBDIRS :=
+FREETYPE_LIBS := $(shell $(PKG_CONFIG_ENV) pkg-config --libs freetype2 2>/dev/null)
+# Always search home lib for -lfreetype even when pkg-config returns flags.
+FREETYPE_LIBDIRS := -L$(HOME_LOCAL)/lib
 ifeq ($(FREETYPE_LIBS),)
   # Flat /lib (lin0) plus macOS Homebrew fallbacks for dev hosts
   FREETYPE_LIBS := -lfreetype
-  FREETYPE_LIBDIRS := -L/lib -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
+  FREETYPE_LIBDIRS += -L/lib -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
 endif
 
-OPENSSL_CFLAGS := $(shell pkg-config --cflags openssl 2>/dev/null)
+OPENSSL_CFLAGS := $(shell $(PKG_CONFIG_ENV) pkg-config --cflags openssl 2>/dev/null)
 ifeq ($(OPENSSL_CFLAGS),)
-  OPENSSL_CFLAGS := -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/include -I/usr/local/opt/openssl/include
+  OPENSSL_CFLAGS := -I$(HOME_LOCAL)/include \
+	-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/openssl@3/include \
+	-I/opt/homebrew/include -I/usr/local/opt/openssl/include
 endif
-OPENSSL_LIBDIRS := -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/lib -L/usr/local/opt/openssl/lib -L/usr/local/lib
+OPENSSL_LIBDIRS := -L$(HOME_LOCAL)/lib \
+	-L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/openssl@3/lib \
+	-L/opt/homebrew/lib -L/usr/local/opt/openssl/lib -L/usr/local/lib
 OPENSSL_LIBS := -lssl -lcrypto
 
-LIBXML2_CFLAGS := $(shell pkg-config --cflags libxml-2.0 2>/dev/null)
+LIBXML2_CFLAGS := $(shell $(PKG_CONFIG_ENV) pkg-config --cflags libxml-2.0 2>/dev/null)
 ifeq ($(LIBXML2_CFLAGS),)
-  LIBXML2_CFLAGS := -I/include/libxml2
+  LIBXML2_CFLAGS := -I$(HOME_LOCAL)/include/libxml2 -I$(HOME_LOCAL)/include \
+	-I/include/libxml2
 endif
-LIBXML2_LIBS := $(shell pkg-config --libs libxml-2.0 2>/dev/null)
+LIBXML2_LIBS := $(shell $(PKG_CONFIG_ENV) pkg-config --libs libxml-2.0 2>/dev/null)
 ifeq ($(LIBXML2_LIBS),)
-  LIBXML2_LIBS := -lxml2
+  LIBXML2_LIBS := -L$(HOME_LOCAL)/lib -lxml2
 endif
 
 COMPAT_DIR := compat
 UNAME_S := $(shell uname)
-
-# User-local prefix (bgce, freetype, etc. under a home install).
-HOME_LOCAL ?= $(HOME)/.local
-HOME_LOCAL_CFLAGS = -I$(HOME_LOCAL)/include
-HOME_LOCAL_LDFLAGS = -L$(HOME_LOCAL)/lib
 
 # Base compile flags. Do NOT put -fPIC here: TinyCC errors with
 # "section type conflict: .symtab 01 <> 02" when linking many PIC
@@ -148,7 +159,9 @@ help:
 	@echo "Variables (override on the command line)"
 	@echo "  CC=$(CC)"
 	@echo "  CFLAGS=$(CFLAGS)"
-	@echo "  HOME_LOCAL=$(HOME_LOCAL)   # added as -I.../include and -L.../lib"
+	@echo "  HOME_LOCAL=$(HOME_LOCAL)"
+	@echo "    compile: -I\$$HOME_LOCAL/include{,/freetype2,/libxml2}"
+	@echo "    link:    -L\$$HOME_LOCAL/lib  (and pkg-config under lib/pkgconfig)"
 	@echo "  PREFIX=$(if $(PREFIX),$(PREFIX),(empty → flat /lib /include /bin))"
 	@echo "  INSTALL_LIB=$(INSTALL_LIB)"
 	@echo "  INSTALL_INCLUDE=$(INSTALL_INCLUDE)"
