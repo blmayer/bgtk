@@ -68,9 +68,13 @@ TARGET = libbgtk.so test_app image_viewer launcher terminal settings gemini_brow
 ifeq ($(UNAME_S),Darwin)
   TARGET = headless test_terminal test_html test_settings
 endif
-INSTALL_LIB = /lib
-INSTALL_INCLUDE = /include
-INSTALL_BIN = /bin
+
+# Install layout. Empty PREFIX → flat root (/lib, /include, /bin) for lin0.
+# Example: make install PREFIX=/usr/local
+PREFIX ?=
+INSTALL_LIB ?= $(PREFIX)/lib
+INSTALL_INCLUDE ?= $(PREFIX)/include
+INSTALL_BIN ?= $(PREFIX)/bin
 
 SRC = bgtk.c drawing.c widgets.c config.c html.c
 LIB_OBJS = bgtk.o drawing.o widgets.o config.o html.o
@@ -94,9 +98,63 @@ SETTINGS_OBJ := apps/settings.o
 TEST_SETTINGS_OBJ := test/test_settings.o
 SETTINGS_TEST_OBJ := apps/settings_test.o
 
-.PHONY: all clean test install
+.PHONY: all clean test install help snapshot
 
 all: $(TARGET)
+
+# Print targets and overrideable variables. Default goal remains `all`;
+# run explicitly: make help
+help:
+	@echo "BGTK — Brian's Graphical Toolkit"
+	@echo ""
+	@echo "Usage:  make [target] [VAR=value ...]"
+	@echo ""
+	@echo "Default on this host ($(UNAME_S)):"
+	@echo "  all → $(TARGET)"
+	@echo ""
+	@echo "Targets"
+	@echo "  help                 Show this help"
+	@echo "  all                  Default build for this platform (see above)"
+	@echo ""
+	@echo "  Library / real apps (need BGCE on Linux)"
+	@echo "  libbgtk.so           Shared library"
+	@echo "  test_app             Demo widget app"
+	@echo "  image_viewer         Image viewer"
+	@echo "  launcher             Application launcher (exits after spawn)"
+	@echo "  terminal             Terminal emulator (PTY)"
+	@echo "  settings             Theme/font/background settings UI"
+	@echo "  gemini_browser       Gemini browser (needs OpenSSL)"
+	@echo ""
+	@echo "  Headless / mock tests (no BGCE server; produce PNGs)"
+	@echo "  headless             Basic widgets + input screenshots"
+	@echo "  test_terminal        Terminal/ANSI (+ optional real PTY) screenshots"
+	@echo "  test_html            HTML → widget tree screenshots"
+	@echo "  test_settings        Settings UI screenshots"
+	@echo "  test_gemini_browser  Gemini browser flow screenshots (OpenSSL)"
+	@echo ""
+	@echo "  Maintenance"
+	@echo "  install              Install lib, header, and built apps"
+	@echo "  clean                Remove binaries and objects"
+	@echo "  test                 Smoke-run test_app + image_viewer under bgce"
+	@echo "  snapshot             Regenerate www/bgtk.tar.gz from HEAD"
+	@echo ""
+	@echo "Variables (override on the command line)"
+	@echo "  CC=$(CC)"
+	@echo "  CFLAGS=$(CFLAGS)"
+	@echo "  PREFIX=$(if $(PREFIX),$(PREFIX),(empty → flat /lib /include /bin))"
+	@echo "  INSTALL_LIB=$(INSTALL_LIB)"
+	@echo "  INSTALL_INCLUDE=$(INSTALL_INCLUDE)"
+	@echo "  INSTALL_BIN=$(INSTALL_BIN)"
+	@echo ""
+	@echo "Examples"
+	@echo "  make"
+	@echo "  make CC=cc"
+	@echo "  make terminal settings"
+	@echo "  make headless && ./headless"
+	@echo "  make install"
+	@echo "  make install PREFIX=/usr/local"
+	@echo "  make install INSTALL_LIB=/opt/bgtk/lib INSTALL_INCLUDE=/opt/bgtk/include"
+	@echo "  make snapshot"
 
 # Shared library objects need -fPIC; app objects must not (TinyCC).
 $(LIB_OBJS): CFLAGS += -fPIC
@@ -217,3 +275,9 @@ test: test_app image_viewer
 	@echo "Killing BGCE server (PID: $$BGCE_PID)..."
 	kill $$BGCE_PID 2>/dev/null || true
 	@echo "Test complete."
+
+# Source tarball for the project site (excludes itself via .gitattributes).
+snapshot:
+	git archive --worktree-attributes --format=tar.gz --prefix=bgtk/ \
+		-o www/bgtk.tar.gz HEAD
+	@ls -lh www/bgtk.tar.gz
