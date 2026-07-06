@@ -37,10 +37,15 @@ endif
 COMPAT_DIR := compat
 UNAME_S := $(shell uname)
 
+# User-local prefix (bgce, freetype, etc. under a home install).
+HOME_LOCAL ?= $(HOME)/.local
+HOME_LOCAL_CFLAGS = -I$(HOME_LOCAL)/include
+HOME_LOCAL_LDFLAGS = -L$(HOME_LOCAL)/lib
+
 # Base compile flags. Do NOT put -fPIC here: TinyCC errors with
 # "section type conflict: .symtab 01 <> 02" when linking many PIC
 # relocatable objects into a normal executable. PIC is only for lib objs.
-CFLAGS = -Wall -Wextra -Werror -I. $(FREETYPE_CFLAGS) $(LIBXML2_CFLAGS)
+CFLAGS = -Wall -Wextra -Werror -I. $(HOME_LOCAL_CFLAGS) $(FREETYPE_CFLAGS) $(LIBXML2_CFLAGS)
 
 # On non-Linux (no system bgce / linux/input.h), use the in-tree stubs.
 ifneq ($(UNAME_S),Linux)
@@ -48,7 +53,7 @@ ifneq ($(UNAME_S),Linux)
 endif
 
 # Full LDFLAGS are only for real (Linux + bgce server) binaries.
-LDFLAGS = $(FREETYPE_LIBDIRS) $(FREETYPE_LIBS) $(LIBXML2_LIBS) -lbgce -lm
+LDFLAGS = $(HOME_LOCAL_LDFLAGS) $(FREETYPE_LIBDIRS) $(FREETYPE_LIBS) $(LIBXML2_LIBS) -lbgce -lm
 # Prefer in-tree libbgtk.so when linking apps (before any system copy).
 # Runtime search is left to the dynamic linker / LD_LIBRARY_PATH (e.g. home
 # PREFIX installs); we do not bake rpath into the binaries.
@@ -90,7 +95,7 @@ GEMINI_BROWSER_OBJ = apps/gemini_browser.o
 # ---------- Headless / mock testing support ----------
 # Headless links the bgce stub and does not need a running server.
 HEADLESS_CFLAGS := $(CFLAGS) -I$(COMPAT_DIR)
-HEADLESS_LDFLAGS := -L. $(FREETYPE_LIBS) $(FREETYPE_LIBDIRS) $(LIBXML2_LIBS) -lm
+HEADLESS_LDFLAGS := -L. $(HOME_LOCAL_LDFLAGS) $(FREETYPE_LIBS) $(FREETYPE_LIBDIRS) $(LIBXML2_LIBS) -lm
 HEADLESS_STUB := $(COMPAT_DIR)/bgce_stub.o
 HEADLESS_OBJ := test/headless.o
 TEST_TERMINAL_OBJ := test/test_terminal.o
@@ -143,6 +148,7 @@ help:
 	@echo "Variables (override on the command line)"
 	@echo "  CC=$(CC)"
 	@echo "  CFLAGS=$(CFLAGS)"
+	@echo "  HOME_LOCAL=$(HOME_LOCAL)   # added as -I.../include and -L.../lib"
 	@echo "  PREFIX=$(if $(PREFIX),$(PREFIX),(empty → flat /lib /include /bin))"
 	@echo "  INSTALL_LIB=$(INSTALL_LIB)"
 	@echo "  INSTALL_INCLUDE=$(INSTALL_INCLUDE)"
@@ -156,6 +162,7 @@ help:
 	@echo "  make install"
 	@echo "  make install PREFIX=/usr/local"
 	@echo "  make install PREFIX=\$$HOME/.local"
+	@echo "  make HOME_LOCAL=\$$HOME/.local"
 	@echo "  make install INSTALL_LIB=/opt/bgtk/lib INSTALL_INCLUDE=/opt/bgtk/include"
 	@echo "  make snapshot"
 
