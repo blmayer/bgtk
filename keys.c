@@ -34,6 +34,18 @@ int bgtk_mods_from_ctx(const struct BGTK_Context *ctx)
 	return m;
 }
 
+int bgtk_is_app_quit_event(const struct BGTK_Context *ctx, struct InputEvent ev)
+{
+	if (ev.type != EV_KEY || (ev.value != 1 && ev.value != 2))
+		return 0;
+	if (ev.code == KEY_ESC)
+		return 1;
+	/* Ctrl+C: quit normal apps (terminal must not call this). */
+	if (ev.code == KEY_C && ctx && ctx->ctrl_held)
+		return 1;
+	return 0;
+}
+
 static int letter_index(int code)
 {
 	static const int kmap[] = {

@@ -221,6 +221,11 @@ int bgtk_mods_from_ctx(const struct BGTK_Context *ctx);
 // US QWERTY keycode → bytes. Returns length written (0 if unmapped).
 int bgtk_key_to_bytes(int code, int mods, int mode, char *out, int max);
 
+// True if this key should exit a normal GUI app: Esc, or Ctrl+C.
+// Call after bgtk_update_modifiers (or bgtk_handle_input_event's mod update).
+// Do NOT use in the terminal emulator (Ctrl+C must go to the PTY).
+int bgtk_is_app_quit_event(const struct BGTK_Context *ctx, struct InputEvent ev);
+
 // Sets the focused widget for keyboard input.
 // Passing NULL clears focus.
 void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget);

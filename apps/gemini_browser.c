@@ -680,18 +680,22 @@ int main(void)
 		bytes = bgce_recv_msg(ctx->conn_fd, &msg);
 		if (bytes <= 0) {
 			if (bytes == 0)
-				fprintf(stderr, "gemini_browser: Server closed connection.\n");
+				bgtk_log("server closed connection");
 			else if (errno != EINTR)
-				perror("gemini_browser: bgce_recv_msg");
+				bgtk_log_errno("bgce_recv_msg");
 			break;
 		}
 
 		int res = 0;
 		switch (msg.type) {
 		case MSG_INPUT_EVENT:
-			if (msg.data.input_event.type != EV_REL && msg.data.input_event.type != EV_ABS) {
-				res = bgtk_handle_input_event(ctx, msg.data.input_event);
-			}
+			if (msg.data.input_event.type == EV_REL ||
+			    msg.data.input_event.type == EV_ABS)
+				break;
+			bgtk_update_modifiers(ctx, msg.data.input_event);
+			if (bgtk_is_app_quit_event(ctx, msg.data.input_event))
+				goto done;
+			res = bgtk_handle_input_event(ctx, msg.data.input_event);
 			break;
 		case MSG_FOCUS_CHANGE:
 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
@@ -709,9 +713,9 @@ int main(void)
 			break;
 		}
 		if (res)
-			bgce_draw(conn_fd);
+			bgtk_draw_widgets(ctx);
 	}
-
+done:
 	bgtk_destroy(ctx);
 	return 0;
 }

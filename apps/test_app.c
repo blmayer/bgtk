@@ -170,46 +170,41 @@ int main(void) {
 	while (1) {
 		bytes = bgce_recv_msg(ctx->conn_fd, &msg);
 		if (bytes <= 0) {
-			if (bytes == 0) {
-				fprintf(stderr,
-					"bgtk_main_loop: Server closed "
-					"connection.\n");
-			} else if (errno != EINTR) {
-				perror("bgtk_main_loop: bgce_recv_msg");
-			}
+			if (bytes == 0)
+				bgtk_log("server closed connection");
+			else if (errno != EINTR)
+				bgtk_log_errno("bgce_recv_msg");
 			break;
 		}
 
 		int res = 0;
 		switch (msg.type) {
-			case MSG_INPUT_EVENT:
-				// Ignore mouse movement for now to avoid excessive redraw/event spam
-				if (msg.data.input_event.type != EV_REL &&
-				    msg.data.input_event.type != EV_ABS) {
-					res = bgtk_handle_input_event(
-					    ctx, msg.data.input_event);
-				}
+		case MSG_INPUT_EVENT:
+			if (msg.data.input_event.type == EV_REL ||
+			    msg.data.input_event.type == EV_ABS)
 				break;
-			case MSG_FOCUS_CHANGE:
-				bgtk_set_window_focus(ctx, msg.data.focus_event.state);
-				break;
-			case MSG_BUFFER_CHANGE:
-				if (bgtk_handle_buffer_change(ctx, &msg.data.buffer_reply) == 0) {
-					bgtk_draw_widgets(ctx);
-					res = 0; /* draw already submitted */
-				}
-				break;
-			default:
-				// Ignore other messages for now
-				printf("Ignoring message\n");
-				break;
+			bgtk_update_modifiers(ctx, msg.data.input_event);
+			if (bgtk_is_app_quit_event(ctx, msg.data.input_event))
+				goto done;
+			res = bgtk_handle_input_event(ctx, msg.data.input_event);
+			break;
+		case MSG_FOCUS_CHANGE:
+			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
+			break;
+		case MSG_BUFFER_CHANGE:
+			if (bgtk_handle_buffer_change(ctx, &msg.data.buffer_reply) == 0) {
+				bgtk_draw_widgets(ctx);
+				res = 0;
+			}
+			break;
+		default:
+			break;
 		}
 
-		if (res) {
-			bgce_draw(conn_fd);
-		}
+		if (res)
+			bgtk_draw_widgets(ctx);
 	}
-
+done:
 	bgtk_destroy(ctx);
 	return 0;
 }

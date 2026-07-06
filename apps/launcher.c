@@ -292,16 +292,15 @@ int main(void)
 		int need_draw = 0;
 		switch (msg.type) {
 		case MSG_INPUT_EVENT:
-			if (msg.data.input_event.type == EV_KEY &&
-			    msg.data.input_event.code == KEY_ESC &&
-			    msg.data.input_event.value == 1) {
+			if (msg.data.input_event.type == EV_REL ||
+			    msg.data.input_event.type == EV_ABS)
+				break;
+			bgtk_update_modifiers(ctx, msg.data.input_event);
+			if (bgtk_is_app_quit_event(ctx, msg.data.input_event)) {
 				quit = 1;
 				break;
 			}
-			if (msg.data.input_event.type != EV_REL &&
-			    msg.data.input_event.type != EV_ABS) {
-				need_draw = bgtk_handle_input_event(ctx, msg.data.input_event);
-			}
+			need_draw = bgtk_handle_input_event(ctx, msg.data.input_event);
 			break;
 		case MSG_FOCUS_CHANGE:
 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
