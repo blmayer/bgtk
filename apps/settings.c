@@ -916,10 +916,11 @@ int main(void)
 		if (msg.type == MSG_INPUT_EVENT) {
 			bgtk_handle_input_event(c, msg.data.input_event);
 			bgtk_draw_widgets(c);
-			bgce_draw(conn);
 		} else if (msg.type == MSG_FOCUS_CHANGE) {
 			bgtk_set_window_focus(c, msg.data.focus_event.state);
-			bgce_draw(conn);
+		} else if (msg.type == MSG_BUFFER_CHANGE) {
+			if (bgtk_handle_buffer_change(c, &msg.data.buffer_reply) == 0)
+				bgtk_draw_widgets(c);
 		}
 	}
 

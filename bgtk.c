@@ -4,12 +4,14 @@
 
 #include <bgce.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/input.h>
 #include <stdarg.h>
 #include <stb_image_write.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
@@ -232,6 +234,7 @@ struct BGTK_Context *bgtk_init_mock(int width, int height)
 	ctx->conn_fd = -1;
 	ctx->width = width;
 	ctx->height = height;
+	ctx->buffer_mapped = 0;
 	ctx->shm_buffer = calloc((size_t)width * height * BGCE_BYTES_PER_PIXEL, 1);
 	if (!ctx->shm_buffer) {
 		perror("calloc framebuffer");
@@ -347,6 +350,7 @@ struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
 	}
 	ctx->width = width;
 	ctx->height = height;
+	ctx->buffer_mapped = 1; /* caller mapped via bgce_get_buffer / mmap */
 
 	bgtk_init_resources(ctx);
 	if (!ctx->ft_library) {
@@ -355,6 +359,79 @@ struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
 		return NULL;
 	}
 	return ctx;
+}
+
+static void bgtk_release_buffer(struct BGTK_Context *ctx)
+{
+	if (!ctx || !ctx->shm_buffer)
+		return;
+	size_t bytes = (size_t)ctx->width * (size_t)ctx->height * BGCE_BYTES_PER_PIXEL;
+	if (ctx->buffer_mapped) {
+		if (bytes > 0)
+			munmap(ctx->shm_buffer, bytes);
+	} else {
+		free(ctx->shm_buffer);
+	}
+	ctx->shm_buffer = NULL;
+}
+
+int bgtk_handle_buffer_change(struct BGTK_Context *ctx,
+			      const struct BufferReply *reply)
+{
+	if (!ctx || !reply || !reply->shm_name[0] ||
+	    reply->width == 0 || reply->height == 0) {
+		bgtk_log("buffer change: invalid reply");
+		return -1;
+	}
+
+	size_t new_bytes = (size_t)reply->width * (size_t)reply->height *
+			   BGCE_BYTES_PER_PIXEL;
+	int fd = bgce_buf_open(reply->shm_name);
+	if (fd < 0) {
+		bgtk_log_errno("buffer change: open '%s'", reply->shm_name);
+		return -1;
+	}
+	void *map = mmap(NULL, new_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	close(fd);
+	if (map == MAP_FAILED) {
+		bgtk_log_errno("buffer change: mmap %ux%u", reply->width,
+			       reply->height);
+		return -1;
+	}
+
+	bgtk_log("buffer change %dx%d -> %ux%u shm='%s'",
+		 ctx->width, ctx->height, reply->width, reply->height,
+		 reply->shm_name);
+
+	bgtk_release_buffer(ctx);
+	ctx->shm_buffer = map;
+	ctx->buffer_mapped = 1;
+	ctx->width = (int)reply->width;
+	ctx->height = (int)reply->height;
+	if (ctx->root_widget) {
+		ctx->root_widget->w = ctx->width;
+		ctx->root_widget->h = ctx->height;
+	}
+	return 0;
+}
+
+int bgtk_resize_mock(struct BGTK_Context *ctx, int width, int height)
+{
+	if (!ctx || width < 1 || height < 1 || ctx->buffer_mapped)
+		return -1;
+	void *nb = calloc((size_t)width * (size_t)height * BGCE_BYTES_PER_PIXEL, 1);
+	if (!nb)
+		return -1;
+	bgtk_release_buffer(ctx);
+	ctx->shm_buffer = nb;
+	ctx->buffer_mapped = 0;
+	ctx->width = width;
+	ctx->height = height;
+	if (ctx->root_widget) {
+		ctx->root_widget->w = width;
+		ctx->root_widget->h = height;
+	}
+	return 0;
 }
 
 static void destroy_widget(struct BGTK_Widget *w);
@@ -369,8 +446,8 @@ void bgtk_destroy(struct BGTK_Context *ctx)
 		ctx->root_widget = NULL;
 		ctx->focused_widget = NULL;
 	}
-	// Free FreeType resources (buffer ownership is with caller for real init,
-	// or handled in bgtk_destroy_mock for headless).
+	/* Release framebuffer (mmap for real apps, malloc for mock). */
+	bgtk_release_buffer(ctx);
 	if (ctx->ft_face) {
 		FT_Done_Face(ctx->ft_face);
 	}
@@ -383,12 +460,7 @@ void bgtk_destroy(struct BGTK_Context *ctx)
 
 void bgtk_destroy_mock(struct BGTK_Context *ctx)
 {
-	if (ctx) {
-		if (ctx->shm_buffer) {
-			free(ctx->shm_buffer);
-			ctx->shm_buffer = NULL;
-		}
-	}
+	/* buffer released inside bgtk_destroy via bgtk_release_buffer. */
 	bgtk_destroy(ctx);
 }
 

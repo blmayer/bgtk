@@ -39,6 +39,17 @@ void *bgce_get_buffer(int conn, struct BufferRequest req)
 	return NULL;
 }
 
+int bgce_buf_open(const char *name)
+{
+	(void)name;
+	return -1;
+}
+
+void bgce_buf_unlink(const char *name)
+{
+	(void)name;
+}
+
 int bgce_move(int fd, int x, int y)
 {
 	(void)fd; (void)x; (void)y;

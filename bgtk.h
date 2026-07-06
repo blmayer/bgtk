@@ -170,6 +170,9 @@ typedef void (*BGTK_Callback)(void *userdata);
 struct BGTK_Context {
 	int conn_fd;  // File descriptor for BGCE connection
 	void* shm_buffer;
+	// 1 = shm_buffer is mmap'd (real BGCE); 0 = malloc'd (mock).
+	// Used so resize can munmap/free the previous mapping correctly.
+	int buffer_mapped;
 	int width;
 	int height;
 
@@ -345,6 +348,17 @@ int take_screenshot(struct BGTK_Context* ctx, const char* path);
 // Inject a synthetic input event (for testing). Coordinates are absolute widget coords.
 // Returns non-zero if a redraw was triggered.
 int bgtk_inject_event(struct BGTK_Context* ctx, struct InputEvent ev);
+
+// Handle MSG_BUFFER_CHANGE from BGCE: unmap the old framebuffer, mmap the new
+// one from reply->shm_name, update ctx size, and size the root widget to the
+// new window. Does not draw — call bgtk_draw_widgets() after any app-specific
+// reflow. Returns 0 on success, -1 on failure.
+int bgtk_handle_buffer_change(struct BGTK_Context *ctx,
+			      const struct BufferReply *reply);
+
+// Mock/test helper: reallocate the owned framebuffer to a new size and size
+// the root widget. Returns 0 on success.
+int bgtk_resize_mock(struct BGTK_Context *ctx, int width, int height);
 
 // --- Widget Creation Functions ---
 // Creates a label widget.

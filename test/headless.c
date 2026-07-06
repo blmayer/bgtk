@@ -188,6 +188,18 @@ int main(void)
 	key.code = KEY_BACKSPACE; bgtk_inject_event(ctx, key);
 	take_screenshot(ctx, "headless_04_backspaced.png");
 
+	/* 6b. Resize the mock framebuffer (simulates MSG_BUFFER_CHANGE path). */
+	if (bgtk_resize_mock(ctx, 520, 320) != 0) {
+		bgtk_log("headless: resize mock failed");
+		return 1;
+	}
+	if (ctx->root_widget) {
+		ctx->root_widget->w = ctx->width;
+		ctx->root_widget->h = ctx->height;
+	}
+	bgtk_draw_widgets(ctx);
+	take_screenshot(ctx, "headless_04b_resized.png");
+
 	bgtk_destroy_mock(ctx);
 
 	/* 7. text_align showcase (separate scene, wider canvas) */

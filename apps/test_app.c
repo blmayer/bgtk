@@ -194,7 +194,10 @@ int main(void) {
 				bgtk_set_window_focus(ctx, msg.data.focus_event.state);
 				break;
 			case MSG_BUFFER_CHANGE:
-				// TODO: Handle buffer resize/move
+				if (bgtk_handle_buffer_change(ctx, &msg.data.buffer_reply) == 0) {
+					bgtk_draw_widgets(ctx);
+					res = 0; /* draw already submitted */
+				}
 				break;
 			default:
 				// Ignore other messages for now

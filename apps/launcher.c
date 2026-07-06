@@ -153,6 +153,38 @@ static void on_enter_pressed(void)
 	exit(0);
 }
 
+/* Size input + match list to fill the current window. */
+static void layout_launcher(void)
+{
+	if (!ctx)
+		return;
+	int pad = 8;
+	int inner_w = ctx->width - 2 * pad;
+	int inner_h = ctx->height - 2 * pad;
+	if (inner_w < 40)
+		inner_w = 40;
+	if (inner_h < 40)
+		inner_h = 40;
+
+	if (text_input) {
+		text_input->w = inner_w;
+		/* height stays content-sized; force a sensible min */
+		if (text_input->h < 28)
+			text_input->h = 28;
+	}
+	if (matches_scroll) {
+		int input_h = text_input ? text_input->h + 8 : 36;
+		matches_scroll->w = inner_w;
+		matches_scroll->h = inner_h - input_h;
+		if (matches_scroll->h < 40)
+			matches_scroll->h = 40;
+	}
+	if (ctx->root_widget) {
+		ctx->root_widget->w = ctx->width;
+		ctx->root_widget->h = ctx->height;
+	}
+}
+
 int main(void)
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -189,21 +221,20 @@ int main(void)
 	text_input->data.text_input.on_enter = on_enter_pressed;
 
 	matches_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 4});
-	matches_scroll->w = 440;
-	matches_scroll->h = 220;
 
 	struct BGTK_Widget* layout_items[2] = {text_input, matches_scroll};
 	struct BGTK_Widget* layout = bgtk_list(ctx, layout_items, 2, (BGTK_Options){.orientation = BGTK_LIST_VERTICAL});
 
-	struct BGTK_Widget* frame = bgtk_frame(ctx, layout, 480, 300, (BGTK_Options){.padding = 8});
+	struct BGTK_Widget* frame = bgtk_frame(ctx, layout, width, height, (BGTK_Options){.padding = 8});
 
 	ctx->root_widget = frame;
+	layout_launcher();
 	bgtk_set_focus(ctx, text_input);
 
 	update_matches("");
 	rebuild_matches_ui();
 
-	printf("Starting launcher main loop (%dx%d)...\n", ctx->width, ctx->height);
+	bgtk_log("Starting launcher main loop (%dx%d)", ctx->width, ctx->height);
 
 	int quit = 0;
 	struct BGCEMessage msg;
@@ -212,13 +243,13 @@ int main(void)
 		bytes = bgce_recv_msg(ctx->conn_fd, &msg);
 		if (bytes <= 0) {
 			if (bytes == 0)
-				fprintf(stderr, "launcher: Server closed connection.\n");
+				bgtk_log("server closed connection");
 			else if (errno != EINTR)
-				perror("launcher: bgce_recv_msg");
+				bgtk_log_errno("bgce_recv_msg");
 			break;
 		}
 
-		int res = 0;
+		int need_draw = 0;
 		switch (msg.type) {
 		case MSG_INPUT_EVENT:
 			if (msg.data.input_event.type == EV_KEY &&
@@ -229,20 +260,26 @@ int main(void)
 			}
 			if (msg.data.input_event.type != EV_REL &&
 			    msg.data.input_event.type != EV_ABS) {
-				res = bgtk_handle_input_event(ctx, msg.data.input_event);
+				need_draw = bgtk_handle_input_event(ctx, msg.data.input_event);
 			}
 			break;
 		case MSG_FOCUS_CHANGE:
 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
+			need_draw = 1;
 			break;
 		case MSG_BUFFER_CHANGE:
+			/* Server allocated a new shm buffer after a window resize. */
+			if (bgtk_handle_buffer_change(ctx, &msg.data.buffer_reply) == 0) {
+				layout_launcher();
+				need_draw = 1;
+			}
 			break;
 		default:
 			break;
 		}
 
-		if (res)
-			bgce_draw(conn_fd);
+		if (need_draw)
+			bgtk_draw_widgets(ctx);
 	}
 
 	bgtk_destroy(ctx);

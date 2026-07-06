@@ -167,6 +167,14 @@ int main(void) {
 				    msg.data.focus_event.state);
 				break;
 			case MSG_BUFFER_CHANGE:
+				if (bgtk_handle_buffer_change(ctx, &msg.data.buffer_reply) == 0) {
+					if (ctx->root_widget) {
+						ctx->root_widget->w = ctx->width;
+						ctx->root_widget->h = ctx->height;
+					}
+					bgtk_draw_widgets(ctx);
+					res = 0;
+				}
 				break;
 			default:
 				break;

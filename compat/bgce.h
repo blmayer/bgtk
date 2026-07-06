@@ -105,6 +105,8 @@ ssize_t bgce_recv_msg(int conn, struct BGCEMessage *msg);
 int bgce_connect(void);
 int bgce_get_server_info(int fd, struct ServerInfo *out_info);
 void *bgce_get_buffer(int conn, struct BufferRequest req);
+int bgce_buf_open(const char *name);
+void bgce_buf_unlink(const char *name);
 int bgce_move(int fd, int x, int y);
 int bgce_draw(int fd);
 void bgce_disconnect(int fd);
