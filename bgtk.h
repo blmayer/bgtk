@@ -195,10 +195,31 @@ struct BGTK_Context {
 	// 0 = unfocused, 1 = focused.
 	int window_focused;
 
-	// Modifier state for text input (uppercase etc).
+	// Modifier state (updated by bgtk_update_modifiers / handle_input).
 	int shift_held;
+	int ctrl_held;
+	int alt_held;
 };
 
+/* Modifier bitflags for bgtk_key_to_bytes */
+enum {
+	BGTK_MOD_SHIFT = 1,
+	BGTK_MOD_CTRL = 2,
+	BGTK_MOD_ALT = 4
+};
+
+/* Key translation mode */
+enum {
+	BGTK_KEY_TEXT = 0, /* printable for text fields; Ctrl+letter → 0 */
+	BGTK_KEY_TTY = 1   /* PTY: Ctrl+letter → C0, arrows → CSI */
+};
+
+// Track Shift/Ctrl/Alt from an EV_KEY event (press/release/repeat).
+void bgtk_update_modifiers(struct BGTK_Context *ctx, struct InputEvent ev);
+// Build mod bitflags from context held state.
+int bgtk_mods_from_ctx(const struct BGTK_Context *ctx);
+// US QWERTY keycode → bytes. Returns length written (0 if unmapped).
+int bgtk_key_to_bytes(int code, int mods, int mode, char *out, int max);
 
 // Sets the focused widget for keyboard input.
 // Passing NULL clears focus.

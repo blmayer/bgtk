@@ -146,279 +146,145 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 	if (!focused) {
 		return 0;
 	}
-	// Handle keyboard events
-	if (ev.type == EV_KEY && ev.value == 1) {
-		// Special keys handled via callbacks. Consume so they don't insert.
-		if (ev.code == KEY_TAB) {
-			if (widget->data.text_input.on_tab) {
-				widget->data.text_input.on_tab();
-				if (widget->ctx) {
-					bgtk_draw_widgets(widget->ctx);
-				}
-			}
-			return 1;
-		}
-		if (ev.code == KEY_ENTER || ev.code == KEY_KPENTER) {
-			if (widget->data.text_input.on_enter) {
-				widget->data.text_input.on_enter();
-				if (widget->ctx) {
-					bgtk_draw_widgets(widget->ctx);
-				}
-			}
-			return 1;
-		}
+	/* Press or autorepeat (not release). */
+	if (ev.type != EV_KEY || (ev.value != 1 && ev.value != 2))
+		return 0;
 
-		// Translate linux input key codes to ASCII where possible.
-		// IMPORTANT: KEY_* constants are not contiguous in a way that
-		// matches ASCII ordering, so do explicit mapping.
-		char ascii = 0;
-		switch (ev.code) {
-		case KEY_A:
-			ascii = 'a';
-			break;
-		case KEY_B:
-			ascii = 'b';
-			break;
-		case KEY_C:
-			ascii = 'c';
-			break;
-		case KEY_D:
-			ascii = 'd';
-			break;
-		case KEY_E:
-			ascii = 'e';
-			break;
-		case KEY_F:
-			ascii = 'f';
-			break;
-		case KEY_G:
-			ascii = 'g';
-			break;
-		case KEY_H:
-			ascii = 'h';
-			break;
-		case KEY_I:
-			ascii = 'i';
-			break;
-		case KEY_J:
-			ascii = 'j';
-			break;
-		case KEY_K:
-			ascii = 'k';
-			break;
-		case KEY_L:
-			ascii = 'l';
-			break;
-		case KEY_M:
-			ascii = 'm';
-			break;
-		case KEY_N:
-			ascii = 'n';
-			break;
-		case KEY_O:
-			ascii = 'o';
-			break;
-		case KEY_P:
-			ascii = 'p';
-			break;
-		case KEY_Q:
-			ascii = 'q';
-			break;
-		case KEY_R:
-			ascii = 'r';
-			break;
-		case KEY_S:
-			ascii = 's';
-			break;
-		case KEY_T:
-			ascii = 't';
-			break;
-		case KEY_U:
-			ascii = 'u';
-			break;
-		case KEY_V:
-			ascii = 'v';
-			break;
-		case KEY_W:
-			ascii = 'w';
-			break;
-		case KEY_X:
-			ascii = 'x';
-			break;
-		case KEY_Y:
-			ascii = 'y';
-			break;
-		case KEY_Z:
-			ascii = 'z';
-			break;
-		case KEY_1:
-			ascii = '1';
-			break;
-		case KEY_2:
-			ascii = '2';
-			break;
-		case KEY_3:
-			ascii = '3';
-			break;
-		case KEY_4:
-			ascii = '4';
-			break;
-		case KEY_5:
-			ascii = '5';
-			break;
-		case KEY_6:
-			ascii = '6';
-			break;
-		case KEY_7:
-			ascii = '7';
-			break;
-		case KEY_8:
-			ascii = '8';
-			break;
-		case KEY_9:
-			ascii = '9';
-			break;
-		case KEY_0:
-			ascii = '0';
-			break;
-		case KEY_SPACE:
-			ascii = ' ';
-			break;
-		case KEY_MINUS:
-			ascii = '-';
-			break;
-		case KEY_EQUAL:
-			ascii = '=';
-			break;
-		case KEY_LEFTBRACE:
-			ascii = '[';
-			break;
-		case KEY_RIGHTBRACE:
-			ascii = ']';
-			break;
-		case KEY_BACKSLASH:
-			ascii = '\\';
-			break;
-		case KEY_SEMICOLON:
-			ascii = ';';
-			break;
-		case KEY_APOSTROPHE:
-			ascii = '\'';
-			break;
-		case KEY_COMMA:
-			ascii = ',';
-			break;
-		case KEY_DOT:
-			ascii = '.';
-			break;
-		case KEY_SLASH:
-			ascii = '/';
-			break;
-		default:
-			break;
-		}
-		// Apply shift for uppercase letters (lean: only letters).
-		if (ascii >= 'a' && ascii <= 'z' && widget->ctx &&
-		    widget->ctx->shift_held) {
-			ascii -= 32;
-		}
-		if (ascii) {
-			// Insert character at cursor_pos
-			char *text = widget->data.text_input.text;
-			int cursor = widget->data.text_input.cursor_pos;
-			int len = strlen(text);
+	/* Pure modifiers: already tracked on ctx; consume. */
+	if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT ||
+	    ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL ||
+	    ev.code == KEY_LEFTALT || ev.code == KEY_RIGHTALT)
+		return 1;
 
-			text = realloc(text, len + 2);
-			if (!text) {
-				return 0;
-			}
+	struct BGTK_Context *ctx = widget->ctx;
+	int mods = bgtk_mods_from_ctx(ctx);
+	char *text = widget->data.text_input.text;
+	int cursor = (int)widget->data.text_input.cursor_pos;
+	int len = text ? (int)strlen(text) : 0;
+	int changed = 0;
 
-			memmove(&text[cursor + 1], &text[cursor],
-				len - cursor + 1);
-			text[cursor] = ascii;
-			widget->data.text_input.text = text;
-			widget->data.text_input.cursor_pos++;
-			text_input_ensure_cursor_visible(widget->ctx, widget);
-
-			if (widget->data.text_input.on_change) {
-				widget->data.text_input.on_change();
-			}
-			if (widget->ctx) {
-				bgtk_draw_widgets(widget->ctx);
-			}
-
-			return 1;	// Event handled
-		}
-		// Handle backspace
-		if (ev.code == KEY_BACKSPACE) {
-			char *text = widget->data.text_input.text;
-			int cursor = widget->data.text_input.cursor_pos;
-			if (cursor > 0) {
-				memmove(&text[cursor - 1], &text[cursor],
-					strlen(text) - cursor + 1);
-				widget->data.text_input.cursor_pos--;
-				text_input_ensure_cursor_visible(widget->ctx,
-								 widget);
-
-				if (widget->data.text_input.on_change) {
-					widget->data.text_input.on_change();
-				}
-				if (widget->ctx) {
-					bgtk_draw_widgets(widget->ctx);
-				}
-
-				return 1;	// Event handled
-			}
-		}
-		// Handle delete
-		if (ev.code == KEY_DELETE) {
-			char *text = widget->data.text_input.text;
-			uint32_t cursor = widget->data.text_input.cursor_pos;
-			if (cursor < strlen(text)) {
-				memmove(&text[cursor], &text[cursor + 1],
-					strlen(text) - cursor);
-				text_input_ensure_cursor_visible(widget->ctx,
-								 widget);
-
-				if (widget->data.text_input.on_change) {
-					widget->data.text_input.on_change();
-				}
-				if (widget->ctx) {
-					bgtk_draw_widgets(widget->ctx);
-				}
-
-				return 1;	// Event handled
-			}
-		}
-		// Handle arrow keys (cursor movement)
-		if (ev.code == KEY_LEFT || ev.code == KEY_RIGHT) {
-			int cursor = widget->data.text_input.cursor_pos;
-			int len = strlen(widget->data.text_input.text);
-
-			// Handle arrow keys (cursor movement)
-			if (ev.code == KEY_LEFT || ev.code == KEY_RIGHT) {
-				if (ev.code == KEY_LEFT && cursor > 0) {
-					widget->data.text_input.cursor_pos--;
-					text_input_ensure_cursor_visible
-					    (widget->ctx, widget);
-					if (widget->ctx) {
-						bgtk_draw_widgets(widget->ctx);
-					}
-					return 1;	// Event handled
-				} else if (ev.code == KEY_RIGHT && cursor < len) {
-					widget->data.text_input.cursor_pos++;
-					text_input_ensure_cursor_visible
-					    (widget->ctx, widget);
-					if (widget->ctx) {
-						bgtk_draw_widgets(widget->ctx);
-					}
-					return 1;	// Event handled
-				}
-			}
-		}
+	if (ev.code == KEY_TAB) {
+		if (widget->data.text_input.on_tab)
+			widget->data.text_input.on_tab();
+		if (ctx)
+			bgtk_draw_widgets(ctx);
+		return 1;
+	}
+	if (ev.code == KEY_ENTER || ev.code == KEY_KPENTER) {
+		if (widget->data.text_input.on_enter)
+			widget->data.text_input.on_enter();
+		if (ctx)
+			bgtk_draw_widgets(ctx);
+		return 1;
 	}
 
-	return 0;		// Event not handled by this specific handler
+	/* Ctrl chords (never insert a letter under Ctrl). */
+	if (mods & BGTK_MOD_CTRL) {
+		if (ev.code == KEY_A) {
+			widget->data.text_input.cursor_pos = 0;
+			changed = 1;
+		} else if (ev.code == KEY_E) {
+			widget->data.text_input.cursor_pos = (uint32_t)len;
+			changed = 1;
+		} else if (ev.code == KEY_U && text && cursor > 0) {
+			memmove(text, text + cursor, (size_t)(len - cursor) + 1);
+			widget->data.text_input.cursor_pos = 0;
+			changed = 1;
+		} else if (ev.code == KEY_K && text && cursor < len) {
+			text[cursor] = '\0';
+			changed = 1;
+		} else if ((ev.code == KEY_W || ev.code == KEY_BACKSPACE) &&
+			   text && cursor > 0) {
+			int i = cursor - 1;
+			while (i > 0 && text[i] == ' ')
+				i--;
+			while (i > 0 && text[i - 1] != ' ')
+				i--;
+			memmove(text + i, text + cursor, (size_t)(len - cursor) + 1);
+			widget->data.text_input.cursor_pos = (uint32_t)i;
+			changed = 1;
+		}
+		/* Ctrl+C/V/X and other Ctrl+letter: consume, no insert */
+		if (changed) {
+			text_input_ensure_cursor_visible(ctx, widget);
+			if (widget->data.text_input.on_change)
+				widget->data.text_input.on_change();
+			if (ctx)
+				bgtk_draw_widgets(ctx);
+		}
+		return 1;
+	}
+
+	char bytes[8];
+	int n = bgtk_key_to_bytes(ev.code, mods, BGTK_KEY_TEXT, bytes, sizeof(bytes));
+	if (n == 1 && bytes[0] >= 32 && bytes[0] < 127) {
+		char ascii = bytes[0];
+		text = realloc(widget->data.text_input.text, (size_t)len + 2);
+		if (!text)
+			return 0;
+		cursor = (int)widget->data.text_input.cursor_pos;
+		len = (int)strlen(text);
+		memmove(&text[cursor + 1], &text[cursor], (size_t)(len - cursor) + 1);
+		text[cursor] = ascii;
+		widget->data.text_input.text = text;
+		widget->data.text_input.cursor_pos = (uint32_t)(cursor + 1);
+		text_input_ensure_cursor_visible(ctx, widget);
+		if (widget->data.text_input.on_change)
+			widget->data.text_input.on_change();
+		if (ctx)
+			bgtk_draw_widgets(ctx);
+		return 1;
+	}
+
+	if (ev.code == KEY_BACKSPACE && text && cursor > 0) {
+		memmove(&text[cursor - 1], &text[cursor], (size_t)(len - cursor) + 1);
+		widget->data.text_input.cursor_pos--;
+		text_input_ensure_cursor_visible(ctx, widget);
+		if (widget->data.text_input.on_change)
+			widget->data.text_input.on_change();
+		if (ctx)
+			bgtk_draw_widgets(ctx);
+		return 1;
+	}
+	if (ev.code == KEY_DELETE && text && cursor < len) {
+		memmove(&text[cursor], &text[cursor + 1], (size_t)(len - cursor));
+		text_input_ensure_cursor_visible(ctx, widget);
+		if (widget->data.text_input.on_change)
+			widget->data.text_input.on_change();
+		if (ctx)
+			bgtk_draw_widgets(ctx);
+		return 1;
+	}
+	if (ev.code == KEY_LEFT && cursor > 0) {
+		widget->data.text_input.cursor_pos--;
+		text_input_ensure_cursor_visible(ctx, widget);
+		if (ctx)
+			bgtk_draw_widgets(ctx);
+		return 1;
+	}
+	if (ev.code == KEY_RIGHT && cursor < len) {
+		widget->data.text_input.cursor_pos++;
+		text_input_ensure_cursor_visible(ctx, widget);
+		if (ctx)
+			bgtk_draw_widgets(ctx);
+		return 1;
+	}
+	if (ev.code == KEY_HOME) {
+		widget->data.text_input.cursor_pos = 0;
+		text_input_ensure_cursor_visible(ctx, widget);
+		if (ctx)
+			bgtk_draw_widgets(ctx);
+		return 1;
+	}
+	if (ev.code == KEY_END) {
+		widget->data.text_input.cursor_pos = (uint32_t)len;
+		text_input_ensure_cursor_visible(ctx, widget);
+		if (ctx)
+			bgtk_draw_widgets(ctx);
+		return 1;
+	}
+
+	return 0;
 }
 
 // Scrollable event handler

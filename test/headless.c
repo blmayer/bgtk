@@ -200,6 +200,83 @@ int main(void)
 	bgtk_draw_widgets(ctx);
 	take_screenshot(ctx, "headless_04b_resized.png");
 
+	/* 6c. Shift + Ctrl in text input */
+	{
+		struct BGTK_Context *kctx = bgtk_init_mock(400, 120);
+		struct BGTK_Widget *kti =
+			bgtk_text_input(kctx, "", 360, 0,
+					(BGTK_Options){.padding = 6, .margin = 4});
+		kctx->root_widget = kti;
+		bgtk_set_focus(kctx, kti);
+
+		struct InputEvent ke = {0};
+		ke.type = EV_KEY;
+		ke.value = 1;
+		/* type "hi" */
+		ke.code = KEY_H;
+		bgtk_inject_event(kctx, ke);
+		ke.code = KEY_I;
+		bgtk_inject_event(kctx, ke);
+		/* Shift+1 → '!' */
+		ke.code = KEY_LEFTSHIFT;
+		bgtk_inject_event(kctx, ke);
+		ke.code = KEY_1;
+		bgtk_inject_event(kctx, ke);
+		ke.code = KEY_LEFTSHIFT;
+		ke.value = 0;
+		bgtk_inject_event(kctx, ke);
+		ke.value = 1;
+		/* Ctrl+C must not insert 'c' */
+		ke.code = KEY_LEFTCTRL;
+		bgtk_inject_event(kctx, ke);
+		ke.code = KEY_C;
+		bgtk_inject_event(kctx, ke);
+		ke.code = KEY_LEFTCTRL;
+		ke.value = 0;
+		bgtk_inject_event(kctx, ke);
+		ke.value = 1;
+
+		bgtk_draw_widgets(kctx);
+		take_screenshot(kctx, "headless_04c_shift_ctrl.png");
+
+		const char *got = kti->data.text_input.text;
+		if (!got || strcmp(got, "hi!") != 0) {
+			bgtk_log("headless: expected text 'hi!' got '%s'",
+				 got ? got : "(null)");
+			bgtk_destroy_mock(kctx);
+			return 1;
+		}
+		/* Ctrl+A then Ctrl+K clears line */
+		ke.code = KEY_LEFTCTRL;
+		bgtk_inject_event(kctx, ke);
+		ke.code = KEY_A;
+		bgtk_inject_event(kctx, ke);
+		ke.code = KEY_K;
+		bgtk_inject_event(kctx, ke);
+		ke.code = KEY_LEFTCTRL;
+		ke.value = 0;
+		bgtk_inject_event(kctx, ke);
+		got = kti->data.text_input.text;
+		if (!got || got[0] != '\0') {
+			bgtk_log("headless: expected empty after Ctrl+A/K got '%s'",
+				 got ? got : "(null)");
+			bgtk_destroy_mock(kctx);
+			return 1;
+		}
+		/* Ctrl+C byte for TTY */
+		{
+			char out[4];
+			int n = bgtk_key_to_bytes(KEY_C, BGTK_MOD_CTRL, BGTK_KEY_TTY,
+						 out, sizeof(out));
+			if (n != 1 || out[0] != 3) {
+				bgtk_log("headless: Ctrl+C TTY expected 0x03");
+				bgtk_destroy_mock(kctx);
+				return 1;
+			}
+		}
+		bgtk_destroy_mock(kctx);
+	}
+
 	bgtk_destroy_mock(ctx);
 
 	/* 7. text_align showcase (separate scene, wider canvas) */

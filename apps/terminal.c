@@ -278,8 +278,6 @@ int main(void)
 	fds[1].fd = master_fd;
 	fds[1].events = POLLIN;
 
-	int ctrl_held = 0;
-	int shift_held = 0;
 	int quit = 0;
 
 	while (!quit) {
@@ -333,21 +331,20 @@ int main(void)
 				struct InputEvent *ev = &msg.data.input_event;
 				if (ev->type != EV_KEY)
 					break;
+				bgtk_update_modifiers(ctx, *ev);
 				if (ev->code == KEY_LEFTSHIFT ||
-				    ev->code == KEY_RIGHTSHIFT) {
-					shift_held = (ev->value != 0);
+				    ev->code == KEY_RIGHTSHIFT ||
+				    ev->code == KEY_LEFTCTRL ||
+				    ev->code == KEY_RIGHTCTRL ||
+				    ev->code == KEY_LEFTALT ||
+				    ev->code == KEY_RIGHTALT)
 					break;
-				}
-				if (ev->code == KEY_LEFTCTRL ||
-				    ev->code == KEY_RIGHTCTRL) {
-					ctrl_held = (ev->value != 0);
-					break;
-				}
 				if (ev->value == 1 || ev->value == 2) {
 					char out[8];
-					int n = term_keycode_to_bytes(
-						ev->code, shift_held,
-						ctrl_held, out, sizeof(out));
+					int n = bgtk_key_to_bytes(
+						ev->code,
+						bgtk_mods_from_ctx(ctx),
+						BGTK_KEY_TTY, out, sizeof(out));
 					if (n > 0)
 						(void)write(master_fd, out, n);
 				}

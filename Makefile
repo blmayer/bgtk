@@ -94,8 +94,8 @@ INSTALL_LIB ?= $(PREFIX)/lib
 INSTALL_INCLUDE ?= $(PREFIX)/include
 INSTALL_BIN ?= $(PREFIX)/bin
 
-SRC = bgtk.c drawing.c widgets.c config.c html.c
-LIB_OBJS = bgtk.o drawing.o widgets.o config.o html.o
+SRC = bgtk.c drawing.c widgets.c config.c html.c keys.c
+LIB_OBJS = bgtk.o drawing.o widgets.o config.o html.o keys.o
 TEST_APP_OBJ = apps/test_app.o
 IMAGE_VIEWER_OBJ = apps/image_viewer.o
 LAUNCHER_OBJ = apps/launcher.o
@@ -260,6 +260,7 @@ test_settings: $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_
 # Header dependencies so touching a .h triggers recompilation.
 CORE_HEADERS = bgtk.h internal.h config.h
 $(LIB_OBJS): $(CORE_HEADERS)
+keys.o: bgtk.h
 html.o: html.h
 $(TEST_HTML_OBJ): html.h bgtk.h
 $(HEADLESS_OBJ): bgtk.h

@@ -272,6 +272,8 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
 	ctx->root_widget = NULL;
 	ctx->window_focused = 1;
 	ctx->shift_held = 0;
+	ctx->ctrl_held = 0;
+	ctx->alt_held = 0;
 
 	// Load config (parse_config now always starts from defaults via init_config_defaults).
 	struct config config = {0};
@@ -552,12 +554,7 @@ int bgtk_handle_input_event(struct BGTK_Context *ctx, struct InputEvent ev)
 		take_screenshot(ctx, NULL);
 		return 1;
 	}
-	// Track shift for text input uppercase support. Do not consume the event.
-	if (ev.type == EV_KEY) {
-		if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT) {
-			ctx->shift_held = (ev.value != 0);
-		}
-	}
+	bgtk_update_modifiers(ctx, ev);
 	// Start event handling from the root widget
 	if (!ctx->root_widget) {
 		return 0;

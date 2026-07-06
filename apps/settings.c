@@ -55,8 +55,9 @@ static struct BGTK_Widget *bg_path_input;
 
 static struct BGTK_Widget *cursor_path_input;
 
-/* Shortcut inputs (4 rows) */
-static struct BGTK_Widget *shortcut_inputs[4];
+#define MAX_SHORTCUT_ROWS 24
+static struct BGTK_Widget *shortcut_inputs[MAX_SHORTCUT_ROWS];
+static int shortcut_row_count;
 
 static struct BGTK_Widget *font_size_input;
 
@@ -73,13 +74,107 @@ static int font_dropdown_open;
 static char **font_list_cache;
 static int font_list_count;
 
-/* Shortcut names/defaults */
-static const char *shortcut_actions[4] = {
-	"Screenshot", "Close window", "Switch window", "Terminal"
-};
-static char shortcut_keys[4][64] = {
-	"SysRq", "Super+Q", "Alt+Tab", "Super+Enter"
-};
+/* Shortcuts shown in UI (loaded from ~/.config/bgce.conf when present). */
+static char shortcut_actions[MAX_SHORTCUT_ROWS][96];
+static char shortcut_keys[MAX_SHORTCUT_ROWS][64];
+static int shortcuts_loaded;
+
+static void load_shortcuts_table(void)
+{
+	const char *home;
+	char path[512];
+	FILE *f;
+	char line[512];
+	char section[64] = "";
+
+	shortcut_row_count = 0;
+	/* Defaults matching BGCE (rhs = type:value, key = combo). */
+	snprintf(shortcut_actions[0], sizeof(shortcut_actions[0]), "builtin:exit");
+	snprintf(shortcut_keys[0], sizeof(shortcut_keys[0]), "ctrl+alt+q");
+	snprintf(shortcut_actions[1], sizeof(shortcut_actions[1]),
+		 "builtin:screenshot");
+	snprintf(shortcut_keys[1], sizeof(shortcut_keys[1]), "sysrq");
+	shortcut_row_count = 2;
+
+	home = getenv("HOME");
+	if (!home || !home[0])
+		return;
+	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
+	f = fopen(path, "r");
+	if (!f)
+		return;
+
+	/* Replace defaults with file contents when [shortcuts] has entries. */
+	while (fgets(line, sizeof(line), f)) {
+		char *p = line;
+		char *eq;
+		char key[128], val[256];
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p == '#' || *p == ';' || *p == '\n' || *p == '\0')
+			continue;
+		if (*p == '[') {
+			char *end = strchr(p, ']');
+			section[0] = '\0';
+			if (end && (size_t)(end - p - 1) < sizeof(section)) {
+				memcpy(section, p + 1, (size_t)(end - p - 1));
+				section[end - p - 1] = '\0';
+			}
+			if (strcmp(section, "shortcuts") == 0 &&
+			    !shortcuts_loaded) {
+				/* First time we enter section with real lines below. */
+			}
+			continue;
+		}
+		if (strcmp(section, "shortcuts") != 0)
+			continue;
+		eq = strchr(p, '=');
+		if (!eq)
+			continue;
+		*eq = '\0';
+		/* trim key */
+		{
+			char *k = p;
+			char *e = eq - 1;
+			while (*k == ' ' || *k == '\t')
+				k++;
+			while (e > k && (*e == ' ' || *e == '\t'))
+				e--;
+			e[1] = '\0';
+			strncpy(key, k, sizeof(key) - 1);
+			key[sizeof(key) - 1] = '\0';
+		}
+		{
+			char *v = eq + 1;
+			char *e;
+			while (*v == ' ' || *v == '\t')
+				v++;
+			e = v + strlen(v) - 1;
+			while (e > v && (*e == '\n' || *e == '\r' ||
+					 *e == ' ' || *e == '\t'))
+				e--;
+			e[1] = '\0';
+			strncpy(val, v, sizeof(val) - 1);
+			val[sizeof(val) - 1] = '\0';
+		}
+		if (!shortcuts_loaded) {
+			shortcut_row_count = 0;
+			shortcuts_loaded = 1;
+		}
+		if (shortcut_row_count >= MAX_SHORTCUT_ROWS)
+			break;
+		/* Action column = rhs (builtin:… / command:…); key = combo */
+		snprintf(shortcut_actions[shortcut_row_count],
+			 sizeof(shortcut_actions[0]), "%s", val);
+		snprintf(shortcut_keys[shortcut_row_count],
+			 sizeof(shortcut_keys[0]), "%s", key);
+		shortcut_row_count++;
+	}
+	fclose(f);
+	/* If file had empty [shortcuts], keep defaults (row_count already 2). */
+	if (!shortcuts_loaded && shortcut_row_count < 2)
+		shortcut_row_count = 2;
+}
 
 /* ------------------------------------------------------------------ */
 /* File scanning helpers                                                */
@@ -342,13 +437,94 @@ static void apply_cursor(void *userdata)
 
 static void apply_shortcuts(void *userdata)
 {
+	const char *home;
+	char path[512], tmp[512];
+	FILE *in, *out;
+	char line[512];
+	char section[64] = "";
+	int i;
+
 	(void)userdata;
-	for (int i = 0; i < 4; i++) {
-		if (shortcut_inputs[i] && shortcut_inputs[i]->data.text_input.text[0])
-			strncpy(shortcut_keys[i], shortcut_inputs[i]->data.text_input.text,
+	for (i = 0; i < shortcut_row_count; i++) {
+		if (shortcut_inputs[i] &&
+		    shortcut_inputs[i]->data.text_input.text)
+			strncpy(shortcut_keys[i],
+				shortcut_inputs[i]->data.text_input.text,
 				sizeof(shortcut_keys[0]) - 1);
 	}
-	/* Shortcuts are stored in memory; would be persisted via BGCE config */
+
+	/* Persist to ~/.config/bgce.conf [shortcuts] (BGCE owns these). */
+	home = getenv("HOME");
+	if (!home || !home[0]) {
+		rebuild_content();
+		return;
+	}
+	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
+	snprintf(tmp, sizeof(tmp), "%s/.config/bgce.conf.bgtk-tmp", home);
+	in = fopen(path, "r");
+	out = fopen(tmp, "w");
+	if (!out) {
+		if (in)
+			fclose(in);
+		rebuild_content();
+		return;
+	}
+	if (in) {
+		int skip_shortcuts = 0;
+		while (fgets(line, sizeof(line), in)) {
+			char *p = line;
+			while (*p == ' ' || *p == '\t')
+				p++;
+			if (*p == '[') {
+				char *end = strchr(p, ']');
+				section[0] = '\0';
+				if (end &&
+				    (size_t)(end - p - 1) < sizeof(section)) {
+					memcpy(section, p + 1,
+					       (size_t)(end - p - 1));
+					section[end - p - 1] = '\0';
+				}
+				if (strcmp(section, "shortcuts") == 0) {
+					skip_shortcuts = 1;
+					continue;
+				}
+				if (skip_shortcuts) {
+					/* leaving shortcuts: emit new section once */
+					fprintf(out, "[shortcuts]\n");
+					for (i = 0; i < shortcut_row_count; i++)
+						if (shortcut_keys[i][0] &&
+						    shortcut_actions[i][0])
+							fprintf(out, "%s = %s\n",
+								shortcut_keys[i],
+								shortcut_actions[i]);
+					fprintf(out, "\n");
+					skip_shortcuts = 0;
+				}
+				fputs(line, out);
+				continue;
+			}
+			if (skip_shortcuts)
+				continue;
+			fputs(line, out);
+		}
+		if (skip_shortcuts) {
+			fprintf(out, "[shortcuts]\n");
+			for (i = 0; i < shortcut_row_count; i++)
+				if (shortcut_keys[i][0] && shortcut_actions[i][0])
+					fprintf(out, "%s = %s\n",
+						shortcut_keys[i],
+						shortcut_actions[i]);
+		}
+		fclose(in);
+	} else {
+		fprintf(out, "[shortcuts]\n");
+		for (i = 0; i < shortcut_row_count; i++)
+			if (shortcut_keys[i][0] && shortcut_actions[i][0])
+				fprintf(out, "%s = %s\n", shortcut_keys[i],
+					shortcut_actions[i]);
+	}
+	fclose(out);
+	rename(tmp, path);
 	rebuild_content();
 }
 
@@ -483,22 +659,35 @@ static char *build_cursor_html(void)
 
 static char *build_shortcuts_html(void)
 {
-	char *buf = malloc(4096);
-	snprintf(buf, 4096,
+	char *buf;
+	int buflen = 2048 + shortcut_row_count * 256;
+	int pos = 0;
+	int i;
+
+	if (!shortcut_row_count)
+		load_shortcuts_table();
+
+	buf = malloc((size_t)buflen);
+	if (!buf)
+		return NULL;
+	pos += snprintf(buf + pos, (size_t)(buflen - pos),
 		"<html><body>"
+		"<p>Compositor shortcuts (~/.config/bgce.conf). "
+		"Left: builtin:exit, builtin:screenshot, or command:prog. "
+		"Right: combo (ctrl+alt+q, sysrq, …).</p>"
 		"<table>"
-		"<tr><th>Action</th><th>Key Binding</th></tr>"
-		"<tr><td>%s</td><td><input type=\"text\" value=\"%s\" width=\"140\" /></td></tr>"
-		"<tr><td>%s</td><td><input type=\"text\" value=\"%s\" width=\"140\" /></td></tr>"
-		"<tr><td>%s</td><td><input type=\"text\" value=\"%s\" width=\"140\" /></td></tr>"
-		"<tr><td>%s</td><td><input type=\"text\" value=\"%s\" width=\"140\" /></td></tr>"
+		"<tr><th>Action (type:value)</th><th>Key binding</th></tr>");
+	for (i = 0; i < shortcut_row_count; i++) {
+		pos += snprintf(buf + pos, (size_t)(buflen - pos),
+			"<tr><td>%s</td><td><input type=\"text\" value=\"%s\" "
+			"width=\"160\" /></td></tr>",
+			shortcut_actions[i], shortcut_keys[i]);
+	}
+	pos += snprintf(buf + pos, (size_t)(buflen - pos),
 		"</table>"
 		"<div><button>Apply</button></div>"
-		"</body></html>",
-		shortcut_actions[0], shortcut_keys[0],
-		shortcut_actions[1], shortcut_keys[1],
-		shortcut_actions[2], shortcut_keys[2],
-		shortcut_actions[3], shortcut_keys[3]);
+		"</body></html>");
+	(void)pos;
 	return buf;
 }
 
@@ -640,7 +829,10 @@ static void rebuild_content(void)
 {
 	bg_color_input = bg_path_input = NULL;
 	cursor_path_input = NULL;
-	for (int i = 0; i < 4; i++) shortcut_inputs[i] = NULL;
+	for (int i = 0; i < MAX_SHORTCUT_ROWS; i++)
+		shortcut_inputs[i] = NULL;
+	if (!shortcut_row_count)
+		load_shortcuts_table();
 	font_size_input = NULL;
 	theme_bg_input = theme_btn_input = theme_btn_text_input = NULL;
 	theme_frame_border_input = theme_btn_border_input = NULL;
@@ -710,11 +902,14 @@ static void rebuild_content(void)
 		}
 		break;
 	}
-	case 2: { /* Shortcuts: inputs 0-3, button 0=Apply */
-		for (int i = 0; i < 4; i++)
+	case 2: { /* Shortcuts: one input per row, last button = Apply */
+		for (int i = 0; i < shortcut_row_count && i < MAX_SHORTCUT_ROWS; i++)
 			shortcut_inputs[i] = get_input(page, i);
-		struct BGTK_Widget *b = get_button(page, 0);
-		if (b) b->data.button.callback = apply_shortcuts;
+		{
+			struct BGTK_Widget *b = get_button(page, 0);
+			if (b)
+				b->data.button.callback = apply_shortcuts;
+		}
 		break;
 	}
 	case 3: { /* Font: button(0)=dropdown toggle, then dropdown items, then Apply */

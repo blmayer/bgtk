@@ -544,75 +544,10 @@ void term_measure_cell(struct Term_State *t, struct BGTK_Context *ctx)
 
 int term_keycode_to_bytes(int code, int shift, int ctrl, char *out, int max)
 {
-	if (max < 4) return 0;
-
-	if (ctrl) {
-		static const int kmap[] = {
-			KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U,
-			KEY_I, KEY_O, KEY_P, KEY_A, KEY_S, KEY_D, KEY_F,
-			KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_Z, KEY_X,
-			KEY_C, KEY_V, KEY_B, KEY_N, KEY_M, 0
-		};
-		static const char cmap[] = "qwertyuiopasdfghjklzxcvbnm";
-		for (int i = 0; kmap[i]; i++) {
-			if (kmap[i] == code) {
-				out[0] = cmap[i] - 'a' + 1;
-				return 1;
-			}
-		}
-	}
-	{
-		static const int kmap[] = {
-			KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U,
-			KEY_I, KEY_O, KEY_P, KEY_A, KEY_S, KEY_D, KEY_F,
-			KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_Z, KEY_X,
-			KEY_C, KEY_V, KEY_B, KEY_N, KEY_M, 0
-		};
-		static const char map[] = "qwertyuiopasdfghjklzxcvbnm";
-		for (int i = 0; kmap[i]; i++) {
-			if (kmap[i] == code) {
-				out[0] = shift ? (map[i] - 32) : map[i];
-				return 1;
-			}
-		}
-	}
-	if (code >= KEY_1 && code <= KEY_0) {
-		static const char norm[] = "1234567890";
-		static const char shft[] = "!@#$%^&*()";
-		int idx = code - KEY_1;
-		if (idx >= 0 && idx < 10) {
-			out[0] = shift ? shft[idx] : norm[idx];
-			return 1;
-		}
-	}
-	switch (code) {
-	case KEY_SPACE:      out[0] = ' '; return 1;
-	case KEY_ENTER:
-	case KEY_KPENTER:    out[0] = '\r'; return 1;
-	case KEY_TAB:        out[0] = '\t'; return 1;
-	case KEY_BACKSPACE:  out[0] = 0x7F; return 1;
-	case KEY_ESC:        out[0] = 0x1B; return 1;
-	case KEY_MINUS:      out[0] = shift ? '_' : '-'; return 1;
-	case KEY_EQUAL:      out[0] = shift ? '+' : '='; return 1;
-	case KEY_LEFTBRACE:  out[0] = shift ? '{' : '['; return 1;
-	case KEY_RIGHTBRACE: out[0] = shift ? '}' : ']'; return 1;
-	case KEY_BACKSLASH:  out[0] = shift ? '|' : '\\'; return 1;
-	case KEY_SEMICOLON:  out[0] = shift ? ':' : ';'; return 1;
-	case KEY_APOSTROPHE: out[0] = shift ? '"' : '\''; return 1;
-	case KEY_GRAVE:      out[0] = shift ? '~' : '`'; return 1;
-	case KEY_COMMA:      out[0] = shift ? '<' : ','; return 1;
-	case KEY_DOT:        out[0] = shift ? '>' : '.'; return 1;
-	case KEY_SLASH:      out[0] = shift ? '?' : '/'; return 1;
-	case KEY_UP:    memcpy(out, "\033[A", 3); return 3;
-	case KEY_DOWN:  memcpy(out, "\033[B", 3); return 3;
-	case KEY_RIGHT: memcpy(out, "\033[C", 3); return 3;
-	case KEY_LEFT:  memcpy(out, "\033[D", 3); return 3;
-	case KEY_HOME:  memcpy(out, "\033[H", 3); return 3;
-	case KEY_END:   memcpy(out, "\033[F", 3); return 3;
-	case KEY_DELETE:   memcpy(out, "\033[3~", 4); return 4;
-	case KEY_PAGEUP:   memcpy(out, "\033[5~", 4); return 4;
-	case KEY_PAGEDOWN: memcpy(out, "\033[6~", 4); return 4;
-	default: break;
-	}
-	return 0;
+	int mods = 0;
+	if (shift)
+		mods |= BGTK_MOD_SHIFT;
+	if (ctrl)
+		mods |= BGTK_MOD_CTRL;
+	return bgtk_key_to_bytes(code, mods, BGTK_KEY_TTY, out, max);
 }
