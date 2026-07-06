@@ -214,6 +214,20 @@ int main(void)
 	}
 	snap(ctx, img, ts, width, height, "term_07_bold.png");
 
+	/* --- Test 8b: resize grid (window resize path) ----------------- */
+	term_feed(ts, "\033[2J\033[Hresized ok\r\n", -1);
+	if (term_resize(ts, cols / 2 > 10 ? cols / 2 : 10,
+			rows / 2 > 5 ? rows / 2 : 5) != 0) {
+		bgtk_log("test_terminal: term_resize failed");
+		return 1;
+	}
+	snap(ctx, img, ts, width, height, "term_07b_resized.png");
+	/* restore full grid for the PTY test */
+	if (term_resize(ts, cols, rows) != 0) {
+		bgtk_log("test_terminal: term_resize restore failed");
+		return 1;
+	}
+
 	/* --- Test 9: real PTY + shell command execution (the requested case) */
 	/* This actually spawns a shell, "types" a command into it via the PTY,
 	 * lets the shell execute it, reads the real output, feeds it through

@@ -2,7 +2,9 @@
 #include <bgtk.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/input.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -140,17 +142,50 @@ static void on_tab_pressed(void)
 	rebuild_matches_ui();
 }
 
+/* Spawn a program without inheriting the launcher's BGCE socket (or any
+ * other fds). Inheriting the compositor connection and then exit()'ing the
+ * parent was crashing the session when launching apps. */
+static void spawn_program(const char *prog)
+{
+	pid_t pid = fork();
+	if (pid < 0) {
+		bgtk_log_errno("fork to launch '%s'", prog);
+		return;
+	}
+	if (pid == 0) {
+		/* New session: not a child of the launcher process group. */
+		setsid();
+
+		/* Drop every fd the parent had open (BGCE socket, shm, …). */
+		int maxfd = (int)sysconf(_SC_OPEN_MAX);
+		if (maxfd < 0 || maxfd > 1024)
+			maxfd = 256;
+		for (int fd = 3; fd < maxfd; fd++)
+			(void)close(fd);
+
+		/* Quiet stdio so GUI apps don't fight over the TTY. */
+		int devnull = open("/dev/null", O_RDWR);
+		if (devnull >= 0) {
+			dup2(devnull, STDIN_FILENO);
+			dup2(devnull, STDOUT_FILENO);
+			dup2(devnull, STDERR_FILENO);
+			if (devnull > 2)
+				close(devnull);
+		}
+
+		execlp(prog, prog, (char *)NULL);
+		/* exec failed — cannot log (fds closed); hard-exit. */
+		_exit(127);
+	}
+	/* Parent keeps running as the launcher. */
+	bgtk_log("spawned '%s' as pid=%ld", prog, (long)pid);
+}
+
 static void on_enter_pressed(void)
 {
 	if (selected < 0 || selected >= num_matches)
 		return;
-	const char* prog = match_ptrs[selected];
-	pid_t pid = fork();
-	if (pid == 0) {
-		execlp(prog, prog, (char*)NULL);
-		_exit(126);
-	}
-	exit(0);
+	spawn_program(match_ptrs[selected]);
 }
 
 /* Size input + match list to fill the current window. */
@@ -191,6 +226,8 @@ int main(void)
 	setvbuf(stderr, NULL, _IONBF, 0);
 
 	bgtk_log_open("launcher");
+	/* Avoid zombies from spawned apps. */
+	signal(SIGCHLD, SIG_IGN);
 	load_programs();
 
 	int conn_fd = bgce_connect();

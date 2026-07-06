@@ -65,6 +65,44 @@ void term_destroy(struct Term_State *t)
 	free(t);
 }
 
+int term_resize(struct Term_State *t, int cols, int rows)
+{
+	if (!t)
+		return -1;
+	if (cols < 1)
+		cols = 1;
+	if (rows < 1)
+		rows = 1;
+	if (cols == t->cols && rows == t->rows)
+		return 0;
+
+	struct Term_Cell *nc = calloc((size_t)cols * (size_t)rows, sizeof(*nc));
+	if (!nc)
+		return -1;
+
+	int copy_c = cols < t->cols ? cols : t->cols;
+	int copy_r = rows < t->rows ? rows : t->rows;
+	for (int r = 0; r < rows; r++) {
+		for (int c = 0; c < cols; c++) {
+			if (r < copy_r && c < copy_c)
+				nc[r * cols + c] = t->cells[r * t->cols + c];
+			else
+				nc[r * cols + c] = default_cell();
+		}
+	}
+	free(t->cells);
+	t->cells = nc;
+	t->cols = cols;
+	t->rows = rows;
+	if (t->cur_col >= cols)
+		t->cur_col = cols - 1;
+	if (t->cur_row >= rows)
+		t->cur_row = rows - 1;
+	t->scroll_top = 0;
+	t->scroll_bot = rows - 1;
+	return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Internal helpers                                                   */
 /* ------------------------------------------------------------------ */
