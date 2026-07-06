@@ -125,6 +125,34 @@ Each process writes a dedicated log under `~/.cache/bgtk/` (or `$XDG_CACHE_HOME/
 Apps call `bgtk_log_open("app_name")` at startup; use `bgtk_log()` / `bgtk_log_errno()` for diagnostics.
 
 
+## Download
+
+A source snapshot is published with the project site:
+
+- **[bgtk.tar.gz](https://terminal.pink/bgtk/bgtk.tar.gz)** — current tree (no git history)
+
+```bash
+curl -fsSL -o bgtk.tar.gz https://terminal.pink/bgtk/bgtk.tar.gz
+tar xzf bgtk.tar.gz
+cd bgtk
+```
+
+Or clone the repository if you prefer full history:
+
+```bash
+git clone https://terminal.pink/bgtk
+cd bgtk
+```
+
+Regenerate the site snapshot after tagging a release (or anytime):
+
+```bash
+git archive --worktree-attributes --format=tar.gz --prefix=bgtk/ -o www/bgtk.tar.gz HEAD
+```
+
+(`www/bgtk.tar.gz` is omitted from the archive via `.gitattributes`.)
+
+
 ## Building
 
 Requirements:

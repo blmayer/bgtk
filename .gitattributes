@@ -1,0 +1,5 @@
+# Keep source snapshots out of themselves / reduce download size
+www/bgtk.tar.gz export-ignore
+.tai export-ignore
+.codebase-memory/ export-ignore
+.DS_Store export-ignore
