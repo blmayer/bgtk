@@ -41,13 +41,13 @@ static void load_button_clicked(void *userdata) {
 }
 
 int main(void) {
+	bgtk_log_open("image_viewer");
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
 	int conn_fd = bgce_connect();
 	if (conn_fd < 0) {
-		fprintf(stderr,
-			"image_viewer: Failed to connect to BGCE server.\n");
+		bgtk_log_errno("bgce_connect");
 		return -1;
 	}
 
@@ -56,15 +56,14 @@ int main(void) {
 	struct BufferRequest req = {.width = width, .height = height};
 	void* buffer = bgce_get_buffer(conn_fd, req);
 	if (!buffer) {
-		fprintf(stderr,
-			"image_viewer: Failed to get buffer from server.\n");
+		bgtk_log("bgce_get_buffer %dx%d failed", width, height);
 		bgce_disconnect(conn_fd);
 		return -3;
 	}
 
 	ctx = bgtk_init(conn_fd, buffer, width, height);
 	if (!ctx) {
-		fprintf(stderr, "image_viewer: Failed to initialize BGTK.\n");
+		bgtk_log("bgtk_init failed");
 		return 1;
 	}
 

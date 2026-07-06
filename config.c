@@ -4,9 +4,11 @@
 #include "internal.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>  // strcasecmp
 #include <unistd.h>  // for access() in default font selection
 
 // Helper: trim whitespace
@@ -47,54 +49,161 @@ static uint32_t parse_hex_color(const char *str)
 	return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
+/* True if name looks like a font file FreeType can open. */
+static int is_font_filename(const char *name)
+{
+	const char *dot;
+	if (!name || name[0] == '.')
+		return 0;
+	dot = strrchr(name, '.');
+	if (!dot)
+		return 0;
+	return !strcasecmp(dot, ".ttf") || !strcasecmp(dot, ".otf") ||
+	       !strcasecmp(dot, ".ttc") || !strcasecmp(dot, ".otc");
+}
+
+/* Scan dir (non-recursive) for the first readable font file. Returns 1 if set. */
+static int pick_font_in_dir(const char *dir, char *out, size_t outlen)
+{
+	DIR *d;
+	struct dirent *ent;
+	char path[MAX_PATH_LEN];
+
+	if (!dir || !dir[0] || !out || outlen < 8)
+		return 0;
+	d = opendir(dir);
+	if (!d)
+		return 0;
+	while ((ent = readdir(d)) != NULL) {
+		if (!is_font_filename(ent->d_name))
+			continue;
+		if (snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name) >=
+		    (int)sizeof(path))
+			continue;
+		if (access(path, R_OK) != 0)
+			continue;
+		strncpy(out, path, outlen - 1);
+		out[outlen - 1] = '\0';
+		closedir(d);
+		return 1;
+	}
+	closedir(d);
+	return 0;
+}
+
+/* Try a path that may be a font file or a directory of fonts. */
+static int pick_font_path(const char *path, char *out, size_t outlen)
+{
+	DIR *d;
+
+	if (!path || !path[0])
+		return 0;
+	d = opendir(path);
+	if (d) {
+		closedir(d);
+		return pick_font_in_dir(path, out, outlen);
+	}
+	if (access(path, R_OK) != 0)
+		return 0;
+	strncpy(out, path, outlen - 1);
+	out[outlen - 1] = '\0';
+	return 1;
+}
+
+static void pick_default_font(char *out, size_t outlen)
+{
+	const char *home = getenv("HOME");
+	const char *xdg_data = getenv("XDG_DATA_HOME");
+	char dir[MAX_PATH_LEN];
+
+	/* User font folders (highest priority). */
+	if (xdg_data && xdg_data[0] == '/') {
+		snprintf(dir, sizeof(dir), "%s/fonts", xdg_data);
+		if (pick_font_path(dir, out, outlen))
+			return;
+	}
+	if (home && home[0]) {
+		snprintf(dir, sizeof(dir), "%s/.local/share/fonts", home);
+		if (pick_font_path(dir, out, outlen))
+			return;
+		snprintf(dir, sizeof(dir), "%s/.fonts", home);
+		if (pick_font_path(dir, out, outlen))
+			return;
+#ifdef __APPLE__
+		snprintf(dir, sizeof(dir), "%s/Library/Fonts", home);
+		if (pick_font_path(dir, out, outlen))
+			return;
+#endif
+	}
+#ifdef __APPLE__
+	if (pick_font_path("/Library/Fonts", out, outlen))
+		return;
+#endif
+#ifdef __linux__
+	/* Common admin/user install location on Linux. */
+	if (pick_font_path("/usr/local/share/fonts", out, outlen))
+		return;
+#endif
+
+	/* Fixed system candidates. */
+	{
+		static const char *system_fonts[] = {
+#ifdef __linux__
+			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+			"/usr/share/fonts/TTF/DejaVuSans.ttf",
+			"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+			"/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+			"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+			"/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+			"/share/fonts/TTF/DejaVuSans.ttf",
+			"/usr/share/fonts/dejavu/DejaVuSans.ttf",
+#endif
+#ifdef __APPLE__
+			"/System/Library/Fonts/Supplemental/Arial.ttf",
+			"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+			"/Library/Fonts/Arial Unicode.ttf",
+			"/System/Library/Fonts/Helvetica.ttc",
+			"/System/Library/Fonts/SFNSMono.ttf",
+			"/System/Library/Fonts/Monaco.ttf",
+#endif
+			NULL
+		};
+		for (int i = 0; system_fonts[i]; i++) {
+			if (pick_font_path(system_fonts[i], out, outlen))
+				return;
+		}
+	}
+}
+
 void init_config_defaults(struct config *config)
 {
 	config->type = BG_COLOR;
-	config->color = 0xAAAAAAAA;	// Default gray
+	/* High-contrast defaults so labels/text stay readable without a
+	 * config file (previous semi-transparent grays made dark text vanish
+	 * on some compositors). Full alpha, light panel, dark ink. */
+	config->color = 0xFFE8E8E8;
 
-	// Theme defaults
-	config->theme.background = 0xAAAAAAAA;
-	config->theme.button = 0x88888888;
-	config->theme.button_text = 0xFF000000;
+	config->theme.background = 0xFFE8E8E8;
+	config->theme.button = 0xFFD0D0D0;
+	config->theme.button_text = 0xFF111111;
 	config->theme.button_border_size = 1;
-	config->theme.input_border_size = 1;
+	config->theme.input_border_size = 2;
 	config->theme.frame_border_size = 4;
-	config->theme.frame_border_color = 0xFFFFFFFF;
+	config->theme.frame_border_color = 0xFF333333;
 
 	// Font defaults (loaded at runtime from the config file under [font]).
 	// If the user does not provide a path, we select a sane platform default here
 	// (the #ifdefs live in the config package).
 	config->font_path[0] = '\0';
-	config->font_size = 12;
+	config->font_size = 14;
 
 	// Background image fields (safe defaults)
 	config->path[0] = '\0';
 	config->mode = IMAGE_TILED;
 
-	// Default font selection (platform-specific). This used to be "n2" in
-	// bgtk_init_resources. We pick the first accessible one if no path was
-	// given in the config file.
-	if (config->font_path[0] == '\0') {
-		static const char *d[] = {
-#ifdef __linux__
-			"/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-			"/share/fonts/TTF/DejaVuSans.ttf",
-			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-			"/usr/share/fonts/TTF/DejaVuSans.ttf",
-#endif
-#ifdef __APPLE__
-			"/System/Library/Fonts/SFNSMono.ttf",
-#endif
-			NULL
-		};
-		for (int i = 0; d[i]; i++) {
-			if (access(d[i], R_OK) == 0) {
-				strncpy(config->font_path, d[i], MAX_PATH_LEN - 1);
-				config->font_path[MAX_PATH_LEN - 1] = '\0';
-				break;
-			}
-		}
-	}
+	// Prefer user font folders, then system UI fonts.
+	if (config->font_path[0] == '\0')
+		pick_default_font(config->font_path, MAX_PATH_LEN);
 }
 
 
@@ -170,7 +279,8 @@ int parse_config(struct config *config)
 		 home);
 	FILE *file = fopen(user_config, "r");
 	if (!file) {
-		perror("[BGTK] Open config file");
+		/* Missing config is normal — defaults from init_config_defaults
+		 * already applied. Do not spam perror into a shared stream. */
 		return -1;
 	}
 

@@ -9,6 +9,7 @@
  * Output: term_*.png screenshots
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,12 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+
+#if defined(__APPLE__)
+#include <util.h>
+#elif defined(__linux__)
+#include <pty.h>
+#endif
 
 #include "bgtk.h"
 #include "internal.h"
@@ -38,49 +45,89 @@ static pid_t child_pid = -1;
 
 static int open_pty_and_fork(int *out_master, int cols, int rows)
 {
-	int mfd = posix_openpt(O_RDWR | O_NOCTTY);
-	if (mfd < 0) return -1;
-	if (grantpt(mfd) || unlockpt(mfd)) { close(mfd); return -1; }
+	int mfd = -1, sfd = -1;
+	struct winsize ws = { .ws_row = (unsigned short)rows,
+			      .ws_col = (unsigned short)cols };
 
-	char *sname = ptsname(mfd);
-	if (!sname) { close(mfd); return -1; }
+#if defined(__APPLE__) || defined(__linux__)
+	if (openpty(&mfd, &sfd, NULL, NULL, &ws) < 0) {
+		bgtk_log_errno("test openpty");
+		mfd = -1;
+		sfd = -1;
+	}
+#endif
+
+	if (mfd < 0) {
+		mfd = posix_openpt(O_RDWR | O_NOCTTY);
+		if (mfd < 0) {
+			bgtk_log_errno("test posix_openpt");
+			return -1;
+		}
+		if (grantpt(mfd) < 0 || unlockpt(mfd) < 0) {
+			bgtk_log_errno("test grantpt/unlockpt");
+			close(mfd);
+			return -1;
+		}
+		char *sname = ptsname(mfd);
+		if (!sname) {
+			bgtk_log_errno("test ptsname");
+			close(mfd);
+			return -1;
+		}
+		sfd = open(sname, O_RDWR);
+		if (sfd < 0) {
+			bgtk_log_errno("test open slave");
+			close(mfd);
+			return -1;
+		}
+		ioctl(sfd, TIOCSWINSZ, &ws);
+	}
 
 	pid_t pid = fork();
-	if (pid < 0) { close(mfd); return -1; }
+	if (pid < 0) {
+		bgtk_log_errno("test fork");
+		close(mfd);
+		close(sfd);
+		return -1;
+	}
 
 	if (pid == 0) {
 		close(mfd);
 		setsid();
-		int sfd = open(sname, O_RDWR);
-		if (sfd < 0) _exit(127);
-		struct winsize ws = { .ws_row = rows, .ws_col = cols };
-		ioctl(sfd, TIOCSWINSZ, &ws);
-
+#ifdef TIOCSCTTY
+		ioctl(sfd, TIOCSCTTY, 0);
+#endif
 		dup2(sfd, 0);
 		dup2(sfd, 1);
 		dup2(sfd, 2);
 		if (sfd > 2) close(sfd);
 
 		const char *sh = getenv("SHELL");
-		if (!sh) sh = "/bin/sh";
+		if (!sh || !sh[0]) sh = "/bin/sh";
 		setenv("TERM", "xterm-256color", 1);
 		execlp(sh, sh, (char *)NULL);
+		execl("/bin/sh", "sh", (char *)NULL);
+		_exit(127);
 	}
 
+	close(sfd);
 	*out_master = mfd;
 	int fl = fcntl(mfd, F_GETFL);
-	fcntl(mfd, F_SETFL, fl | O_NONBLOCK);
+	if (fl >= 0)
+		fcntl(mfd, F_SETFL, fl | O_NONBLOCK);
 	child_pid = pid;
+	bgtk_log("test PTY ready fd=%d pid=%ld", mfd, (long)pid);
 	return pid;
 }
 
 int main(void)
 {
+	bgtk_log_open("test_terminal");
 	int width = 640, height = 400;
 
 	struct BGTK_Context *ctx = bgtk_init_mock(width, height);
 	if (!ctx) {
-		fprintf(stderr, "test_terminal: init failed\n");
+		bgtk_log("test_terminal: init failed");
 		return 1;
 	}
 

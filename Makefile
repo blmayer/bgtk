@@ -42,6 +42,12 @@ CFLAGS = -Wall -Wextra -Werror -I. $(FREETYPE_CFLAGS) $(LIBXML2_CFLAGS) -fPIC
 # (because pkg-config --libs usually includes -L...).
 LDFLAGS = $(FREETYPE_LIBDIRS) $(FREETYPE_LIBS) $(LIBXML2_LIBS) -lbgce -lm
 
+# openpty() lives in libutil on Linux; on macOS it is in libSystem.
+PTY_LIBS :=
+ifeq ($(shell uname),Linux)
+  PTY_LIBS := -lutil
+endif
+
 TARGET = libbgtk.so test_app image_viewer launcher terminal gemini_browser headless
 # On macOS (Darwin), plain `make` will try to build libbgtk.so and real
 # apps which require the bgce library (Linux-specific). Default to
@@ -102,7 +108,7 @@ gemini_browser: $(GEMINI_BROWSER_OBJ) $(LIB_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(OPENSSL_LIBDIRS) $(OPENSSL_LIBS)
 
 terminal: $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS)
-	$(CC) $(CFLAGS) -Iapps -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) -Iapps -o $@ $^ $(LDFLAGS) $(PTY_LIBS)
 
 # Headless target links the bgce stub instead of the real library and
 # pulls in the compat headers via -I so that <bgce.h> and <linux/input.h>
@@ -137,7 +143,7 @@ $(TEST_GEMINI_OBJ): test/test_gemini_browser.c
 $(GEMINI_BROWSER_OBJ): CFLAGS += -I$(COMPAT_DIR) $(OPENSSL_CFLAGS)
 
 test_terminal: $(TEST_TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
-	$(CC) $(HEADLESS_CFLAGS) -Iapps -o $@ $^ $(HEADLESS_LDFLAGS)
+	$(CC) $(HEADLESS_CFLAGS) -Iapps -o $@ $^ $(HEADLESS_LDFLAGS) $(PTY_LIBS)
 
 test_gemini_browser: $(TEST_GEMINI_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 	$(CC) $(HEADLESS_CFLAGS) $(OPENSSL_CFLAGS) -o $@ $^ $(HEADLESS_LDFLAGS) $(OPENSSL_LIBDIRS) $(OPENSSL_LIBS)

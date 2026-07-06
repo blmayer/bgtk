@@ -33,21 +33,21 @@ void text_input_changed(void) {
 }
 
 int main(void) {
+	bgtk_log_open("test_app");
 	setvbuf(stdout, NULL, _IONBF, 0);  // Disable buffering for stdout
 	setvbuf(stderr, NULL, _IONBF, 0);  // Disable buffering for stderr
 
 	// 1. Connect to BGCE
 	int conn_fd = bgce_connect();
 	if (conn_fd < 0) {
-		fprintf(stderr,
-			"bgtk_init: Failed to connect to BGCE server.\n");
+		bgtk_log_errno("bgce_connect");
 		return -1;
 	}
 
 	// 2. Get Server Info (optional, but good for context)
 	struct ServerInfo s_info;
 	if (bgce_get_server_info(conn_fd, &s_info) != 0) {
-		fprintf(stderr, "bgtk_init: Failed to get server info.\n");
+		bgtk_log("bgce_get_server_info failed");
 		bgce_disconnect(conn_fd);
 		return -2;
 	}
@@ -57,18 +57,17 @@ int main(void) {
 
 	void* buffer = bgce_get_buffer(conn_fd, req);
 	if (!buffer) {
-		fprintf(stderr,
-			"bgtk_init: Failed to get buffer from server.\n");
+		bgtk_log("bgce_get_buffer 600x400 failed");
 		bgce_disconnect(conn_fd);
 		return -3;
 	}
 
 	ctx = bgtk_init(conn_fd, buffer, 600, 400);
 	if (!ctx) {
-		fprintf(stderr, "Failed to initialize BGTK.\n");
+		bgtk_log("bgtk_init failed");
 		return 1;
 	}
-	printf("BGTK init done\n");
+	bgtk_log("BGTK init done");
 
 	// 4. Create Widgets
 

@@ -80,13 +80,13 @@ No `bgce` process or special permissions are required.
 
 ## Configuration
 
-BGTK is configured via `~/.config/bgtk.conf`. Example with all options and their defaults:
+BGTK is configured via `~/.config/bgtk.conf`. Example with all options and their defaults (also used when the file is missing):
 
 ```ini
 # Background settings
 [background]
 type = color
-color = #AAAAAA
+color = #E8E8E8
 # Or use an image:
 # type = image
 # path = /path/to/wallpaper.png
@@ -94,21 +94,35 @@ color = #AAAAAA
 
 # Theme colors and border sizes
 [theme]
-background = #AAAAAA
-button = #888888
-button_text = #000000
+background = #E8E8E8
+button = #D0D0D0
+button_text = #111111
 button_border_size = 1
-input_border_size = 1
+input_border_size = 2
 frame_border_size = 4
-frame_border_color = #FFFFFF
+frame_border_color = #333333
 
 # Font settings
 [font]
-path = /share/fonts/truetype/dejavu/DejaVuSans.ttf
-size = 12
+path = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+size = 14
 ```
 
 Colors use `#RRGGBB` or `#RRGGBBAA` format. Lines starting with `#` or `;` are comments.
+
+### Logging
+
+Each process writes a dedicated log under `~/.cache/bgtk/` (or `$XDG_CACHE_HOME/bgtk/`), separate from BGCE server logs:
+
+| Process | Log file |
+|---------|----------|
+| library fallback | `~/.cache/bgtk/bgtk.log` |
+| `terminal` | `~/.cache/bgtk/terminal.log` |
+| `launcher` | `~/.cache/bgtk/launcher.log` |
+| `test_app` | `~/.cache/bgtk/test_app.log` |
+| … | `~/.cache/bgtk/<app_name>.log` |
+
+Apps call `bgtk_log_open("app_name")` at startup; use `bgtk_log()` / `bgtk_log_errno()` for diagnostics.
 
 
 ## Building

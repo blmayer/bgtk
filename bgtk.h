@@ -311,6 +311,16 @@ struct BGTK_Widget {
 	} data;  // End of union
 };  // End of BGTK_Widget struct
 
+// --- Logging (dedicated files under ~/.cache/bgtk/, not shared with BGCE) ---
+// Open $XDG_CACHE_HOME/bgtk/<app_name>.log (or ~/.cache/bgtk/...). Creates dirs.
+// Call once at process start with a per-app name (e.g. "terminal", "launcher").
+// Library code uses "bgtk" if nothing was opened yet.
+void bgtk_log_open(const char *app_name);
+// Timestamped line to the app log (and stderr). Safe before bgtk_log_open.
+void bgtk_log(const char *fmt, ...);
+// Like bgtk_log but appends ": <strerror(errno)>" for the current errno.
+void bgtk_log_errno(const char *fmt, ...);
+
 // --- Core Functions ---
 
 void bgtk_draw_widgets(struct BGTK_Context* ctx);

@@ -3,15 +3,173 @@
 #include "bgtk.h"
 
 #include <bgce.h>
+#include <errno.h>
 #include <linux/input.h>
+#include <stdarg.h>
 #include <stb_image_write.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "config.h"
 #include "internal.h"
+
+/* Dedicated BGTK logs live under ~/.cache/bgtk/ (or $XDG_CACHE_HOME/bgtk/),
+ * separate from BGCE server/client stderr so app and compositor output do not
+ * fight over one stream or file. */
+static FILE *bgtk_log_fp;
+static char bgtk_log_name[64] = "bgtk";
+
+static void bgtk_log_timestamp(char *ts, size_t tslen)
+{
+	struct timeval tv;
+	struct tm tm;
+	gettimeofday(&tv, NULL);
+	localtime_r(&tv.tv_sec, &tm);
+	/* YYYY-mm-dd HH:MM:SS.mmm — same stamp on file and stderr. */
+	int n = strftime(ts, tslen, "%Y-%m-%d %H:%M:%S", &tm);
+	if (n > 0 && (size_t)n + 5 < tslen)
+		snprintf(ts + n, tslen - (size_t)n, ".%03d",
+			 (int)(tv.tv_usec / 1000));
+}
+
+static int bgtk_mkdir_p(const char *path)
+{
+	struct stat st;
+	if (!path || !path[0])
+		return -1;
+	if (stat(path, &st) == 0)
+		return S_ISDIR(st.st_mode) ? 0 : -1;
+	if (mkdir(path, 0700) < 0 && errno != EEXIST)
+		return -1;
+	return 0;
+}
+
+static int bgtk_ensure_log_dir(char *dir, size_t dirlen)
+{
+	const char *xdg = getenv("XDG_CACHE_HOME");
+	const char *home = getenv("HOME");
+	int n;
+
+	if (xdg && xdg[0] == '/') {
+		if (bgtk_mkdir_p(xdg) < 0)
+			return -1;
+		n = snprintf(dir, dirlen, "%s/bgtk", xdg);
+	} else if (home && home[0]) {
+		char cache[512];
+		n = snprintf(cache, sizeof(cache), "%s/.cache", home);
+		if (n < 0 || (size_t)n >= sizeof(cache))
+			return -1;
+		if (bgtk_mkdir_p(cache) < 0)
+			return -1;
+		n = snprintf(dir, dirlen, "%s/.cache/bgtk", home);
+	} else {
+		return -1;
+	}
+	if (n < 0 || (size_t)n >= dirlen)
+		return -1;
+	return bgtk_mkdir_p(dir);
+}
+
+void bgtk_log_open(const char *app_name)
+{
+	char dir[512];
+	char path[640];
+
+	if (app_name && app_name[0]) {
+		strncpy(bgtk_log_name, app_name, sizeof(bgtk_log_name) - 1);
+		bgtk_log_name[sizeof(bgtk_log_name) - 1] = '\0';
+	}
+
+	if (bgtk_log_fp && bgtk_log_fp != stderr) {
+		fclose(bgtk_log_fp);
+		bgtk_log_fp = NULL;
+	}
+
+	if (bgtk_ensure_log_dir(dir, sizeof(dir)) < 0) {
+		char ts[40];
+		bgtk_log_timestamp(ts, sizeof(ts));
+		bgtk_log_fp = stderr;
+		fprintf(stderr, "%s [%s] log dir unavailable; using stderr only\n",
+			ts, bgtk_log_name);
+		return;
+	}
+
+	snprintf(path, sizeof(path), "%s/%s.log", dir, bgtk_log_name);
+	bgtk_log_fp = fopen(path, "a");
+	if (!bgtk_log_fp) {
+		char ts[40];
+		bgtk_log_timestamp(ts, sizeof(ts));
+		bgtk_log_fp = stderr;
+		fprintf(stderr, "%s [%s] cannot open %s: %s (stderr only)\n",
+			ts, bgtk_log_name, path, strerror(errno));
+		return;
+	}
+	setvbuf(bgtk_log_fp, NULL, _IOLBF, 0);
+	/* First line after open — path is useful when diagnosing launch failures. */
+	{
+		char ts[40];
+		bgtk_log_timestamp(ts, sizeof(ts));
+		fprintf(bgtk_log_fp, "%s [%s] === log open pid=%ld path=%s ===\n",
+			ts, bgtk_log_name, (long)getpid(), path);
+		fflush(bgtk_log_fp);
+	}
+}
+
+static void bgtk_log_ensure(void)
+{
+	if (!bgtk_log_fp)
+		bgtk_log_open(bgtk_log_name);
+}
+
+static void bgtk_log_v(int with_errno, const char *fmt, va_list ap)
+{
+	int saved = errno;
+	char msg[1024];
+	vsnprintf(msg, sizeof(msg), fmt, ap);
+
+	char ts[40];
+	bgtk_log_timestamp(ts, sizeof(ts));
+
+	bgtk_log_ensure();
+
+	if (with_errno)
+		fprintf(bgtk_log_fp, "%s [%s] %s: %s (errno=%d)\n",
+			ts, bgtk_log_name, msg, strerror(saved), saved);
+	else
+		fprintf(bgtk_log_fp, "%s [%s] %s\n", ts, bgtk_log_name, msg);
+	fflush(bgtk_log_fp);
+
+	/* Mirror to stderr (with the same timestamp) so interactive runs match
+	 * the file; durable record is always the dedicated log file. */
+	if (bgtk_log_fp != stderr) {
+		if (with_errno)
+			fprintf(stderr, "%s [%s] %s: %s\n", ts, bgtk_log_name, msg,
+				strerror(saved));
+		else
+			fprintf(stderr, "%s [%s] %s\n", ts, bgtk_log_name, msg);
+	}
+}
+
+void bgtk_log(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	bgtk_log_v(0, fmt, ap);
+	va_end(ap);
+}
+
+void bgtk_log_errno(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	bgtk_log_v(1, fmt, ap);
+	va_end(ap);
+}
 
 int take_screenshot(struct BGTK_Context *ctx, const char *path)
 {
@@ -120,10 +278,14 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
 	ctx->font_path[MAX_PATH_LEN - 1] = '\0';
 	ctx->font_size = config.font_size;
 
+	bgtk_log("init resources %dx%d theme_bg=0x%08X text=0x%08X font_size=%d font='%s'",
+		 ctx->width, ctx->height, ctx->theme.background,
+		 ctx->theme.button_text, ctx->font_size,
+		 ctx->font_path[0] ? ctx->font_path : "(none)");
+
 	// 1. Initialize FreeType
 	if (FT_Init_FreeType(&ctx->ft_library)) {
-		fprintf(stderr,
-			"bgtk_init: Could not init FreeType library.\n");
+		bgtk_log("FreeType library init failed");
 	}
 	if (!ctx->ft_library) {
 		return;
@@ -134,13 +296,14 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
 	//    init_config_defaults.
 	if (ctx->font_path[0] != '\0') {
 		if (FT_New_Face(ctx->ft_library, ctx->font_path, 0, &ctx->ft_face) != 0) {
-			fprintf(stderr, "bgtk_init: Could not load font from config: %s\n"
-			                "             Using placeholder drawing.\n",
-			        ctx->font_path);
+			bgtk_log("could not load font '%s'; text will use placeholders",
+				 ctx->font_path);
 			ctx->font_path[0] = '\0';
 		} else {
-			fprintf(stderr, "bgtk_init: Using font: %s\n", ctx->font_path);
+			bgtk_log("loaded font '%s' size=%d", ctx->font_path, ctx->font_size);
 		}
+	} else {
+		bgtk_log("no font path configured and no system default found");
 	}
 
 	if (ctx->ft_face) {
@@ -157,8 +320,8 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
 		int tw = 0, th = 0;
 		measure_text(ctx->ft_face, "Ag", &tw, &th);
 		if (tw <= 0 || th <= 0) {
-			fprintf(stderr, "bgtk_init: Font '%s' loaded but has no usable glyphs. "
-			                "Using placeholder drawing.\n", ctx->font_path);
+			bgtk_log("font '%s' has no usable glyphs (tw=%d th=%d); dropping face",
+				 ctx->font_path, tw, th);
 			FT_Done_Face(ctx->ft_face);
 			ctx->ft_face = NULL;
 			ctx->font_path[0] = '\0';

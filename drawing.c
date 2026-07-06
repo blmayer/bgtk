@@ -639,26 +639,28 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 			    uint32_t *pixels)
 {
-	// Draw background (white)
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
-		  w->w - 2 * w->margin, w->h - 2 * w->margin, 0xFFFFFFFF);
-
 	int focused = ctx->focused_widget == w;
-	uint32_t border = focused ? 0xFF0066FF : 0xFF000000;
+	/* Focused: cool-tint field + strong blue border. Unfocused: white + gray. */
+	uint32_t field_bg = focused ? 0xFFE8F2FF : 0xFFFFFFFF;
+	uint32_t border = focused ? 0xFF0066FF : 0xFF888888;
+	uint32_t text_color = ctx->theme.button_text ?
+		ctx->theme.button_text : 0xFF111111;
 
-	int bw = ctx->theme.input_border_size;
-	if (bw < 1) {
+	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
+		  w->w - 2 * w->margin, w->h - 2 * w->margin, field_bg);
+
+	int bw = (int)ctx->theme.input_border_size;
+	if (bw < 1)
 		bw = 1;
-	}
-	if (bw * 2 > w->w - 2 * w->margin) {
+	/* Focused fields get a visibly thicker ring so focus is obvious. */
+	if (focused && bw < 3)
+		bw = 3;
+	if (bw * 2 > w->w - 2 * w->margin)
 		bw = (w->w - 2 * w->margin) / 2;
-	}
-	if (bw * 2 > w->h - 2 * w->margin) {
+	if (bw * 2 > w->h - 2 * w->margin)
 		bw = (w->h - 2 * w->margin) / 2;
-	}
-	if (bw < 1) {
+	if (bw < 1)
 		bw = 1;
-	}
 
 	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->w - 2 * w->margin, bw, border);	// Top
 	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->h - bw - w->margin, w->w - 2 * w->margin, bw, border);	// Bottom
@@ -669,130 +671,118 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	int inner_y0 = w->y + w->margin + bw;
 	int inner_w = w->w - 2 * w->margin - 2 * bw;
 	int inner_h = w->h - 2 * w->margin - 2 * bw;
-	if (inner_w < 1) {
+	if (inner_w < 1)
 		inner_w = 1;
-	}
-	if (inner_h < 1) {
+	if (inner_h < 1)
 		inner_h = 1;
-	}
 
 	int text_x = w->x + w->margin + bw + w->padding;
 	int text_y = w->y + w->margin + bw + w->padding;
 	int scroll_x = w->data.text_input.scroll_x;
-	if (scroll_x < 0) {
+	if (scroll_x < 0)
 		scroll_x = 0;
-	}
 
 	const char *full =
 	    w->data.text_input.text ? w->data.text_input.text : "";
 
-	if (!ctx->ft_face) {
-		return;
-	}
-
-	// Align text within the inner content area when it fits without scroll.
 	int content_w = inner_w - 2 * w->padding;
-	if (content_w < 1) {
+	if (content_w < 1)
 		content_w = 1;
-	}
 	int tw = 0, th = 0;
 	measure_text(ctx->ft_face, full, &tw, &th);
 	int align_off = 0;
-	if (scroll_x == 0 && tw < content_w) {
+	if (scroll_x == 0 && tw < content_w)
 		align_off = text_align_offset(w->text_align, content_w, tw);
-	}
 
 	int draw_x = text_x - scroll_x + align_off;
 
-	int stride = ctx->width;
-	FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
-	int pen_x = draw_x;
-	int pen_y = text_y + (ctx->ft_face->size->metrics.ascender >> 6);
+	if (!ctx->ft_face) {
+		/* No font: still mark presence of text with a dark bar so the
+		 * field is not a blank rectangle when typing without a face. */
+		if (full[0])
+			draw_rect(ctx, pixels, draw_x, text_y,
+				  tw > 0 ? tw : (int)strlen(full) * 7, 3,
+				  text_color);
+	} else {
+		int stride = ctx->width;
+		FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
+		int pen_x = draw_x;
+		int pen_y = text_y + (ctx->ft_face->size->metrics.ascender >> 6);
+		uint8_t r_src = (text_color >> 16) & 0xFF;
+		uint8_t g_src = (text_color >> 8) & 0xFF;
+		uint8_t b_src = text_color & 0xFF;
 
-	for (const char *p = full; *p; p++) {
-		FT_UInt index = FT_Get_Char_Index(ctx->ft_face, (unsigned char)*p);
-		if (FT_Load_Glyph(ctx->ft_face, index,
-				  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
-			continue;
-		}
-		FT_Render_Glyph(ctx->ft_face->glyph, FT_RENDER_MODE_NORMAL);
+		for (const char *p = full; *p; p++) {
+			FT_UInt index = FT_Get_Char_Index(ctx->ft_face, (unsigned char)*p);
+			if (FT_Load_Glyph(ctx->ft_face, index,
+					  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT))
+				continue;
+			FT_Render_Glyph(ctx->ft_face->glyph, FT_RENDER_MODE_NORMAL);
 
-		FT_GlyphSlot slot = ctx->ft_face->glyph;
-		FT_Bitmap *bitmap = &slot->bitmap;
-		int gx = pen_x + slot->bitmap_left;
-		int gy = pen_y - slot->bitmap_top;
+			FT_GlyphSlot slot = ctx->ft_face->glyph;
+			FT_Bitmap *bitmap = &slot->bitmap;
+			int gx = pen_x + slot->bitmap_left;
+			int gy = pen_y - slot->bitmap_top;
 
-		int glyph_x0 = gx;
-		int glyph_x1 = gx + (int)bitmap->width;
-		if (glyph_x1 <= inner_x0) {
-			pen_x += slot->advance.x >> 6;
-			continue;
-		}
-		if (glyph_x0 >= inner_x0 + inner_w) {
-			break;
-		}
-
-		for (unsigned int row = 0; row < bitmap->rows; row++) {
-			int32_t dy = gy + (int)row;
-			if (dy < inner_y0 || dy >= inner_y0 + inner_h) {
+			if (gx + (int)bitmap->width <= inner_x0) {
+				pen_x += slot->advance.x >> 6;
 				continue;
 			}
-			for (unsigned int col = 0; col < bitmap->width; col++) {
-				int32_t dx = gx + (int)col;
-				if (dx < inner_x0 || dx >= inner_x0 + inner_w) {
+			if (gx >= inner_x0 + inner_w)
+				break;
+
+			for (unsigned int row = 0; row < bitmap->rows; row++) {
+				int32_t dy = gy + (int)row;
+				if (dy < inner_y0 || dy >= inner_y0 + inner_h)
 					continue;
+				for (unsigned int col = 0; col < bitmap->width; col++) {
+					int32_t dx = gx + (int)col;
+					if (dx < inner_x0 || dx >= inner_x0 + inner_w)
+						continue;
+
+					uint8_t a =
+					    bitmap->buffer[row * bitmap->pitch + col];
+					if (a == 0)
+						continue;
+
+					uint32_t dst = pixels[dy * stride + dx];
+					uint8_t inv = 255 - a;
+					uint8_t r_dst = (dst >> 16) & 0xFF;
+					uint8_t g_dst = (dst >> 8) & 0xFF;
+					uint8_t b_dst = dst & 0xFF;
+					uint8_t r = (r_src * a + r_dst * inv) / 255;
+					uint8_t g = (g_src * a + g_dst * inv) / 255;
+					uint8_t b = (b_src * a + b_dst * inv) / 255;
+					pixels[dy * stride + dx] =
+					    (0xFFu << 24) | (r << 16) | (g << 8) | b;
 				}
-
-				uint8_t a =
-				    bitmap->buffer[row * bitmap->pitch + col];
-				if (a == 0) {
-					continue;
-				}
-
-				uint32_t dst = pixels[dy * stride + dx];
-				uint8_t inv = 255 - a;
-
-				uint8_t r_dst = (dst >> 16) & 0xFF;
-				uint8_t g_dst = (dst >> 8) & 0xFF;
-				uint8_t b_dst = (dst) & 0xFF;
-
-				uint8_t r_src = (0xFF000000 >> 16) & 0xFF;
-				uint8_t g_src = (0xFF000000 >> 8) & 0xFF;
-				uint8_t b_src = (0xFF000000) & 0xFF;
-
-				uint8_t r = (r_src * a + r_dst * inv) / 255;
-				uint8_t g = (g_src * a + g_dst * inv) / 255;
-				uint8_t b = (b_src * a + b_dst * inv) / 255;
-
-				pixels[dy * stride + dx] =
-				    (0xFFu << 24) | (r << 16) | (g << 8) | b;
 			}
+			pen_x += slot->advance.x >> 6;
 		}
-
-		pen_x += slot->advance.x >> 6;
 	}
 
 	if (focused) {
 		int cursor_x = text_x - scroll_x + align_off;
-		for (uint32_t i = 0; i < w->data.text_input.cursor_pos; i++) {
-			FT_UInt index =
-			    FT_Get_Char_Index(ctx->ft_face,
-					      (unsigned char)w->data.text_input.text[i]);
-			if (FT_Load_Glyph(ctx->ft_face, index, FT_LOAD_DEFAULT)) {
-				continue;
+		if (ctx->ft_face && w->data.text_input.text) {
+			for (uint32_t i = 0; i < w->data.text_input.cursor_pos; i++) {
+				FT_UInt index = FT_Get_Char_Index(
+					ctx->ft_face,
+					(unsigned char)w->data.text_input.text[i]);
+				if (FT_Load_Glyph(ctx->ft_face, index, FT_LOAD_DEFAULT))
+					continue;
+				cursor_x += ctx->ft_face->glyph->advance.x >> 6;
 			}
-			cursor_x += ctx->ft_face->glyph->advance.x >> 6;
+		} else {
+			cursor_x += (int)w->data.text_input.cursor_pos * 7;
 		}
 
-		if (cursor_x < inner_x0) {
+		if (cursor_x < inner_x0)
 			cursor_x = inner_x0;
-		}
-		if (cursor_x > inner_x0 + inner_w - 1) {
-			cursor_x = inner_x0 + inner_w - 1;
-		}
+		if (cursor_x > inner_x0 + inner_w - 2)
+			cursor_x = inner_x0 + inner_w - 2;
 
-		draw_rect(ctx, pixels, cursor_x, inner_y0, 1, inner_h,
-			  0xFF000000);
+		/* 2px blue caret — clearer than a 1px black line on light fields. */
+		draw_rect(ctx, pixels, cursor_x, inner_y0, 2, inner_h, 0xFF0066FF);
 	}
 }
 

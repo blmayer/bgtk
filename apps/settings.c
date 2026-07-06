@@ -881,9 +881,11 @@ struct config *settings_get_config(void)
 
 int main(void)
 {
+	bgtk_log_open("settings");
+
 	int conn = bgce_connect();
 	if (conn < 0) {
-		fprintf(stderr, "settings: can't connect to BGCE\n");
+		bgtk_log_errno("bgce_connect");
 		return 1;
 	}
 
@@ -893,13 +895,14 @@ int main(void)
 	struct BufferRequest req = { .width = 700, .height = 480 };
 	void *buf = bgce_get_buffer(conn, req);
 	if (!buf) {
-		fprintf(stderr, "settings: can't get buffer\n");
+		bgtk_log("bgce_get_buffer 700x480 failed");
 		bgce_disconnect(conn);
 		return 1;
 	}
 
 	struct BGTK_Context *c = bgtk_init(conn, buf, 700, 480);
 	if (!c) {
+		bgtk_log("bgtk_init failed");
 		bgce_disconnect(conn);
 		return 1;
 	}

@@ -117,10 +117,12 @@ static int run_align_scene(void)
 
 int main(void)
 {
+	bgtk_log_open("headless");
+
 	/* 1. Headless init: no server, we get a plain malloc framebuffer */
 	struct BGTK_Context *ctx = bgtk_init_mock(420, 260);
 	if (!ctx) {
-		fprintf(stderr, "headless: init failed\n");
+		bgtk_log("headless: init failed");
 		return 1;
 	}
 
