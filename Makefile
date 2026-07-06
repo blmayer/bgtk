@@ -58,7 +58,10 @@ ifeq ($(UNAME_S),Linux)
   PTY_LIBS := -lutil
 endif
 
-TARGET = libbgtk.so test_app image_viewer launcher terminal gemini_browser settings
+# Default `make` builds the library and core apps. settings is intentionally
+# before gemini_browser so a missing OpenSSL does not skip it.
+# gemini_browser needs OpenSSL; build it last (or: make gemini_browser).
+TARGET = libbgtk.so test_app image_viewer launcher terminal settings gemini_browser
 # On macOS (Darwin), plain `make` will try to build libbgtk.so and real
 # apps which require the bgce library (Linux-specific). Default to
 # headless/test targets so `make` succeeds for development on mac.
