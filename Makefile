@@ -50,7 +50,13 @@ endif
 # Full LDFLAGS are only for real (Linux + bgce server) binaries.
 LDFLAGS = $(FREETYPE_LIBDIRS) $(FREETYPE_LIBS) $(LIBXML2_LIBS) -lbgce -lm
 # Prefer in-tree libbgtk.so when linking apps (before any system copy).
-APP_LDFLAGS = -L. -lbgtk $(LDFLAGS)
+# RPATH so the runtime linker finds libbgtk.so without LD_LIBRARY_PATH:
+#   - $(INSTALL_LIB) for installed layout (/lib or PREFIX/lib)
+#   - $$ORIGIN so a co-located lib next to the binary also works
+#   - . for running from the build tree (./launcher after make)
+# Yes, LD_LIBRARY_PATH is still honored by the dynamic linker if set.
+RPATH_FLAGS = -Wl,-rpath,$(INSTALL_LIB) -Wl,-rpath,'$$ORIGIN' -Wl,-rpath,.
+APP_LDFLAGS = -L. -lbgtk $(RPATH_FLAGS) $(LDFLAGS)
 
 # openpty() lives in libutil on Linux; on macOS it is in libSystem.
 PTY_LIBS :=
@@ -146,6 +152,12 @@ help:
 	@echo "  INSTALL_INCLUDE=$(INSTALL_INCLUDE)"
 	@echo "  INSTALL_BIN=$(INSTALL_BIN)"
 	@echo ""
+	@echo "Runtime library search (libbgtk.so)"
+	@echo "  Apps link with -lbgtk and rpath: $(INSTALL_LIB), \$$ORIGIN, and ."
+	@echo "  The dynamic linker also honors LD_LIBRARY_PATH if set, e.g.:"
+	@echo "    LD_LIBRARY_PATH=. ./launcher"
+	@echo "  After 'make install' (+ ldconfig on Linux), /lib is enough."
+	@echo ""
 	@echo "Examples"
 	@echo "  make"
 	@echo "  make CC=cc"
@@ -155,6 +167,7 @@ help:
 	@echo "  make install PREFIX=/usr/local"
 	@echo "  make install INSTALL_LIB=/opt/bgtk/lib INSTALL_INCLUDE=/opt/bgtk/include"
 	@echo "  make snapshot"
+	@echo "  LD_LIBRARY_PATH=. ./launcher"
 
 # Shared library objects need -fPIC; app objects must not (TinyCC).
 $(LIB_OBJS): CFLAGS += -fPIC
