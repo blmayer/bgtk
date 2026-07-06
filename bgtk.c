@@ -82,7 +82,8 @@ void bgtk_log_open(const char *app_name)
 	char dir[512];
 	char path[640];
 
-	if (app_name && app_name[0]) {
+	/* Avoid strncpy(dst, dst) when ensure() reopens with bgtk_log_name. */
+	if (app_name && app_name[0] && app_name != bgtk_log_name) {
 		strncpy(bgtk_log_name, app_name, sizeof(bgtk_log_name) - 1);
 		bgtk_log_name[sizeof(bgtk_log_name) - 1] = '\0';
 	}
