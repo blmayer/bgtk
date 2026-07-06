@@ -29,16 +29,23 @@ ifeq ($(FREETYPE_LIBS),)
   FREETYPE_LIBDIRS += -L/lib -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
 endif
 
-OPENSSL_CFLAGS := $(shell $(PKG_CONFIG_ENV) pkg-config --cflags openssl 2>/dev/null)
-ifeq ($(OPENSSL_CFLAGS),)
-  OPENSSL_CFLAGS := -I$(HOME_LOCAL)/include \
-	-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/openssl@3/include \
-	-I/opt/homebrew/include -I/usr/local/opt/openssl/include
+# libtls (LibreSSL / OpenBSD / libretls). Prefer pkg-config; fall back to home/local.
+LIBTLS_CFLAGS := $(shell $(PKG_CONFIG_ENV) pkg-config --cflags libtls 2>/dev/null)
+ifeq ($(LIBTLS_CFLAGS),)
+  LIBTLS_CFLAGS := $(shell $(PKG_CONFIG_ENV) pkg-config --cflags libretls 2>/dev/null)
 endif
-OPENSSL_LIBDIRS := -L$(HOME_LOCAL)/lib \
-	-L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/openssl@3/lib \
-	-L/opt/homebrew/lib -L/usr/local/opt/openssl/lib -L/usr/local/lib
-OPENSSL_LIBS := -lssl -lcrypto
+ifeq ($(LIBTLS_CFLAGS),)
+  LIBTLS_CFLAGS := -I$(HOME_LOCAL)/include -I/usr/include -I/usr/local/include \
+	-I/opt/homebrew/opt/libretls/include -I/opt/homebrew/include
+endif
+LIBTLS_LIBS := $(shell $(PKG_CONFIG_ENV) pkg-config --libs libtls 2>/dev/null)
+ifeq ($(LIBTLS_LIBS),)
+  LIBTLS_LIBS := $(shell $(PKG_CONFIG_ENV) pkg-config --libs libretls 2>/dev/null)
+endif
+ifeq ($(LIBTLS_LIBS),)
+  LIBTLS_LIBS := -L$(HOME_LOCAL)/lib -L/usr/local/lib -L/opt/homebrew/opt/libretls/lib \
+	-L/opt/homebrew/lib -ltls
+endif
 
 LIBXML2_CFLAGS := $(shell $(PKG_CONFIG_ENV) pkg-config --cflags libxml-2.0 2>/dev/null)
 ifeq ($(LIBXML2_CFLAGS),)
@@ -77,8 +84,8 @@ ifeq ($(UNAME_S),Linux)
 endif
 
 # Default `make` builds the library and core apps. settings is intentionally
-# before gemini_browser so a missing OpenSSL does not skip it.
-# gemini_browser needs OpenSSL; build it last (or: make gemini_browser).
+# before gemini_browser so a missing libtls does not skip it.
+# gemini_browser needs libtls; build it last (or: make gemini_browser).
 TARGET = libbgtk.so test_app image_viewer launcher terminal settings gemini_browser
 # On macOS (Darwin), plain `make` will try to build libbgtk.so and real
 # apps which require the bgce library (Linux-specific). Default to
@@ -141,14 +148,14 @@ help:
 	@echo "  launcher             Application launcher (exits after spawn)"
 	@echo "  terminal             Terminal emulator (PTY)"
 	@echo "  settings             Theme/font/background settings UI"
-	@echo "  gemini_browser       Gemini browser (needs OpenSSL)"
+	@echo "  gemini_browser       Gemini browser (needs libtls)"
 	@echo ""
 	@echo "  Headless / mock tests (no BGCE server; produce PNGs)"
 	@echo "  headless             Basic widgets + input screenshots"
 	@echo "  test_terminal        Terminal/ANSI (+ optional real PTY) screenshots"
 	@echo "  test_html            HTML → widget tree screenshots"
 	@echo "  test_settings        Settings UI screenshots"
-	@echo "  test_gemini_browser  Gemini browser flow screenshots (OpenSSL)"
+	@echo "  test_gemini_browser  Gemini browser flow screenshots (libtls for live fetch)"
 	@echo ""
 	@echo "  Maintenance"
 	@echo "  install              Install lib, header, and built apps"
@@ -198,7 +205,7 @@ launcher: $(LAUNCHER_OBJ) libbgtk.so
 	$(CC) -o $@ $(LAUNCHER_OBJ) $(APP_LDFLAGS)
 
 gemini_browser: $(GEMINI_BROWSER_OBJ) libbgtk.so
-	$(CC) -o $@ $(GEMINI_BROWSER_OBJ) $(APP_LDFLAGS) $(OPENSSL_LIBDIRS) $(OPENSSL_LIBS)
+	$(CC) -o $@ $(GEMINI_BROWSER_OBJ) $(APP_LDFLAGS) $(LIBTLS_LIBS)
 
 terminal: $(TERMINAL_OBJ) $(TERM_CORE_OBJ) libbgtk.so
 	$(CC) -o $@ $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(APP_LDFLAGS) $(PTY_LIBS)
@@ -231,17 +238,17 @@ $(TERM_CORE_OBJ): apps/term_core.c apps/terminal.h
 $(TEST_TERMINAL_OBJ): test/test_terminal.c apps/terminal.h
 	$(CC) $(CFLAGS) -Iapps -c -o $@ $<
 
-$(TEST_GEMINI_OBJ): CFLAGS += $(OPENSSL_CFLAGS)
+$(TEST_GEMINI_OBJ): CFLAGS += $(LIBTLS_CFLAGS)
 $(TEST_GEMINI_OBJ): test/test_gemini_browser.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(GEMINI_BROWSER_OBJ): CFLAGS += $(OPENSSL_CFLAGS)
+$(GEMINI_BROWSER_OBJ): CFLAGS += $(LIBTLS_CFLAGS)
 
 test_terminal: $(TEST_TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 	$(CC) -o $@ $(TEST_TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS) $(PTY_LIBS)
 
 test_gemini_browser: $(TEST_GEMINI_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
-	$(CC) -o $@ $(TEST_GEMINI_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS) $(OPENSSL_LIBDIRS) $(OPENSSL_LIBS)
+	$(CC) -o $@ $(TEST_GEMINI_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS) $(LIBTLS_LIBS)
 
 test_html: $(TEST_HTML_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 	$(CC) -o $@ $(TEST_HTML_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS)

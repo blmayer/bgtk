@@ -1,17 +1,13 @@
-#include <arpa/inet.h>
 #include <bgce.h>
 #include <bgtk.h>
+#include <ctype.h>
 #include <errno.h>
 #include <linux/input.h>
-#include <netdb.h>
-#include <openssl/err.h>
-#include <openssl/ssl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
+#include <tls.h>
 #include <unistd.h>
-#include <ctype.h>
 
 static struct BGTK_Context *ctx = NULL;
 static struct BGTK_Widget *content_scroll = NULL;
@@ -164,50 +160,46 @@ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, c
 	/* full selector is the original req_url (spec) */
 	char selector[1024];
 	strncpy(selector, req_url, sizeof(selector) - 1);
+	selector[sizeof(selector) - 1] = '\0';
 
-	SSL_CTX *sctx = SSL_CTX_new(TLS_client_method());
-	if (!sctx)
+	/* Gemini commonly uses TOFU; match prior OpenSSL VERIFY_NONE behaviour. */
+	if (tls_init() == -1)
 		return -2;
-	SSL_CTX_set_verify(sctx, SSL_VERIFY_NONE, NULL);
 
-	int sock = socket(AF_INET, SOCK_STREAM, 0);
-	if (sock < 0) {
-		SSL_CTX_free(sctx);
-		return -3;
+	struct tls_config *cfg = tls_config_new();
+	if (!cfg)
+		return -2;
+	tls_config_insecure_noverifycert(cfg);
+	tls_config_insecure_noverifyname(cfg);
+
+	struct tls *ctx_tls = tls_client();
+	if (!ctx_tls) {
+		tls_config_free(cfg);
+		return -2;
+	}
+	if (tls_configure(ctx_tls, cfg) == -1) {
+		bgtk_log("tls_configure: %s", tls_error(ctx_tls));
+		tls_free(ctx_tls);
+		tls_config_free(cfg);
+		return -2;
 	}
 
-	struct hostent *heent = gethostbyname(host);
-	if (!heent) {
-		close(sock);
-		SSL_CTX_free(sctx);
-		return -4;
-	}
-	struct sockaddr_in sin = {0};
-	sin.sin_family = AF_INET;
-	sin.sin_port = htons(port);
-	memcpy(&sin.sin_addr, heent->h_addr_list[0], heent->h_length);
-
-	if (connect(sock, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
-		close(sock);
-		SSL_CTX_free(sctx);
-		return -5;
-	}
-
-	SSL *ssl = SSL_new(sctx);
-	SSL_set_fd(ssl, sock);
-	if (SSL_connect(ssl) != 1) {
-		SSL_free(ssl);
-		close(sock);
-		SSL_CTX_free(sctx);
+	char portstr[16];
+	snprintf(portstr, sizeof(portstr), "%d", port);
+	if (tls_connect(ctx_tls, host, portstr) == -1) {
+		bgtk_log("tls_connect %s:%s: %s", host, portstr, tls_error(ctx_tls));
+		tls_free(ctx_tls);
+		tls_config_free(cfg);
 		return -6;
 	}
 
 	char req[1200];
 	int rlen = snprintf(req, sizeof(req), "%s\r\n", selector);
-	if (SSL_write(ssl, req, rlen) <= 0) {
-		SSL_free(ssl);
-		close(sock);
-		SSL_CTX_free(sctx);
+	if (tls_write(ctx_tls, req, (size_t)rlen) < 0) {
+		bgtk_log("tls_write: %s", tls_error(ctx_tls));
+		tls_close(ctx_tls);
+		tls_free(ctx_tls);
+		tls_config_free(cfg);
 		return -7;
 	}
 
@@ -215,10 +207,10 @@ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, c
 	char hbuf[1024] = {0};
 	int hlen = 0;
 	while (hlen < (int)sizeof(hbuf) - 1) {
-		int n = SSL_read(ssl, hbuf + hlen, 1);
+		ssize_t n = tls_read(ctx_tls, hbuf + hlen, 1);
 		if (n <= 0)
 			break;
-		hlen += n;
+		hlen += (int)n;
 		if (hlen >= 2 && hbuf[hlen - 2] == '\r' && hbuf[hlen - 1] == '\n')
 			break;
 	}
@@ -237,38 +229,37 @@ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, c
 	size_t blen = 0;
 	char *body = malloc(cap);
 	if (!body) {
-		SSL_free(ssl);
-		close(sock);
-		SSL_CTX_free(sctx);
+		tls_close(ctx_tls);
+		tls_free(ctx_tls);
+		tls_config_free(cfg);
 		return -8;
 	}
 	for (;;) {
 		char rbuf[1024];
-		int n = SSL_read(ssl, rbuf, sizeof(rbuf));
+		ssize_t n = tls_read(ctx_tls, rbuf, sizeof(rbuf));
 		if (n <= 0)
 			break;
 		if (blen + (size_t)n + 1 > cap) {
-			cap = cap * 2 + n;
+			cap = cap * 2 + (size_t)n;
 			char *nb = realloc(body, cap);
 			if (!nb) {
 				free(body);
-				SSL_free(ssl);
-				close(sock);
-				SSL_CTX_free(sctx);
+				tls_close(ctx_tls);
+				tls_free(ctx_tls);
+				tls_config_free(cfg);
 				return -8;
 			}
 			body = nb;
 		}
-		memcpy(body + blen, rbuf, n);
-		blen += n;
+		memcpy(body + blen, rbuf, (size_t)n);
+		blen += (size_t)n;
 	}
 	body[blen] = 0;
 	*out_body = body;
 
-	SSL_shutdown(ssl);
-	SSL_free(ssl);
-	close(sock);
-	SSL_CTX_free(sctx);
+	tls_close(ctx_tls);
+	tls_free(ctx_tls);
+	tls_config_free(cfg);
 	return 0;
 }
 
@@ -605,8 +596,10 @@ int main(void)
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
-	SSL_load_error_strings();
-	OpenSSL_add_ssl_algorithms();
+	if (tls_init() == -1) {
+		bgtk_log("tls_init failed");
+		return 1;
+	}
 
 	int conn_fd = bgce_connect();
 	if (conn_fd < 0) {
