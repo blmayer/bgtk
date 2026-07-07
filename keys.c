@@ -4,19 +4,52 @@
 #include <linux/input.h>
 #include <string.h>
 
+/*
+ * Modifier bits (left | right tracked separately so releasing one side while
+ * the other is still down does not clear the mod, and a lost release on one
+ * side can still be fixed by releasing the other / focus clear).
+ * bit0 = left, bit1 = right.
+ */
+#define MOD_L 1
+#define MOD_R 2
+
 void bgtk_update_modifiers(struct BGTK_Context *ctx, struct InputEvent ev)
 {
-	int held;
+	int on;
+	int *slot = NULL;
+	int bit = 0;
 
 	if (!ctx || ev.type != EV_KEY)
 		return;
-	held = (ev.value != 0);
-	if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT)
-		ctx->shift_held = held;
-	else if (ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL)
-		ctx->ctrl_held = held;
-	else if (ev.code == KEY_LEFTALT || ev.code == KEY_RIGHTALT)
-		ctx->alt_held = held;
+	/* value: 0=release, 1=press, 2=repeat — only 0 clears. */
+	on = (ev.value != 0);
+
+	if (ev.code == KEY_LEFTSHIFT) {
+		slot = &ctx->shift_held;
+		bit = MOD_L;
+	} else if (ev.code == KEY_RIGHTSHIFT) {
+		slot = &ctx->shift_held;
+		bit = MOD_R;
+	} else if (ev.code == KEY_LEFTCTRL) {
+		slot = &ctx->ctrl_held;
+		bit = MOD_L;
+	} else if (ev.code == KEY_RIGHTCTRL) {
+		slot = &ctx->ctrl_held;
+		bit = MOD_R;
+	} else if (ev.code == KEY_LEFTALT) {
+		slot = &ctx->alt_held;
+		bit = MOD_L;
+	} else if (ev.code == KEY_RIGHTALT) {
+		slot = &ctx->alt_held;
+		bit = MOD_R;
+	} else {
+		return;
+	}
+
+	if (on)
+		*slot |= bit;
+	else
+		*slot &= ~bit;
 }
 
 int bgtk_mods_from_ctx(const struct BGTK_Context *ctx)
@@ -32,6 +65,15 @@ int bgtk_mods_from_ctx(const struct BGTK_Context *ctx)
 	if (ctx->alt_held)
 		m |= BGTK_MOD_ALT;
 	return m;
+}
+
+void bgtk_clear_modifiers(struct BGTK_Context *ctx)
+{
+	if (!ctx)
+		return;
+	ctx->shift_held = 0;
+	ctx->ctrl_held = 0;
+	ctx->alt_held = 0;
 }
 
 int bgtk_is_app_quit_event(const struct BGTK_Context *ctx, struct InputEvent ev)

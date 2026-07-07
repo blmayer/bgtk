@@ -373,38 +373,38 @@ scrollable_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 // Frame event handler
 static int frame_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 {
+	struct BGTK_Widget *child = widget->data.frame.child;
+
 	// Keyboard events don't have meaningful pointer coordinates.
 	// Forward them to the child without bounds checking.
 	if (ev.type == EV_KEY) {
-		if (widget->data.frame.child) {
-			return widget->data.frame.child->handle_event(widget->
-								      data.
-								      frame.
-								      child,
-								      ev);
-		}
+		if (child)
+			return child->handle_event(child, ev);
+		return 0;
 	}
 	// First check if the event is within the frame's bounds
 	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
 	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
 		return 0;	// Event not in this widget
 	}
-	// Pass event to child widget if it exists
-	if (widget->data.frame.child) {
-		// Events use absolute coordinates.
-		// Only forward to the child if the event is within the child's
-		// absolute bounds.
-		int cx0 = widget->data.frame.child->x;
-		int cy0 = widget->data.frame.child->y;
-		int cx1 = cx0 + widget->data.frame.child->w;
-		int cy1 = cy0 + widget->data.frame.child->h;
+	// Pass event to child widget if it exists and the point is in the child
+	if (child) {
+		int cx0 = child->x;
+		int cy0 = child->y;
+		int cx1 = cx0 + child->w;
+		int cy1 = cy0 + child->h;
 
 		if (ev.x >= cx0 && ev.x < cx1 && ev.y >= cy0 && ev.y < cy1) {
-			return widget->data.frame.child->handle_event(widget->
-								      data.
-								      frame.
-								      child,
-								      ev);
+			if (child->handle_event(child, ev))
+				return 1;
+		}
+		/* Click on cell padding (common in HTML tables): focus a
+		 * text-input child so the user can type without a pixel-perfect
+		 * hit on the field. */
+		if (ev.code == BTN_LEFT && ev.value == 1 &&
+		    child->type == BGTK_WIDGET_TEXT_INPUT) {
+			bgtk_set_focus(widget->ctx, child);
+			return 1;
 		}
 	}
 	// If clicked inside the frame but not on the child, focus the frame.

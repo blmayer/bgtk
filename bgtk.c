@@ -266,6 +266,35 @@ int bgtk_inject_event(struct BGTK_Context *ctx, struct InputEvent ev)
 	return res;
 }
 
+/* Load and validate one FreeType face from path. Returns NULL on failure. */
+static FT_Face bgtk_load_face(struct BGTK_Context *ctx, const char *path,
+			      const char *role)
+{
+	FT_Face face = NULL;
+	int tw = 0, th = 0;
+
+	if (!ctx || !ctx->ft_library || !path || !path[0])
+		return NULL;
+	if (FT_New_Face(ctx->ft_library, path, 0, &face) != 0) {
+		bgtk_log("could not load %s font '%s'", role ? role : "font",
+			 path);
+		return NULL;
+	}
+	/* Prefer Unicode cmap so ASCII is not remapped to symbol glyphs. */
+	FT_Select_Charmap(face, FT_ENCODING_UNICODE);
+	FT_Set_Pixel_Sizes(face, 0, ctx->font_size > 0 ? ctx->font_size : 14);
+	measure_text(face, "Ag", &tw, &th);
+	if (tw <= 0 || th <= 0) {
+		bgtk_log("%s font '%s' has no usable glyphs (tw=%d th=%d)",
+			 role ? role : "font", path, tw, th);
+		FT_Done_Face(face);
+		return NULL;
+	}
+	bgtk_log("loaded %s font '%s' size=%d", role ? role : "font", path,
+		 ctx->font_size);
+	return face;
+}
+
 // Common resource setup (config, freetype, font) after buffer/conn/ dims are set.
 // Used by both real bgtk_init and bgtk_init_mock.
 static void bgtk_init_resources(struct BGTK_Context *ctx)
@@ -280,14 +309,24 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
 	struct config config = {0};
 	parse_config(&config);
 	ctx->theme = config.theme;
-	strncpy(ctx->font_path, config.font_path, MAX_PATH_LEN - 1);
-	ctx->font_path[MAX_PATH_LEN - 1] = '\0';
+	strncpy(ctx->font_sans_path, config.font_sans_path, MAX_PATH_LEN - 1);
+	ctx->font_sans_path[MAX_PATH_LEN - 1] = '\0';
+	strncpy(ctx->font_mono_path, config.font_mono_path, MAX_PATH_LEN - 1);
+	ctx->font_mono_path[MAX_PATH_LEN - 1] = '\0';
+	strncpy(ctx->font_serif_path, config.font_serif_path, MAX_PATH_LEN - 1);
+	ctx->font_serif_path[MAX_PATH_LEN - 1] = '\0';
 	ctx->font_size = config.font_size;
+	ctx->ft_face = NULL;
+	ctx->ft_face_mono = NULL;
+	ctx->ft_face_serif = NULL;
 
-	bgtk_log("init resources %dx%d theme_bg=0x%08X text=0x%08X font_size=%d font='%s'",
+	bgtk_log("init resources %dx%d theme_bg=0x%08X text=0x%08X font_size=%d "
+		 "sans='%s' mono='%s' serif='%s'",
 		 ctx->width, ctx->height, ctx->theme.background,
 		 ctx->theme.button_text, ctx->font_size,
-		 ctx->font_path[0] ? ctx->font_path : "(none)");
+		 ctx->font_sans_path[0] ? ctx->font_sans_path : "(none)",
+		 ctx->font_mono_path[0] ? ctx->font_mono_path : "(none)",
+		 ctx->font_serif_path[0] ? ctx->font_serif_path : "(none)");
 
 	// 1. Initialize FreeType
 	if (FT_Init_FreeType(&ctx->ft_library)) {
@@ -297,42 +336,27 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
 		return;
 	}
 
-	// 2. The actual FT loading (New_Face, Select, sizing, validation) lives here
-	//    in init_resources. The default *selection* (with #ifdefs) was done in
-	//    init_config_defaults.
-	if (ctx->font_path[0] != '\0') {
-		if (FT_New_Face(ctx->ft_library, ctx->font_path, 0, &ctx->ft_face) != 0) {
-			bgtk_log("could not load font '%s'; text will use placeholders",
-				 ctx->font_path);
-			ctx->font_path[0] = '\0';
-		} else {
-			bgtk_log("loaded font '%s' size=%d", ctx->font_path, ctx->font_size);
-		}
-	} else {
-		bgtk_log("no font path configured and no system default found");
-	}
+	/* Load sans (UI), mono, serif faces. Selection defaults live in config. */
+	ctx->ft_face = bgtk_load_face(ctx, ctx->font_sans_path, "sans");
+	if (!ctx->ft_face)
+		bgtk_log("no usable UI/sans font; text will use placeholders");
+	ctx->ft_face_mono = bgtk_load_face(ctx, ctx->font_mono_path, "mono");
+	ctx->ft_face_serif = bgtk_load_face(ctx, ctx->font_serif_path, "serif");
+}
 
-	if (ctx->ft_face) {
-		// Force a Unicode charmap if the font has one. This prevents
-		// "symbol" or other cmap encodings from mapping ASCII to the
-		// wrong glyphs (which often look like triangles/boxes for .notdef).
-		FT_Select_Charmap(ctx->ft_face, FT_ENCODING_UNICODE);
+FT_Face bgtk_font_face(struct BGTK_Context *ctx, int role)
+{
+	FT_Face face = NULL;
 
-		FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
-
-		// Validate that the loaded face actually produces glyph metrics.
-		// Catches .ttc wrong face, symbol fonts, or broken files that
-		// "load" without error but produce no visible text.
-		int tw = 0, th = 0;
-		measure_text(ctx->ft_face, "Ag", &tw, &th);
-		if (tw <= 0 || th <= 0) {
-			bgtk_log("font '%s' has no usable glyphs (tw=%d th=%d); dropping face",
-				 ctx->font_path, tw, th);
-			FT_Done_Face(ctx->ft_face);
-			ctx->ft_face = NULL;
-			ctx->font_path[0] = '\0';
-		}
-	}
+	if (!ctx)
+		return NULL;
+	if (role == BGTK_FONT_MONO)
+		face = ctx->ft_face_mono;
+	else if (role == BGTK_FONT_SERIF)
+		face = ctx->ft_face_serif;
+	else
+		face = ctx->ft_face;
+	return face ? face : ctx->ft_face;
 }
 
 struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
@@ -451,11 +475,21 @@ void bgtk_destroy(struct BGTK_Context *ctx)
 	}
 	/* Release framebuffer (mmap for real apps, malloc for mock). */
 	bgtk_release_buffer(ctx);
+	if (ctx->ft_face_serif) {
+		FT_Done_Face(ctx->ft_face_serif);
+		ctx->ft_face_serif = NULL;
+	}
+	if (ctx->ft_face_mono) {
+		FT_Done_Face(ctx->ft_face_mono);
+		ctx->ft_face_mono = NULL;
+	}
 	if (ctx->ft_face) {
 		FT_Done_Face(ctx->ft_face);
+		ctx->ft_face = NULL;
 	}
 	if (ctx->ft_library) {
 		FT_Done_FreeType(ctx->ft_library);
+		ctx->ft_library = NULL;
 	}
 
 	free(ctx);
@@ -532,6 +566,10 @@ void bgtk_set_window_focus(struct BGTK_Context *ctx, int focused)
 		return;
 	}
 	ctx->window_focused = focused;
+	/* Modifier releases only go to the focused client. Losing focus mid-
+	 * chord (or a peer exiting on Ctrl+C) otherwise leaves ctrl stuck —
+	 * terminal then turns j/k into Ctrl+J/K (LF/VT) and vi "mumbles". */
+	bgtk_clear_modifiers(ctx);
 	bgtk_draw_widgets(ctx);
 }
 
@@ -556,7 +594,17 @@ int bgtk_handle_input_event(struct BGTK_Context *ctx, struct InputEvent ev)
 		return 1;
 	}
 	bgtk_update_modifiers(ctx, ev);
-	// Start event handling from the root widget
+
+	/* Keyboard: deliver straight to the focused widget. Nested
+	 * table/frame/scroll trees often fail to reach a focused text
+	 * field via a root walk (esp. HTML settings pages). */
+	if (ev.type == EV_KEY && ev.code < BTN_MISC && ctx->focused_widget &&
+	    ctx->focused_widget->handle_event) {
+		if (ctx->focused_widget->handle_event(ctx->focused_widget, ev))
+			return 1;
+	}
+
+	// Start event handling from the root widget (pointer, etc.)
 	if (!ctx->root_widget) {
 		return 0;
 	}

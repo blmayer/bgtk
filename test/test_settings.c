@@ -43,6 +43,34 @@ int main(void)
 	bgtk_draw_widgets(ctx);
 	take_screenshot(ctx, "settings_00_background.png");
 
+	/* 00b: Click Background Apply (must hit-test after preview insert).
+	 * Content scrollable is on the right; Apply sits under the preview. */
+	{
+		struct config *sc = settings_get_config();
+		uint32_t before = sc ? sc->color : 0;
+		struct InputEvent click = {0};
+		click.type = EV_KEY;
+		click.code = BTN_LEFT;
+		click.value = 1;
+		/* Screen pos of Apply (content scroll ~161,17; Apply ~4,190). */
+		click.x = 192;
+		click.y = 225;
+		bgtk_inject_event(ctx, click);
+		click.value = 0;
+		if (!bgtk_inject_event(ctx, click)) {
+			fprintf(stderr,
+				"test_settings: Background Apply click not handled\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Apply reads the field (still default) and rewrites config. */
+		if (sc && sc->color != before && before != 0) {
+			/* color may stay the same if field unchanged — ok */
+		}
+		(void)before;
+		take_screenshot(ctx, "settings_00b_bg_apply.png");
+	}
+
 	/* Sidebar buttons are inside a scrollable; their content-space positions
 	 * are offset by the scrollable's screen position (~8px) plus internal
 	 * padding/margin.  Each button is ~38px tall with ~4px gap.
@@ -79,7 +107,7 @@ int main(void)
 	}
 	take_screenshot(ctx, "settings_02_shortcuts.png");
 
-	/* 03: Click "Font" */
+	/* 03: Click "Font" — sans/mono/serif pickers + size */
 	{
 		struct InputEvent click = {0};
 		click.type = EV_KEY;
@@ -92,6 +120,39 @@ int main(void)
 		bgtk_inject_event(ctx, click);
 	}
 	take_screenshot(ctx, "settings_03_font.png");
+
+	/* Defaults must include distinct mono/serif paths (or at least set). */
+	{
+		struct config *sc = settings_get_config();
+		if (!sc || !sc->font_sans_path[0]) {
+			fprintf(stderr, "test_settings: missing UI/sans font path\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		if (!sc->font_mono_path[0] || !sc->font_serif_path[0]) {
+			fprintf(stderr,
+				"test_settings: mono/serif defaults missing "
+				"mono='%s' serif='%s'\n",
+				sc->font_mono_path, sc->font_serif_path);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+	}
+
+	/* Open Mono picker (second font row button, content panel). */
+	{
+		struct InputEvent click = {0};
+		click.type = EV_KEY;
+		click.code = BTN_LEFT;
+		click.value = 1;
+		/* Content panel ~x=200; Mono row roughly under Sans. */
+		click.x = 280;
+		click.y = 95;
+		bgtk_inject_event(ctx, click);
+		click.value = 0;
+		bgtk_inject_event(ctx, click);
+	}
+	take_screenshot(ctx, "settings_03b_font_mono_open.png");
 
 	/* 04: Click "Theme" */
 	{
@@ -106,6 +167,58 @@ int main(void)
 		bgtk_inject_event(ctx, click);
 	}
 	take_screenshot(ctx, "settings_04_theme.png");
+
+	/* 04b: Focus first theme color field and type a char (nested table). */
+	{
+		struct InputEvent click = {0};
+		struct InputEvent key = {0};
+		struct config *sc;
+		const char *got;
+
+		click.type = EV_KEY;
+		click.code = BTN_LEFT;
+		click.value = 1;
+		/* Content scroll ~161,17; first input ~151,14 (see probe). */
+		click.x = 161 + 151 + 20;
+		click.y = 17 + 14 + 12;
+		bgtk_inject_event(ctx, click);
+		click.value = 0;
+		bgtk_inject_event(ctx, click);
+
+		key.type = EV_KEY;
+		key.value = 1;
+		key.code = KEY_A;
+		key.x = 0;
+		key.y = 0;
+		if (!bgtk_inject_event(ctx, key)) {
+			fprintf(stderr,
+				"test_settings: theme field key not handled\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		sc = settings_get_config();
+		(void)sc;
+		/* Field text is on the widget; re-read via tree is heavy —
+		 * screenshot + non-zero handle is the gate. Append check via
+		 * focused widget if set. */
+		if (ctx->focused_widget &&
+		    ctx->focused_widget->type == BGTK_WIDGET_TEXT_INPUT) {
+			got = ctx->focused_widget->data.text_input.text;
+			if (!got || !strchr(got, 'a')) {
+				fprintf(stderr,
+					"test_settings: theme type expected 'a' in '%s'\n",
+					got ? got : "(null)");
+				bgtk_destroy_mock(ctx);
+				return 1;
+			}
+		} else {
+			fprintf(stderr,
+				"test_settings: theme input not focused after click\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		take_screenshot(ctx, "settings_04b_theme_typed.png");
+	}
 
 	/* 05: Go back to Background */
 	{

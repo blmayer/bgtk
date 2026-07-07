@@ -33,7 +33,53 @@ static struct BGTK_Widget *link_target_widgets[128];
 static char link_targets[128][512];
 static int num_page_links = 0;
 
-/* --- Real Gemini client (copied/adapted from the main app for the test) --- */
+/* --- Real Gemini client (must retry TLS_WANT_POLLIN/POLLOUT; n<=0 is wrong) --- */
+
+#ifndef TLS_WANT_POLLIN
+#define TLS_WANT_POLLIN (-2)
+#endif
+#ifndef TLS_WANT_POLLOUT
+#define TLS_WANT_POLLOUT (-3)
+#endif
+
+static ssize_t test_tls_read(struct tls *t, void *buf, size_t len)
+{
+	int waited = 0;
+	for (;;) {
+		ssize_t n = tls_read(t, buf, len);
+		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
+			if (waited >= 15000)
+				return -1;
+			usleep(5000);
+			waited += 5;
+			continue;
+		}
+		return n;
+	}
+}
+
+static ssize_t test_tls_write(struct tls *t, const void *buf, size_t len)
+{
+	int waited = 0;
+	const char *p = buf;
+	size_t left = len;
+	while (left > 0) {
+		ssize_t n = tls_write(t, p, left);
+		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
+			if (waited >= 15000)
+				return -1;
+			usleep(5000);
+			waited += 5;
+			continue;
+		}
+		if (n <= 0)
+			return n;
+		p += n;
+		left -= (size_t)n;
+		waited = 0;
+	}
+	return (ssize_t)len;
+}
 
 static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, char **out_body)
 {
@@ -101,7 +147,7 @@ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, c
 
 	char req[1200];
 	int rlen = snprintf(req, sizeof(req), "%s\r\n", selector);
-	if (tls_write(ctx_tls, req, (size_t)rlen) < 0) {
+	if (test_tls_write(ctx_tls, req, (size_t)rlen) < 0) {
 		tls_close(ctx_tls);
 		tls_free(ctx_tls);
 		tls_config_free(cfg);
@@ -111,7 +157,7 @@ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, c
 	char hbuf[1024] = {0};
 	int hlen = 0;
 	while (hlen < (int)sizeof(hbuf) - 1) {
-		ssize_t n = tls_read(ctx_tls, hbuf + hlen, 1);
+		ssize_t n = test_tls_read(ctx_tls, hbuf + hlen, 1);
 		if (n <= 0)
 			break;
 		hlen += (int)n;
@@ -139,7 +185,7 @@ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, c
 	}
 	for (;;) {
 		char rbuf[1024];
-		ssize_t n = tls_read(ctx_tls, rbuf, sizeof(rbuf));
+		ssize_t n = test_tls_read(ctx_tls, rbuf, sizeof(rbuf));
 		if (n <= 0)
 			break;
 		if (blen + (size_t)n + 1 > cap) {

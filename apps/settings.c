@@ -69,15 +69,55 @@ static struct BGTK_Widget *theme_btn_border_input;
 static struct BGTK_Widget *theme_input_border_input;
 static struct BGTK_Widget *theme_frame_color_input;
 
-/* Font dropdown state: 0=closed, 1=open */
+/* Font dropdown: open for one role (sans/mono/serif) at a time. */
 static int font_dropdown_open;
+static int font_pick_role; /* BGTK_FONT_SANS / MONO / SERIF */
 static char **font_list_cache;
 static int font_list_count;
 
 /* Shortcuts shown in UI (loaded from ~/.config/bgce.conf when present). */
+static char shortcut_labels[MAX_SHORTCUT_ROWS][96];
 static char shortcut_actions[MAX_SHORTCUT_ROWS][96];
 static char shortcut_keys[MAX_SHORTCUT_ROWS][64];
 static int shortcuts_loaded;
+
+/* Human label for the Action column (config still stores type:value). */
+static void shortcut_label_from_action(const char *action, char *out, size_t n)
+{
+	if (!action || !out || n == 0)
+		return;
+	if (strcmp(action, "builtin:exit") == 0)
+		snprintf(out, n, "Exit");
+	else if (strcmp(action, "builtin:screenshot") == 0)
+		snprintf(out, n, "Screenshot");
+	else if (strncmp(action, "command:", 8) == 0)
+		snprintf(out, n, "%s", action + 8);
+	else
+		snprintf(out, n, "%s", action);
+}
+
+static void shortcut_set_row(int i, const char *label, const char *key,
+			     const char *action)
+{
+	if (i < 0 || i >= MAX_SHORTCUT_ROWS)
+		return;
+	snprintf(shortcut_labels[i], sizeof(shortcut_labels[0]), "%s",
+		 label ? label : "");
+	snprintf(shortcut_keys[i], sizeof(shortcut_keys[0]), "%s",
+		 key ? key : "");
+	snprintf(shortcut_actions[i], sizeof(shortcut_actions[0]), "%s",
+		 action ? action : "");
+}
+
+static void load_shortcuts_defaults(void)
+{
+	/* BGCE builtins + common command examples (see bgce README). */
+	shortcut_set_row(0, "Exit", "ctrl+alt+q", "builtin:exit");
+	shortcut_set_row(1, "Screenshot", "sysrq", "builtin:screenshot");
+	shortcut_set_row(2, "Terminal", "ctrl+alt+t", "command:terminal");
+	shortcut_set_row(3, "Launcher", "ctrl+alt+l", "command:launcher");
+	shortcut_row_count = 4;
+}
 
 static void load_shortcuts_table(void)
 {
@@ -87,14 +127,8 @@ static void load_shortcuts_table(void)
 	char line[512];
 	char section[64] = "";
 
-	shortcut_row_count = 0;
-	/* Defaults matching BGCE (rhs = type:value, key = combo). */
-	snprintf(shortcut_actions[0], sizeof(shortcut_actions[0]), "builtin:exit");
-	snprintf(shortcut_keys[0], sizeof(shortcut_keys[0]), "ctrl+alt+q");
-	snprintf(shortcut_actions[1], sizeof(shortcut_actions[1]),
-		 "builtin:screenshot");
-	snprintf(shortcut_keys[1], sizeof(shortcut_keys[1]), "sysrq");
-	shortcut_row_count = 2;
+	load_shortcuts_defaults();
+	shortcuts_loaded = 0;
 
 	home = getenv("HOME");
 	if (!home || !home[0])
@@ -109,6 +143,8 @@ static void load_shortcuts_table(void)
 		char *p = line;
 		char *eq;
 		char key[128], val[256];
+		char label[96];
+
 		while (*p == ' ' || *p == '\t')
 			p++;
 		if (*p == '#' || *p == ';' || *p == '\n' || *p == '\0')
@@ -120,10 +156,6 @@ static void load_shortcuts_table(void)
 				memcpy(section, p + 1, (size_t)(end - p - 1));
 				section[end - p - 1] = '\0';
 			}
-			if (strcmp(section, "shortcuts") == 0 &&
-			    !shortcuts_loaded) {
-				/* First time we enter section with real lines below. */
-			}
 			continue;
 		}
 		if (strcmp(section, "shortcuts") != 0)
@@ -132,7 +164,7 @@ static void load_shortcuts_table(void)
 		if (!eq)
 			continue;
 		*eq = '\0';
-		/* trim key */
+		/* trim key (combo) */
 		{
 			char *k = p;
 			char *e = eq - 1;
@@ -163,17 +195,14 @@ static void load_shortcuts_table(void)
 		}
 		if (shortcut_row_count >= MAX_SHORTCUT_ROWS)
 			break;
-		/* Action column = rhs (builtin:… / command:…); key = combo */
-		snprintf(shortcut_actions[shortcut_row_count],
-			 sizeof(shortcut_actions[0]), "%s", val);
-		snprintf(shortcut_keys[shortcut_row_count],
-			 sizeof(shortcut_keys[0]), "%s", key);
+		shortcut_label_from_action(val, label, sizeof(label));
+		shortcut_set_row(shortcut_row_count, label, key, val);
 		shortcut_row_count++;
 	}
 	fclose(f);
-	/* If file had empty [shortcuts], keep defaults (row_count already 2). */
-	if (!shortcuts_loaded && shortcut_row_count < 2)
-		shortcut_row_count = 2;
+	/* Empty [shortcuts] section: keep the built-in defaults. */
+	if (!shortcuts_loaded)
+		load_shortcuts_defaults();
 }
 
 /* ------------------------------------------------------------------ */
@@ -402,13 +431,132 @@ static uint32_t parse_color_input(const char *text)
 	return 0xFF000000 | (r << 16) | (g << 8) | b;
 }
 
+/* Merge [background] into ~/.config/bgce.conf (compositor owns the desktop). */
+static void write_bgce_background(void)
+{
+	const char *home = getenv("HOME");
+	char path[512], tmp[512], dir[512];
+	FILE *in, *out;
+	char line[512];
+	char section[64] = "";
+	int wrote = 0;
+
+	if (!home || !home[0])
+		return;
+	snprintf(dir, sizeof(dir), "%s/.config", home);
+	(void)mkdir(dir, 0755);
+	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
+	snprintf(tmp, sizeof(tmp), "%s/.config/bgce.conf.bgtk-tmp", home);
+	in = fopen(path, "r");
+	out = fopen(tmp, "w");
+	if (!out) {
+		if (in)
+			fclose(in);
+		bgtk_log("write_bgce_background: cannot open %s", tmp);
+		return;
+	}
+
+	if (in) {
+		int skip = 0;
+		while (fgets(line, sizeof(line), in)) {
+			char *p = line;
+			while (*p == ' ' || *p == '\t')
+				p++;
+			if (*p == '[') {
+				char *end = strchr(p, ']');
+				section[0] = '\0';
+				if (end &&
+				    (size_t)(end - p - 1) < sizeof(section)) {
+					memcpy(section, p + 1,
+					       (size_t)(end - p - 1));
+					section[end - p - 1] = '\0';
+				}
+				if (strcmp(section, "background") == 0) {
+					skip = 1;
+					continue;
+				}
+				if (skip) {
+					/* leaving [background]: emit new one */
+					char c[16];
+					fprintf(out, "[background]\n");
+					if (cfg.type == BG_IMAGE) {
+						fprintf(out, "type = image\n");
+						fprintf(out, "path = %s\n",
+							cfg.path);
+						fprintf(out, "mode = %s\n",
+							cfg.mode == IMAGE_SCALED
+								? "scaled"
+								: "tiled");
+					} else {
+						fprintf(out, "type = color\n");
+						format_hex_color(cfg.color, c,
+								 sizeof(c));
+						fprintf(out, "color = %s\n", c);
+					}
+					fprintf(out, "\n");
+					wrote = 1;
+					skip = 0;
+				}
+				fputs(line, out);
+				continue;
+			}
+			if (skip)
+				continue;
+			fputs(line, out);
+		}
+		if (skip) {
+			char c[16];
+			fprintf(out, "[background]\n");
+			if (cfg.type == BG_IMAGE) {
+				fprintf(out, "type = image\n");
+				fprintf(out, "path = %s\n", cfg.path);
+				fprintf(out, "mode = %s\n",
+					cfg.mode == IMAGE_SCALED ? "scaled"
+								 : "tiled");
+			} else {
+				fprintf(out, "type = color\n");
+				format_hex_color(cfg.color, c, sizeof(c));
+				fprintf(out, "color = %s\n", c);
+			}
+			wrote = 1;
+		}
+		fclose(in);
+	}
+	if (!wrote) {
+		char c[16];
+		fprintf(out, "[background]\n");
+		if (cfg.type == BG_IMAGE) {
+			fprintf(out, "type = image\n");
+			fprintf(out, "path = %s\n", cfg.path);
+			fprintf(out, "mode = %s\n",
+				cfg.mode == IMAGE_SCALED ? "scaled" : "tiled");
+		} else {
+			fprintf(out, "type = color\n");
+			format_hex_color(cfg.color, c, sizeof(c));
+			fprintf(out, "color = %s\n", c);
+		}
+	}
+	fclose(out);
+	if (rename(tmp, path) != 0)
+		bgtk_log_errno("write_bgce_background rename");
+	else
+		bgtk_log("wrote background to %s", path);
+}
+
 static void apply_background(void *userdata)
 {
 	(void)userdata;
-	if (bg_color_input)
-		cfg.color = parse_color_input(bg_color_input->data.text_input.text);
-	if (bg_path_input && bg_path_input->data.text_input.text[0])
-		strncpy(cfg.path, bg_path_input->data.text_input.text, MAX_PATH_LEN - 1);
+	if (bg_color_input && bg_color_input->data.text_input.text)
+		cfg.color = parse_color_input(
+			bg_color_input->data.text_input.text);
+	if (bg_path_input && bg_path_input->data.text_input.text &&
+	    bg_path_input->data.text_input.text[0]) {
+		strncpy(cfg.path, bg_path_input->data.text_input.text,
+			MAX_PATH_LEN - 1);
+		cfg.path[MAX_PATH_LEN - 1] = '\0';
+	}
+	/* Desktop background lives in bgce.conf; also mirror into bgtk.conf. */
+	write_bgce_background();
 	write_config(&cfg);
 	rebuild_content();
 }
@@ -540,6 +688,24 @@ static void apply_font(void *userdata)
 	rebuild_content();
 }
 
+static const char *font_basename(const char *path)
+{
+	const char *slash;
+	if (!path || !path[0])
+		return "(default)";
+	slash = strrchr(path, '/');
+	return slash ? slash + 1 : path;
+}
+
+static char *font_path_for_role(int role)
+{
+	if (role == BGTK_FONT_MONO)
+		return cfg.font_mono_path;
+	if (role == BGTK_FONT_SERIF)
+		return cfg.font_serif_path;
+	return cfg.font_sans_path;
+}
+
 static void apply_theme(void *userdata)
 {
 	(void)userdata;
@@ -568,9 +734,11 @@ static void apply_theme(void *userdata)
 static void font_select_cb(void *userdata)
 {
 	int idx = (int)(intptr_t)userdata;
-	if (idx >= 0 && idx < font_list_count) {
-		strncpy(cfg.font_path, font_list_cache[idx], MAX_PATH_LEN - 1);
-		cfg.font_path[MAX_PATH_LEN - 1] = '\0';
+	char *dst = font_path_for_role(font_pick_role);
+
+	if (idx >= 0 && idx < font_list_count && dst) {
+		strncpy(dst, font_list_cache[idx], MAX_PATH_LEN - 1);
+		dst[MAX_PATH_LEN - 1] = '\0';
 	}
 	font_dropdown_open = 0;
 	rebuild_content();
@@ -578,8 +746,14 @@ static void font_select_cb(void *userdata)
 
 static void toggle_font_dropdown(void *userdata)
 {
-	(void)userdata;
-	font_dropdown_open = !font_dropdown_open;
+	int role = (int)(intptr_t)userdata;
+
+	if (font_dropdown_open && font_pick_role == role)
+		font_dropdown_open = 0;
+	else {
+		font_dropdown_open = 1;
+		font_pick_role = role;
+	}
 	rebuild_content();
 }
 
@@ -670,18 +844,21 @@ static char *build_shortcuts_html(void)
 	buf = malloc((size_t)buflen);
 	if (!buf)
 		return NULL;
+	/* Keep the intro short — long single-line <p> text is not wrapped and
+	 * draws as a garbled overflow across the content panel. */
 	pos += snprintf(buf + pos, (size_t)(buflen - pos),
 		"<html><body>"
-		"<p>Compositor shortcuts (~/.config/bgce.conf). "
-		"Left: builtin:exit, builtin:screenshot, or command:prog. "
-		"Right: combo (ctrl+alt+q, sysrq, …).</p>"
+		"<p>Key bindings (~/.config/bgce.conf)</p>"
 		"<table>"
-		"<tr><th>Action (type:value)</th><th>Key binding</th></tr>");
+		"<tr><th>Action</th><th>Key binding</th></tr>");
 	for (i = 0; i < shortcut_row_count; i++) {
+		const char *label = shortcut_labels[i][0]
+					    ? shortcut_labels[i]
+					    : shortcut_actions[i];
 		pos += snprintf(buf + pos, (size_t)(buflen - pos),
 			"<tr><td>%s</td><td><input type=\"text\" value=\"%s\" "
 			"width=\"160\" /></td></tr>",
-			shortcut_actions[i], shortcut_keys[i]);
+			label, shortcut_keys[i]);
 	}
 	pos += snprintf(buf + pos, (size_t)(buflen - pos),
 		"</table>"
@@ -693,27 +870,39 @@ static char *build_shortcuts_html(void)
 
 static char *build_font_html(void)
 {
-	/* Extract display name from current font path */
-	const char *cur_name = cfg.font_path;
-	const char *slash = strrchr(cfg.font_path, '/');
-	if (slash) cur_name = slash + 1;
-	if (!cfg.font_path[0]) cur_name = "(default)";
-
+	const char *sans_name = font_basename(cfg.font_sans_path);
+	const char *mono_name = font_basename(cfg.font_mono_path);
+	const char *serif_name = font_basename(cfg.font_serif_path);
+	const char *open_label = "";
 	int buflen = 8192 + font_list_count * 256;
 	char *buf = malloc(buflen);
 	int pos = 0;
 
+	if (!buf)
+		return NULL;
+	if (font_dropdown_open) {
+		if (font_pick_role == BGTK_FONT_MONO)
+			open_label = " (picking mono)";
+		else if (font_pick_role == BGTK_FONT_SERIF)
+			open_label = " (picking serif)";
+		else
+			open_label = " (picking sans)";
+	}
+
 	pos += snprintf(buf + pos, buflen - pos,
 		"<html><body>"
 		"<table>"
-		"<tr><td>Font</td><td><button>%s</button></td></tr>"
+		"<tr><td>Sans (UI)</td><td><button>%s</button></td></tr>"
+		"<tr><td>Mono</td><td><button>%s</button></td></tr>"
+		"<tr><td>Serif</td><td><button>%s</button></td></tr>"
 		"<tr><td>Size</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td></tr>"
 		"</table>",
-		cur_name, cfg.font_size);
+		sans_name, mono_name, serif_name, cfg.font_size);
 
-	/* Dropdown list (only when open) */
+	/* Dropdown list for the active role (only when open). */
 	if (font_dropdown_open) {
-		pos += snprintf(buf + pos, buflen - pos, "<ul>");
+		pos += snprintf(buf + pos, buflen - pos, "<p>Fonts%s:</p><ul>",
+				open_label);
 		int show = font_list_count > 50 ? 50 : font_list_count;
 		for (int i = 0; i < show; i++) {
 			const char *name = strrchr(font_list_cache[i], '/');
@@ -724,7 +913,7 @@ static char *build_font_html(void)
 		pos += snprintf(buf + pos, buflen - pos, "</ul>");
 	}
 
-	/* Preview */
+	/* Preview (rendered with the active UI/sans face). */
 	pos += snprintf(buf + pos, buflen - pos,
 		"<p>Preview:</p>"
 		"<p>The quick brown fox jumps over the lazy dog</p>"
@@ -809,16 +998,41 @@ static void add_bg_preview(struct BGTK_Widget *page, int panel_w)
 	struct BGTK_Widget *list = scroll->data.scrollable.items[0];
 	if (!list || list->type != BGTK_WIDGET_LIST) return;
 
-	/* Insert preview before the last item (Apply button) */
+	/* Insert preview before the last item (Apply button). */
 	int n = list->data.list_widget.widget_count;
-	struct BGTK_Widget **new_items = malloc((n + 1) * sizeof(struct BGTK_Widget *));
-	for (int i = 0; i < n - 1; i++)
+	struct BGTK_Widget **new_items =
+		malloc((n + 1) * sizeof(struct BGTK_Widget *));
+	int total_h = 0;
+	int max_w = 0;
+	int i;
+
+	if (!new_items)
+		return;
+	for (i = 0; i < n - 1; i++)
 		new_items[i] = list->data.list_widget.items[i];
 	new_items[n - 1] = preview;
 	new_items[n] = list->data.list_widget.items[n - 1]; /* Apply button */
 	free(list->data.list_widget.items);
 	list->data.list_widget.items = new_items;
 	list->data.list_widget.widget_count = n + 1;
+
+	/* Grow the list to fit the inserted preview. Without this, Apply is
+	 * drawn below list->h and hit-testing rejects clicks on it. */
+	for (i = 0; i < list->data.list_widget.widget_count; i++) {
+		struct BGTK_Widget *ch = list->data.list_widget.items[i];
+		if (!ch)
+			continue;
+		if (ch->w > max_w)
+			max_w = ch->w;
+		total_h += ch->h + 2 * list->margin;
+	}
+	if (list->data.list_widget.widget_count > 0)
+		total_h -= 2 * list->margin;
+	list->data.list_widget.content_height = total_h;
+	list->data.list_widget.content_width = max_w;
+	list->h = total_h + 2 * (list->margin + list->padding);
+	if (list->w < max_w + 2 * (list->margin + list->padding))
+		list->w = max_w + 2 * (list->margin + list->padding);
 }
 
 /* ------------------------------------------------------------------ */
@@ -912,26 +1126,43 @@ static void rebuild_content(void)
 		}
 		break;
 	}
-	case 3: { /* Font: button(0)=dropdown toggle, then dropdown items, then Apply */
-		struct BGTK_Widget *b = get_button(page, 0);
-		if (b) b->data.button.callback = toggle_font_dropdown;
+	case 3: { /* Font: sans/mono/serif toggles, optional list, Apply */
+		struct BGTK_Widget *b;
+		int bi;
+
+		b = get_button(page, 0);
+		if (b) {
+			b->data.button.callback = toggle_font_dropdown;
+			b->data.button.cb_data = (void *)(intptr_t)BGTK_FONT_SANS;
+		}
+		b = get_button(page, 1);
+		if (b) {
+			b->data.button.callback = toggle_font_dropdown;
+			b->data.button.cb_data = (void *)(intptr_t)BGTK_FONT_MONO;
+		}
+		b = get_button(page, 2);
+		if (b) {
+			b->data.button.callback = toggle_font_dropdown;
+			b->data.button.cb_data = (void *)(intptr_t)BGTK_FONT_SERIF;
+		}
 		font_size_input = get_input(page, 0);
 
+		bi = 3; /* first button after the three role toggles */
 		if (font_dropdown_open) {
 			int show = font_list_count > 50 ? 50 : font_list_count;
 			for (int i = 0; i < show; i++) {
-				struct BGTK_Widget *fb = get_button(page, 1 + i);
+				struct BGTK_Widget *fb = get_button(page, bi + i);
 				if (fb) {
 					fb->data.button.callback = font_select_cb;
-					fb->data.button.cb_data = (void *)(intptr_t)i;
+					fb->data.button.cb_data =
+						(void *)(intptr_t)i;
 				}
 			}
-			struct BGTK_Widget *ab = get_button(page, 1 + show);
-			if (ab) ab->data.button.callback = apply_font;
-		} else {
-			struct BGTK_Widget *ab = get_button(page, 1);
-			if (ab) ab->data.button.callback = apply_font;
+			bi += show;
 		}
+		b = get_button(page, bi);
+		if (b)
+			b->data.button.callback = apply_font;
 		break;
 	}
 	case 4: { /* Theme */

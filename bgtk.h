@@ -176,14 +176,18 @@ struct BGTK_Context {
 	int width;
 	int height;
 
-	// FreeType data
+	// FreeType data (ft_face is the UI/sans face; mono/serif optional)
 	FT_Library ft_library;
 	FT_Face ft_face;
+	FT_Face ft_face_mono;
+	FT_Face ft_face_serif;
 	int font_size;
 
 	// Theme data
 	BGTK_Theme theme;
-	char font_path[MAX_PATH_LEN];
+	char font_sans_path[MAX_PATH_LEN];
+	char font_mono_path[MAX_PATH_LEN];
+	char font_serif_path[MAX_PATH_LEN];
 
 	// Single root widget for the widget tree
 	struct BGTK_Widget* root_widget;
@@ -195,7 +199,8 @@ struct BGTK_Context {
 	// 0 = unfocused, 1 = focused.
 	int window_focused;
 
-	// Modifier state (updated by bgtk_update_modifiers / handle_input).
+	/* Modifier state: bit0=left, bit1=right (see bgtk_update_modifiers).
+	 * Non-zero means that mod is active. Cleared on focus change. */
 	int shift_held;
 	int ctrl_held;
 	int alt_held;
@@ -215,9 +220,12 @@ enum {
 };
 
 // Track Shift/Ctrl/Alt from an EV_KEY event (press/release/repeat).
+// Left/right keys are tracked separately (sticky-mod safe).
 void bgtk_update_modifiers(struct BGTK_Context *ctx, struct InputEvent ev);
 // Build mod bitflags from context held state.
 int bgtk_mods_from_ctx(const struct BGTK_Context *ctx);
+// Clear all mod bits (call on window focus change).
+void bgtk_clear_modifiers(struct BGTK_Context *ctx);
 // US QWERTY keycode → bytes. Returns length written (0 if unmapped).
 int bgtk_key_to_bytes(int code, int mods, int mode, char *out, int max);
 
@@ -231,7 +239,18 @@ int bgtk_is_app_quit_event(const struct BGTK_Context *ctx, struct InputEvent ev)
 void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget);
 
 // Sets window focus state (from server focus events).
+// Also clears shift/ctrl/alt held flags — releases while unfocused are lost.
 void bgtk_set_window_focus(struct BGTK_Context* ctx, int focused);
+
+/* Font roles for multi-face support (sans = UI default). */
+enum {
+	BGTK_FONT_SANS = 0,
+	BGTK_FONT_MONO = 1,
+	BGTK_FONT_SERIF = 2
+};
+
+/* Face for role, falling back to UI/sans (ft_face) if that role is missing. */
+FT_Face bgtk_font_face(struct BGTK_Context *ctx, int role);
 
 
 // BGTK_Widget_Type

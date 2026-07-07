@@ -34,7 +34,12 @@ typedef struct {
 
 // Config structure
 struct config {
-	char font_path[MAX_PATH_LEN];
+	/* UI / proportional sans ([font] key: sans). */
+	char font_sans_path[MAX_PATH_LEN];
+	/* Monospace (terminal); falls back to sans if unset/unloadable. */
+	char font_mono_path[MAX_PATH_LEN];
+	/* Serif (documents / gemini body text optional). */
+	char font_serif_path[MAX_PATH_LEN];
 	int font_size;
 
 	BackgroundType type;

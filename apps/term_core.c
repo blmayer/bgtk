@@ -115,8 +115,18 @@ static struct Term_Cell *cell_at(struct Term_State *t, int col, int row)
 static void scroll_up(struct Term_State *t)
 {
 	int top = t->scroll_top, bot = t->scroll_bot;
+	size_t row_bytes;
+
+	if (top < 0)
+		top = 0;
+	if (bot >= t->rows)
+		bot = t->rows - 1;
+	if (top >= bot)
+		return;
+	/* Move rows top+1..bot → top..bot-1; clear bot. Overlap-safe. */
+	row_bytes = (size_t)(bot - top) * (size_t)t->cols * sizeof(struct Term_Cell);
 	memmove(&t->cells[top * t->cols], &t->cells[(top + 1) * t->cols],
-		(size_t)(bot - top) * t->cols * sizeof(struct Term_Cell));
+		row_bytes);
 	for (int c = 0; c < t->cols; c++)
 		t->cells[bot * t->cols + c] = default_cell();
 }
@@ -257,11 +267,20 @@ static void csi_dispatch(struct Term_State *t, char final,
 		if (t->cur_col < 0) t->cur_col = 0;
 		break;
 	case 'r':
+		/* DECSTBM — vim uses e.g. ESC[1;9r then LF to scroll the
+		 * text region while the status line stays put. */
 		t->scroll_top = (p0 ? p0 : 1) - 1;
 		t->scroll_bot = (p1 ? p1 : t->rows) - 1;
-		if (t->scroll_top < 0) t->scroll_top = 0;
-		if (t->scroll_bot >= t->rows) t->scroll_bot = t->rows - 1;
-		t->cur_row = 0;
+		if (t->scroll_top < 0)
+			t->scroll_top = 0;
+		if (t->scroll_bot >= t->rows)
+			t->scroll_bot = t->rows - 1;
+		if (t->scroll_top > t->scroll_bot) {
+			/* Invalid region — reset to full screen. */
+			t->scroll_top = 0;
+			t->scroll_bot = t->rows - 1;
+		}
+		t->cur_row = t->scroll_top;
 		t->cur_col = 0;
 		break;
 	case 'm':
@@ -429,30 +448,41 @@ void term_feed(struct Term_State *t, const char *data, int len)
 void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 		 uint32_t *pixels, int px_w, int px_h)
 {
-	if (!ctx->ft_face) return;
-	FT_Face face = ctx->ft_face;
-	FT_Set_Pixel_Sizes(face, 0, ctx->font_size);
+	FT_Face face = bgtk_font_face(ctx, BGTK_FONT_MONO);
+	int cw, ch, asc;
+	int used_w, used_h;
 
-	int cw = t->cell_w, ch = t->cell_h;
-	if (cw < 1 || ch < 1) return;
-	int asc = face->size->metrics.ascender >> 6;
+	if (!face || !pixels)
+		return;
+	FT_Set_Pixel_Sizes(face, 0, ctx->font_size > 0 ? ctx->font_size : 14);
 
-	/* background */
+	cw = t->cell_w;
+	ch = t->cell_h;
+	if (cw < 1 || ch < 1)
+		return;
+	asc = face->size->metrics.ascender >> 6;
+
+	/* background (full cell rects — also clears any prior glyph bleed) */
 	for (int r = 0; r < t->rows; r++) {
 		for (int c = 0; c < t->cols; c++) {
 			struct Term_Cell *cl = cell_at(t, c, r);
 			int bi = cl->bg;
-			if (bi < 0 || bi > 15) bi = 0;
-			uint32_t bg = t->palette[bi];
-			int x0 = c * cw, y0 = r * ch;
+			uint32_t bg;
+			int x0, y0;
+
+			if (bi < 0 || bi > 15)
+				bi = 0;
+			bg = t->palette[bi];
+			x0 = c * cw;
+			y0 = r * ch;
 			for (int dy = 0; dy < ch && y0 + dy < px_h; dy++)
 				for (int dx = 0; dx < cw && x0 + dx < px_w; dx++)
 					pixels[(y0 + dy) * px_w + (x0 + dx)] = bg;
 		}
 	}
 	/* fill remainder with black */
-	int used_w = t->cols * cw;
-	int used_h = t->rows * ch;
+	used_w = t->cols * cw;
+	used_h = t->rows * ch;
 	if (used_w < px_w) {
 		for (int y = 0; y < px_h; y++)
 			for (int x = used_w; x < px_w; x++)
@@ -464,55 +494,92 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 				pixels[y * px_w + x] = t->palette[0];
 	}
 
-	/* glyphs */
+	/* glyphs — clip strictly to the cell so wide/offset glyphs cannot
+	 * overwrite neighbours (looks like "mumbled" text under vi j/k). */
 	for (int r = 0; r < t->rows; r++) {
 		for (int c = 0; c < t->cols; c++) {
 			struct Term_Cell *cl = cell_at(t, c, r);
-			if (cl->ch <= ' ') continue;
-			int fi = cl->fg;
-			if (cl->bold && fi < 8) fi += 8;
-			if (fi < 0 || fi > 15) fi = 7;
-			uint32_t fg = t->palette[fi];
+			int fi;
+			uint32_t fg;
+			FT_UInt gidx;
+			FT_Bitmap *bmp;
+			int gx, gy;
+			int cell_x0, cell_y0, cell_x1, cell_y1;
+			unsigned char uch;
 
-			FT_UInt idx = FT_Get_Char_Index(face, cl->ch);
-			if (FT_Load_Glyph(face, idx,
+			uch = (unsigned char)cl->ch;
+			if (uch <= (unsigned char)' ')
+				continue;
+			fi = cl->fg;
+			if (cl->bold && fi < 8)
+				fi += 8;
+			if (fi < 0 || fi > 15)
+				fi = 7;
+			fg = t->palette[fi];
+
+			gidx = FT_Get_Char_Index(face, (FT_ULong)uch);
+			if (FT_Load_Glyph(face, gidx,
 					  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT))
 				continue;
-			FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
-			FT_Bitmap *bmp = &face->glyph->bitmap;
-			int gx = c * cw + face->glyph->bitmap_left;
-			int gy = r * ch + asc - face->glyph->bitmap_top;
+			if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL))
+				continue;
+			bmp = &face->glyph->bitmap;
+			gx = c * cw + face->glyph->bitmap_left;
+			gy = r * ch + asc - face->glyph->bitmap_top;
+			cell_x0 = c * cw;
+			cell_y0 = r * ch;
+			cell_x1 = cell_x0 + cw;
+			cell_y1 = cell_y0 + ch;
 
 			for (unsigned int br = 0; br < bmp->rows; br++) {
 				int py = gy + (int)br;
-				if (py < 0 || py >= px_h) continue;
-				for (unsigned int bc = 0; bc < bmp->width; bc++) {
+				if (py < cell_y0 || py >= cell_y1 ||
+				    py < 0 || py >= px_h)
+					continue;
+				for (unsigned int bc = 0; bc < bmp->width;
+				     bc++) {
 					int px = gx + (int)bc;
-					if (px < 0 || px >= px_w) continue;
-					uint8_t a = bmp->buffer[br * bmp->pitch + bc];
-					if (!a) continue;
-					uint8_t inv = 255 - a;
-					uint32_t dst = pixels[py * px_w + px];
-					uint8_t ro = (uint8_t)((((fg >> 16) & 0xFF) * a +
-						     ((dst >> 16) & 0xFF) * inv) / 255);
-					uint8_t go = (uint8_t)((((fg >> 8) & 0xFF) * a +
-						     ((dst >> 8) & 0xFF) * inv) / 255);
-					uint8_t bo = (uint8_t)((((fg) & 0xFF) * a +
-						     ((dst) & 0xFF) * inv) / 255);
+					uint8_t a, inv;
+					uint32_t dst;
+					uint8_t ro, go, bo;
+
+					if (px < cell_x0 || px >= cell_x1 ||
+					    px < 0 || px >= px_w)
+						continue;
+					a = bmp->buffer[br * (unsigned)bmp->pitch +
+							bc];
+					if (!a)
+						continue;
+					inv = (uint8_t)(255 - a);
+					dst = pixels[py * px_w + px];
+					ro = (uint8_t)((((fg >> 16) & 0xFF) * a +
+							((dst >> 16) & 0xFF) *
+								inv) /
+						       255);
+					go = (uint8_t)((((fg >> 8) & 0xFF) * a +
+							((dst >> 8) & 0xFF) *
+								inv) /
+						       255);
+					bo = (uint8_t)((((fg) & 0xFF) * a +
+							((dst) & 0xFF) * inv) /
+						       255);
 					pixels[py * px_w + px] =
-						(ro << 16) | (go << 8) | bo;
+						(ro << 16) | (go << 8) | bo |
+						0xFF000000;
 				}
 			}
 		}
 	}
 
-	/* cursor (thin bar) */
+	/* cursor (thin bar, clipped to cell) */
 	if (t->cur_row >= 0 && t->cur_row < t->rows &&
 	    t->cur_col >= 0 && t->cur_col < t->cols) {
 		int cx = t->cur_col * cw, cy = t->cur_row * ch;
+		int bar = cw > 2 ? 2 : 1;
 		for (int dy = 0; dy < ch && cy + dy < px_h; dy++)
-			for (int dx = 0; dx < 2 && cx + dx < px_w; dx++)
-				pixels[(cy + dy) * px_w + (cx + dx)] = 0xFF00FF00;
+			for (int dx = 0; dx < bar && cx + dx < px_w; dx++)
+				pixels[(cy + dy) * px_w + (cx + dx)] =
+					0xFF00FF00;
 	}
 }
 
@@ -522,20 +589,44 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 
 void term_measure_cell(struct Term_State *t, struct BGTK_Context *ctx)
 {
-	if (!ctx->ft_face) {
-		t->cell_w = 7; t->cell_h = 14;
+	FT_Face face = bgtk_font_face(ctx, BGTK_FONT_MONO);
+	int asc, desc;
+	int max_adv = 0;
+	int max_extent = 0;
+	int c;
+
+	if (!face) {
+		t->cell_w = 8;
+		t->cell_h = 14;
 		return;
 	}
-	FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
-	int asc = ctx->ft_face->size->metrics.ascender >> 6;
-	int desc = -(ctx->ft_face->size->metrics.descender >> 6);
+	FT_Set_Pixel_Sizes(face, 0, ctx->font_size > 0 ? ctx->font_size : 14);
+	asc = face->size->metrics.ascender >> 6;
+	desc = -(face->size->metrics.descender >> 6);
 	t->cell_h = asc + desc;
-	if (FT_Load_Char(ctx->ft_face, 'M', FT_LOAD_DEFAULT) == 0)
-		t->cell_w = ctx->ft_face->glyph->advance.x >> 6;
-	else
-		t->cell_w = t->cell_h / 2;
-	if (t->cell_w < 1) t->cell_w = 1;
-	if (t->cell_h < 1) t->cell_h = 1;
+	if (t->cell_h < 8)
+		t->cell_h = 8;
+
+	/* Use the max advance (and ink extent) over printable ASCII so a
+	 * non-mono fallback face cannot size cells from a skinny 'M' while
+	 * wider glyphs paint into the next column. */
+	for (c = 32; c < 127; c++) {
+		int adv, extent;
+
+		if (FT_Load_Char(face, (FT_ULong)c,
+				 FT_LOAD_DEFAULT | FT_LOAD_RENDER) != 0)
+			continue;
+		adv = (int)(face->glyph->advance.x >> 6);
+		extent = face->glyph->bitmap_left +
+			 (int)face->glyph->bitmap.width;
+		if (adv > max_adv)
+			max_adv = adv;
+		if (extent > max_extent)
+			max_extent = extent;
+	}
+	t->cell_w = max_adv > max_extent ? max_adv : max_extent;
+	if (t->cell_w < 6)
+		t->cell_w = 6;
 }
 
 /* ------------------------------------------------------------------ */

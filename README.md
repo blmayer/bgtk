@@ -102,11 +102,15 @@ input_border_size = 2
 frame_border_size = 4
 frame_border_color = #333333
 
-# Font settings
+# Font settings (sans = UI; mono = terminal; serif = documents)
 [font]
-path = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+sans = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+mono = /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf
+serif = /usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf
 size = 14
 ```
+
+`sans` is the UI face. `mono` is used by the terminal; `serif` is available via `bgtk_font_face(ctx, BGTK_FONT_SERIF)`. If mono/serif are omitted, platform defaults are chosen (falling back to the UI/sans font).
 
 Colors use `#RRGGBB` or `#RRGGBBAA` format. Lines starting with `#` or `;` are comments.
 

@@ -237,7 +237,7 @@ int main(void)
 		rows = 1;
 	bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d font='%s'",
 		 tmp_ts.cell_w, tmp_ts.cell_h, cols, rows, inner_w, inner_h,
-		 ctx->font_path[0] ? ctx->font_path : "(none)");
+		 ctx->font_sans_path[0] ? ctx->font_sans_path : "(none)");
 
 	struct Term_State *ts = term_create(cols, rows);
 	if (!ts) {
@@ -329,8 +329,22 @@ int main(void)
 			switch (msg.type) {
 			case MSG_INPUT_EVENT: {
 				struct InputEvent *ev = &msg.data.input_event;
+				int mods;
+				char out[8];
+				int n;
+
 				if (ev->type != EV_KEY)
 					break;
+				/* Ignore input while unfocused (stale mod
+				 * edges and key repeats from other clients). */
+				if (!ctx->window_focused) {
+					/* Still track mod releases so a Ctrl
+					 * up after focus-loss cannot be lost
+					 * forever if focus returns mid-chord. */
+					if (ev->value == 0)
+						bgtk_update_modifiers(ctx, *ev);
+					break;
+				}
 				bgtk_update_modifiers(ctx, *ev);
 				if (ev->code == KEY_LEFTSHIFT ||
 				    ev->code == KEY_RIGHTSHIFT ||
@@ -339,19 +353,47 @@ int main(void)
 				    ev->code == KEY_LEFTALT ||
 				    ev->code == KEY_RIGHTALT)
 					break;
-				if (ev->value == 1 || ev->value == 2) {
-					char out[8];
-					int n = bgtk_key_to_bytes(
-						ev->code,
-						bgtk_mods_from_ctx(ctx),
-						BGTK_KEY_TTY, out, sizeof(out));
-					if (n > 0)
-						(void)write(master_fd, out, n);
+				/* Press / autorepeat only — never synthesize
+				 * on release. */
+				if (ev->value != 1 && ev->value != 2)
+					break;
+				mods = bgtk_mods_from_ctx(ctx);
+				n = bgtk_key_to_bytes(ev->code, mods,
+						      BGTK_KEY_TTY, out,
+						      sizeof(out));
+				/*
+				 * Stuck-Ctrl safety: Ctrl+J/K are LF/VT (0x0A/
+				 * 0x0B). In vi that scrolls/corrupts the buffer
+				 * ("bottom lines jump up"). If we would emit a
+				 * C0 letter but only one mod side bit is set
+				 * from a single press that never got a matching
+				 * release pattern, still send it — the real
+				 * fix is focus/ESC clear. Log for diagnosis.
+				 */
+				if (n == 1 && (unsigned char)out[0] < 0x20 &&
+				    (ev->code == KEY_J || ev->code == KEY_K))
+					bgtk_log("TTY C0 for key %u mod=ctrl — "
+						 "if vi misbehaves, mod was stuck",
+						 ev->code);
+				if (n > 0) {
+					if (write(master_fd, out, (size_t)n) < 0)
+						bgtk_log_errno("PTY write key");
 				}
+				/* Esc is a natural "reset" in vi — drop any
+				 * sticky mod so the next j/k is a plain letter. */
+				if (ev->code == KEY_ESC)
+					bgtk_clear_modifiers(ctx);
 				break;
 			}
 			case MSG_FOCUS_CHANGE:
+				/* Clear sticky mod bits (a lost Ctrl release
+				 * otherwise turns j/k into LF/VT and vi insert
+				 * mode corrupts the buffer). Re-render cells
+				 * before compositing so focus dim is clean. */
 				ctx->window_focused = msg.data.focus_event.state;
+				bgtk_clear_modifiers(ctx);
+				term_render(ts, ctx, img->data.image.pixels,
+					    inner_w, inner_h);
 				bgtk_draw_widgets(ctx);
 				break;
 			case MSG_BUFFER_CHANGE:

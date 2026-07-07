@@ -25,6 +25,8 @@
 #include <pty.h>
 #endif
 
+#include <linux/input.h>
+
 #include "bgtk.h"
 #include "internal.h"
 #include "terminal.h"
@@ -294,6 +296,64 @@ int main(void)
 
 			close(master_fd);
 		}
+	}
+
+	/* Vim j-at-bottom scroll: region 1..(rows-1), LF, restore, new line.
+	 * Top of text region must advance (line 01 → 02); status row untouched. */
+	{
+		struct Term_State *vs = term_create(20, 10);
+		char row0[24], row8[24];
+		int c;
+		char out[4];
+		int n;
+
+		for (int r = 0; r < 9; r++) {
+			char b[48];
+			snprintf(b, sizeof(b),
+				 "\033[%d;1Hline %02d XXXXXXXXXXX", r + 1,
+				 r + 1);
+			term_feed(vs, b, -1);
+		}
+		term_feed(vs,
+			  "\033[?25l\033[1;9r\033[9;1H\r\n\033[1;10r"
+			  "\033[9;1Hline 10 XXXXXXXXXXX\r\033[?25h",
+			  -1);
+		for (c = 0; c < 20; c++) {
+			char ch0 = vs->cells[c].ch;
+			char ch8 = vs->cells[8 * 20 + c].ch;
+			row0[c] = (ch0 >= 32 && ch0 < 127) ? ch0 : '.';
+			row8[c] = (ch8 >= 32 && ch8 < 127) ? ch8 : '.';
+		}
+		row0[20] = row8[20] = '\0';
+		if (!strstr(row0, "line 02") || !strstr(row8, "line 10")) {
+			bgtk_log("vim j-scroll failed row0='%s' row8='%s'",
+				 row0, row8);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Ctrl+J must map to LF; plain j must be 'j' (stuck-ctrl check). */
+		n = bgtk_key_to_bytes(KEY_J, BGTK_MOD_CTRL, BGTK_KEY_TTY, out, 4);
+		if (n != 1 || out[0] != 10) {
+			bgtk_log("Ctrl+J map broken");
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		n = bgtk_key_to_bytes(KEY_J, 0, BGTK_KEY_TTY, out, 4);
+		if (n != 1 || out[0] != 'j') {
+			bgtk_log("plain j map broken");
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		term_destroy(vs);
 	}
 
 	printf("test_terminal complete. PNG frames written.\n");

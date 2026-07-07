@@ -274,6 +274,113 @@ int main(void)
 				return 1;
 			}
 		}
+		/* L/R mod bits: press both ctrls, release one, still ctrl. */
+		{
+			struct BGTK_Context *mctx = bgtk_init_mock(100, 40);
+			struct InputEvent me = {0};
+			char out[4];
+			int n;
+
+			me.type = EV_KEY;
+			me.value = 1;
+			me.code = KEY_LEFTCTRL;
+			bgtk_update_modifiers(mctx, me);
+			me.code = KEY_RIGHTCTRL;
+			bgtk_update_modifiers(mctx, me);
+			me.value = 0;
+			me.code = KEY_LEFTCTRL;
+			bgtk_update_modifiers(mctx, me);
+			if (!(bgtk_mods_from_ctx(mctx) & BGTK_MOD_CTRL)) {
+				bgtk_log("headless: ctrl should stay held via right");
+				bgtk_destroy_mock(mctx);
+				return 1;
+			}
+			/* With ctrl held, j must be C0 (LF=10), not 'j' — this
+			 * is what breaks vi when mod state is wrong. */
+			n = bgtk_key_to_bytes(KEY_J, bgtk_mods_from_ctx(mctx),
+					      BGTK_KEY_TTY, out, sizeof(out));
+			if (n != 1 || out[0] != 10) {
+				bgtk_log("headless: Ctrl+J TTY expected 0x0a got n=%d b=%d",
+					 n, n > 0 ? (unsigned char)out[0] : -1);
+				bgtk_destroy_mock(mctx);
+				return 1;
+			}
+			bgtk_clear_modifiers(mctx);
+			n = bgtk_key_to_bytes(KEY_J, bgtk_mods_from_ctx(mctx),
+					      BGTK_KEY_TTY, out, sizeof(out));
+			if (n != 1 || out[0] != 'j') {
+				bgtk_log("headless: plain J after clear expected 'j'");
+				bgtk_destroy_mock(mctx);
+				return 1;
+			}
+			bgtk_destroy_mock(mctx);
+		}
+
+		/* Focused field receives keys even if tree walk would miss it
+		 * (settings Theme page / nested HTML tables). */
+		{
+			struct BGTK_Context *fctx = bgtk_init_mock(300, 80);
+			struct BGTK_Widget *fi =
+				bgtk_text_input(fctx, "x", 120, 0,
+						(BGTK_Options){.padding = 4});
+			/* Nest the input under a frame so only focus routing
+			 * (not a root-level walk of a free widget) is tested. */
+			struct BGTK_Widget *ff =
+				bgtk_frame(fctx, fi, 200, 50,
+					   (BGTK_Options){.padding = 4});
+			fctx->root_widget = ff;
+			bgtk_set_focus(fctx, fi);
+			struct InputEvent fk = {0};
+			fk.type = EV_KEY;
+			fk.value = 1;
+			fk.code = KEY_Y;
+			/* Deliberately zero coords — keyboard has no position. */
+			fk.x = 0;
+			fk.y = 0;
+			bgtk_inject_event(fctx, fk);
+			if (!fi->data.text_input.text ||
+			    strcmp(fi->data.text_input.text, "xy") != 0) {
+				bgtk_log("headless: focus-key routing expected 'xy' got '%s'",
+					 fi->data.text_input.text
+						 ? fi->data.text_input.text
+						 : "(null)");
+				bgtk_destroy_mock(fctx);
+				return 1;
+			}
+			bgtk_destroy_mock(fctx);
+		}
+
+		/* Sticky mod: Ctrl down, focus leaves (release lost to other app
+		 * or peer exited on Ctrl+C), focus returns — typing must work. */
+		ke.value = 1;
+		ke.code = KEY_LEFTCTRL;
+		bgtk_inject_event(kctx, ke);
+		if (!kctx->ctrl_held) {
+			bgtk_log("headless: expected ctrl_held after press");
+			bgtk_destroy_mock(kctx);
+			return 1;
+		}
+		bgtk_set_window_focus(kctx, 0);
+		bgtk_set_window_focus(kctx, 1);
+		if (kctx->ctrl_held || kctx->shift_held || kctx->alt_held) {
+			bgtk_log("headless: mods stuck after focus cycle "
+				 "ctrl=%d shift=%d alt=%d",
+				 kctx->ctrl_held, kctx->shift_held,
+				 kctx->alt_held);
+			bgtk_destroy_mock(kctx);
+			return 1;
+		}
+		ke.code = KEY_X;
+		bgtk_inject_event(kctx, ke);
+		got = kti->data.text_input.text;
+		if (!got || strcmp(got, "x") != 0) {
+			bgtk_log("headless: expected 'x' after sticky-ctrl fix got '%s'",
+				 got ? got : "(null)");
+			bgtk_destroy_mock(kctx);
+			return 1;
+		}
+		bgtk_draw_widgets(kctx);
+		take_screenshot(kctx, "headless_04d_focus_clears_mods.png");
 		bgtk_destroy_mock(kctx);
 	}
 
