@@ -448,12 +448,18 @@ static FT_Face bgtk_load_face(struct BGTK_Context *ctx, const char *path,
 {
 	FT_Face face = NULL;
 	int tw = 0, th = 0;
+	int err;
 
-	if (!ctx || !ctx->ft_library || !path || !path[0])
+	if (!ctx || !ctx->ft_library || !path || !path[0]) {
+		bgtk_log("skip %s font: empty path", role ? role : "font");
 		return NULL;
-	if (FT_New_Face(ctx->ft_library, path, 0, &face) != 0) {
-		bgtk_log("could not load %s font '%s'", role ? role : "font",
-			 path);
+	}
+	bgtk_log("loading %s font '%s'...", role ? role : "font", path);
+	bgtk_log_flush();
+	err = FT_New_Face(ctx->ft_library, path, 0, &face);
+	if (err != 0) {
+		bgtk_log("could not load %s font '%s' (freetype err=0x%x)",
+			 role ? role : "font", path, (unsigned)err);
 		return NULL;
 	}
 	/* Prefer Unicode cmap so ASCII is not remapped to symbol glyphs. */
@@ -466,8 +472,9 @@ static FT_Face bgtk_load_face(struct BGTK_Context *ctx, const char *path,
 		FT_Done_Face(face);
 		return NULL;
 	}
-	bgtk_log("loaded %s font '%s' size=%d", role ? role : "font", path,
-		 ctx->font_size);
+	bgtk_log("loaded %s font '%s' size=%d face_index=0",
+		 role ? role : "font", path, ctx->font_size);
+	bgtk_log_flush();
 	return face;
 }
 
@@ -512,12 +519,47 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
 		return;
 	}
 
-	/* Load sans (UI), mono, serif faces. Selection defaults live in config. */
+	/* Load sans (UI), mono, serif. Reuse faces when paths match so we do
+	 * not open the same file three times (some TTC/embedded faces hang
+	 * or fail on the second open). */
 	ctx->ft_face = bgtk_load_face(ctx, ctx->font_sans_path, "sans");
 	if (!ctx->ft_face)
 		bgtk_log("no usable UI/sans font; text will use placeholders");
-	ctx->ft_face_mono = bgtk_load_face(ctx, ctx->font_mono_path, "mono");
-	ctx->ft_face_serif = bgtk_load_face(ctx, ctx->font_serif_path, "serif");
+
+	if (ctx->ft_face && ctx->font_mono_path[0] &&
+	    strcmp(ctx->font_mono_path, ctx->font_sans_path) == 0) {
+		bgtk_log("mono reuses sans face (same path)");
+		ctx->ft_face_mono = ctx->ft_face;
+	} else {
+		ctx->ft_face_mono =
+			bgtk_load_face(ctx, ctx->font_mono_path, "mono");
+	}
+	if (!ctx->ft_face_mono && ctx->ft_face) {
+		bgtk_log("mono fallback to sans face");
+		ctx->ft_face_mono = ctx->ft_face;
+	}
+
+	if (ctx->ft_face && ctx->font_serif_path[0] &&
+	    strcmp(ctx->font_serif_path, ctx->font_sans_path) == 0) {
+		bgtk_log("serif reuses sans face (same path)");
+		ctx->ft_face_serif = ctx->ft_face;
+	} else if (ctx->ft_face_mono && ctx->font_serif_path[0] &&
+		   ctx->font_mono_path[0] &&
+		   strcmp(ctx->font_serif_path, ctx->font_mono_path) == 0) {
+		bgtk_log("serif reuses mono face (same path)");
+		ctx->ft_face_serif = ctx->ft_face_mono;
+	} else {
+		ctx->ft_face_serif =
+			bgtk_load_face(ctx, ctx->font_serif_path, "serif");
+	}
+	if (!ctx->ft_face_serif && ctx->ft_face) {
+		bgtk_log("serif fallback to sans face");
+		ctx->ft_face_serif = ctx->ft_face;
+	}
+	bgtk_log("font faces ready sans=%p mono=%p serif=%p",
+		 (void *)ctx->ft_face, (void *)ctx->ft_face_mono,
+		 (void *)ctx->ft_face_serif);
+	bgtk_log_flush();
 }
 
 FT_Face bgtk_font_face(struct BGTK_Context *ctx, int role)
@@ -667,14 +709,16 @@ void bgtk_destroy(struct BGTK_Context *ctx)
 	}
 	/* Release framebuffer (mmap for real apps, malloc for mock). */
 	bgtk_release_buffer(ctx);
-	if (ctx->ft_face_serif) {
+	/* Faces may be aliases of each other when paths matched — free once. */
+	if (ctx->ft_face_serif && ctx->ft_face_serif != ctx->ft_face &&
+	    ctx->ft_face_serif != ctx->ft_face_mono) {
 		FT_Done_Face(ctx->ft_face_serif);
-		ctx->ft_face_serif = NULL;
 	}
-	if (ctx->ft_face_mono) {
+	ctx->ft_face_serif = NULL;
+	if (ctx->ft_face_mono && ctx->ft_face_mono != ctx->ft_face) {
 		FT_Done_Face(ctx->ft_face_mono);
-		ctx->ft_face_mono = NULL;
 	}
+	ctx->ft_face_mono = NULL;
 	if (ctx->ft_face) {
 		FT_Done_Face(ctx->ft_face);
 		ctx->ft_face = NULL;

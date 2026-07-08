@@ -259,27 +259,51 @@ int main(void)
 		bgtk_log("bgtk_init failed — check fonts / log above");
 		return 1;
 	}
+	bgtk_log("building launcher UI");
 
 	text_input = bgtk_text_input(ctx, "", 440, 0, (BGTK_Options){.padding = 6, .margin = 4});
+	if (!text_input) {
+		bgtk_log("bgtk_text_input failed");
+		return 1;
+	}
 	text_input->data.text_input.on_change = on_text_change;
 	text_input->data.text_input.on_tab = on_tab_pressed;
 	text_input->data.text_input.on_enter = on_enter_pressed;
 
 	matches_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 4});
+	if (!matches_scroll) {
+		bgtk_log("bgtk_scrollable failed");
+		return 1;
+	}
 
 	struct BGTK_Widget* layout_items[2] = {text_input, matches_scroll};
 	struct BGTK_Widget* layout = bgtk_list(ctx, layout_items, 2, (BGTK_Options){.orientation = BGTK_LIST_VERTICAL});
+	if (!layout) {
+		bgtk_log("bgtk_list failed");
+		return 1;
+	}
 
 	struct BGTK_Widget* frame = bgtk_frame(ctx, layout, width, height, (BGTK_Options){.padding = 8});
+	if (!frame) {
+		bgtk_log("bgtk_frame failed");
+		return 1;
+	}
 
 	ctx->root_widget = frame;
 	layout_launcher();
+	bgtk_log("first draw / focus");
+	bgtk_log_flush();
+	/* Draw before set_focus: set_focus also draws; if draw crashes we know. */
+	bgtk_draw_widgets(ctx);
+	bgtk_log("first draw ok");
 	bgtk_set_focus(ctx, text_input);
 
 	update_matches("");
+	bgtk_log("matches=%d; rebuilding list", num_matches);
 	rebuild_matches_ui();
 
 	bgtk_log("Starting launcher main loop (%dx%d)", ctx->width, ctx->height);
+	bgtk_log_flush();
 
 	int quit = 0;
 	struct BGCEMessage msg;
