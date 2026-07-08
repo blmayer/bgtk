@@ -187,9 +187,9 @@ static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
 
 int main(void)
 {
-	bgtk_log_open("terminal");
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
+	bgtk_log_open("terminal");
 
 	signal(SIGCHLD, SIG_IGN);
 
@@ -197,7 +197,7 @@ int main(void)
 
 	int conn_fd = bgce_connect();
 	if (conn_fd < 0) {
-		bgtk_log_errno("bgce_connect");
+		bgtk_log_errno("bgce_connect (is bgce running?)");
 		return 1;
 	}
 	bgtk_log("connected to BGCE conn_fd=%d", conn_fd);
@@ -210,11 +210,11 @@ int main(void)
 		bgce_disconnect(conn_fd);
 		return 1;
 	}
-	bgtk_log("got buffer %dx%d", width, height);
+	bgtk_log("got buffer %p %dx%d", buffer, width, height);
 
 	struct BGTK_Context *ctx = bgtk_init(conn_fd, buffer, width, height);
 	if (!ctx) {
-		bgtk_log("bgtk_init failed");
+		bgtk_log("bgtk_init failed — check fonts / FreeType / log above");
 		return 1;
 	}
 

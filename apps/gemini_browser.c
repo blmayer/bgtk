@@ -811,22 +811,22 @@ int main(void)
 
 	/* File log under ~/.cache/bgtk/gemini_browser.log (not stderr — launcher
 	 * often redirects stdio to /dev/null). */
-	bgtk_log_open("gemini_browser");
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
+	bgtk_log_open("gemini_browser");
 	signal(SIGPIPE, SIG_IGN);
 
 	bgtk_log("gemini_browser starting pid=%ld", (long)getpid());
 
 	if (tls_init() == -1) {
-		bgtk_log("tls_init failed — abort");
+		bgtk_log("tls_init failed — is libtls/libretls installed?");
 		return 1;
 	}
 	bgtk_log("tls_init ok");
 
 	conn_fd = bgce_connect();
 	if (conn_fd < 0) {
-		bgtk_log_errno("bgce_connect failed");
+		bgtk_log_errno("bgce_connect failed (is bgce running?)");
 		return -1;
 	}
 	bgtk_log("bgce_connect ok fd=%d", conn_fd);

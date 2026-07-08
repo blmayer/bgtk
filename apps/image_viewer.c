@@ -41,15 +41,16 @@ static void load_button_clicked(void *userdata) {
 }
 
 int main(void) {
-	bgtk_log_open("image_viewer");
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
+	bgtk_log_open("image_viewer");
 
 	int conn_fd = bgce_connect();
 	if (conn_fd < 0) {
-		bgtk_log_errno("bgce_connect");
+		bgtk_log_errno("bgce_connect (is bgce running?)");
 		return -1;
 	}
+	bgtk_log("bgce_connect ok fd=%d", conn_fd);
 
 	int width = 800;
 	int height = 600;
@@ -60,10 +61,11 @@ int main(void) {
 		bgce_disconnect(conn_fd);
 		return -3;
 	}
+	bgtk_log("bgce_get_buffer ok %p", buffer);
 
 	ctx = bgtk_init(conn_fd, buffer, width, height);
 	if (!ctx) {
-		bgtk_log("bgtk_init failed");
+		bgtk_log("bgtk_init failed — check fonts / FreeType");
 		return 1;
 	}
 

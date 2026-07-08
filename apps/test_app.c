@@ -33,16 +33,17 @@ void text_input_changed(void) {
 }
 
 int main(void) {
+	setvbuf(stdout, NULL, _IONBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
 	bgtk_log_open("test_app");
-	setvbuf(stdout, NULL, _IONBF, 0);  // Disable buffering for stdout
-	setvbuf(stderr, NULL, _IONBF, 0);  // Disable buffering for stderr
 
 	// 1. Connect to BGCE
 	int conn_fd = bgce_connect();
 	if (conn_fd < 0) {
-		bgtk_log_errno("bgce_connect");
+		bgtk_log_errno("bgce_connect (is bgce running?)");
 		return -1;
 	}
+	bgtk_log("bgce_connect ok fd=%d", conn_fd);
 
 	// 2. Get Server Info (optional, but good for context)
 	struct ServerInfo s_info;
@@ -61,10 +62,11 @@ int main(void) {
 		bgce_disconnect(conn_fd);
 		return -3;
 	}
+	bgtk_log("bgce_get_buffer ok %p", buffer);
 
 	ctx = bgtk_init(conn_fd, buffer, 600, 400);
 	if (!ctx) {
-		bgtk_log("bgtk_init failed");
+		bgtk_log("bgtk_init failed — check fonts / FreeType");
 		return 1;
 	}
 	bgtk_log("BGTK init done");

@@ -228,16 +228,20 @@ int main(void)
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
+	setvbuf(stderr, NULL, _IONBF, 0);
 	bgtk_log_open("launcher");
 	/* Avoid zombies from spawned apps. */
 	signal(SIGCHLD, SIG_IGN);
+	bgtk_log("loading PATH programs");
 	load_programs();
+	bgtk_log("programs scanned: %d", num_programs);
 
 	int conn_fd = bgce_connect();
 	if (conn_fd < 0) {
-		bgtk_log_errno("bgce_connect");
+		bgtk_log_errno("bgce_connect (is bgce running?)");
 		return -1;
 	}
+	bgtk_log("bgce_connect ok fd=%d", conn_fd);
 
 	int width = 480;
 	int height = 320;
@@ -248,10 +252,11 @@ int main(void)
 		bgce_disconnect(conn_fd);
 		return -3;
 	}
+	bgtk_log("bgce_get_buffer ok %p", buffer);
 
 	ctx = bgtk_init(conn_fd, buffer, width, height);
 	if (!ctx) {
-		bgtk_log("bgtk_init failed");
+		bgtk_log("bgtk_init failed — check fonts / log above");
 		return 1;
 	}
 

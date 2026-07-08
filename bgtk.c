@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stb_image_write.h>
 #include <stdio.h>
@@ -17,6 +18,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#if defined(__linux__) || defined(__APPLE__)
+#include <execinfo.h>
+#define BGTK_HAVE_BACKTRACE 1
+#endif
+
 #include "config.h"
 #include "internal.h"
 
@@ -24,7 +30,10 @@
  * separate from BGCE server/client stderr so app and compositor output do not
  * fight over one stream or file. */
 static FILE *bgtk_log_fp;
+static int bgtk_log_fd = -1; /* raw fd for async-signal-safe crash lines */
 static char bgtk_log_name[64] = "bgtk";
+static char bgtk_log_file_path[640];
+static int bgtk_crash_handlers_installed;
 
 static void bgtk_log_timestamp(char *ts, size_t tslen)
 {
@@ -77,10 +86,106 @@ static int bgtk_ensure_log_dir(char *dir, size_t dirlen)
 	return bgtk_mkdir_p(dir);
 }
 
+/* Async-signal-safe write of a C string to fd (best-effort). */
+static void bgtk_write_str(int fd, const char *s)
+{
+	size_t n;
+	if (fd < 0 || !s)
+		return;
+	n = strlen(s);
+	while (n > 0) {
+		ssize_t w = write(fd, s, n);
+		if (w <= 0)
+			break;
+		s += (size_t)w;
+		n -= (size_t)w;
+	}
+}
+
+static void bgtk_crash_handler(int sig)
+{
+	const char *name = "SIGNAL";
+	char buf[96];
+	int n;
+
+	if (sig == SIGSEGV)
+		name = "SIGSEGV";
+	else if (sig == SIGABRT)
+		name = "SIGABRT";
+	else if (sig == SIGBUS)
+		name = "SIGBUS";
+	else if (sig == SIGFPE)
+		name = "SIGFPE";
+	else if (sig == SIGILL)
+		name = "SIGILL";
+
+	/* Prefer the log file fd; always also try stderr. */
+	n = snprintf(buf, sizeof(buf),
+		     "\n*** FATAL %s pid=%ld app=%s ***\n", name,
+		     (long)getpid(), bgtk_log_name);
+	if (n > 0) {
+		if (bgtk_log_fd >= 0)
+			bgtk_write_str(bgtk_log_fd, buf);
+		bgtk_write_str(STDERR_FILENO, buf);
+	}
+	if (bgtk_log_file_path[0]) {
+		bgtk_write_str(STDERR_FILENO, "log: ");
+		bgtk_write_str(STDERR_FILENO, bgtk_log_file_path);
+		bgtk_write_str(STDERR_FILENO, "\n");
+		if (bgtk_log_fd >= 0) {
+			bgtk_write_str(bgtk_log_fd, "log: ");
+			bgtk_write_str(bgtk_log_fd, bgtk_log_file_path);
+			bgtk_write_str(bgtk_log_fd, "\n");
+		}
+	}
+#if BGTK_HAVE_BACKTRACE
+	{
+		void *bt[32];
+		int nbt = backtrace(bt, 32);
+		if (bgtk_log_fd >= 0)
+			backtrace_symbols_fd(bt, nbt, bgtk_log_fd);
+		backtrace_symbols_fd(bt, nbt, STDERR_FILENO);
+	}
+#endif
+	/* Re-raise with default action so core dumps still work. */
+	signal(sig, SIG_DFL);
+	raise(sig);
+}
+
+static void bgtk_install_crash_handlers(void)
+{
+	struct sigaction sa;
+
+	if (bgtk_crash_handlers_installed)
+		return;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = bgtk_crash_handler;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESETHAND;
+	sigaction(SIGSEGV, &sa, NULL);
+	sigaction(SIGABRT, &sa, NULL);
+	sigaction(SIGBUS, &sa, NULL);
+	sigaction(SIGFPE, &sa, NULL);
+	sigaction(SIGILL, &sa, NULL);
+	bgtk_crash_handlers_installed = 1;
+}
+
+static void bgtk_log_atexit(void)
+{
+	if (bgtk_log_fp && bgtk_log_fp != stderr) {
+		char ts[40];
+		bgtk_log_timestamp(ts, sizeof(ts));
+		fprintf(bgtk_log_fp, "%s [%s] === process exit pid=%ld ===\n",
+			ts, bgtk_log_name, (long)getpid());
+		fflush(bgtk_log_fp);
+	}
+}
+
 void bgtk_log_open(const char *app_name)
 {
 	char dir[512];
 	char path[640];
+	static int atexit_registered;
 
 	/* Avoid strncpy(dst, dst) when ensure() reopens with bgtk_log_name. */
 	if (app_name && app_name[0] && app_name != bgtk_log_name) {
@@ -88,17 +193,25 @@ void bgtk_log_open(const char *app_name)
 		bgtk_log_name[sizeof(bgtk_log_name) - 1] = '\0';
 	}
 
+	/* Interactive launches: unbuffered stderr so crash lines appear. */
+	setvbuf(stderr, NULL, _IONBF, 0);
+
 	if (bgtk_log_fp && bgtk_log_fp != stderr) {
 		fclose(bgtk_log_fp);
 		bgtk_log_fp = NULL;
 	}
+	bgtk_log_fd = -1;
+	bgtk_log_file_path[0] = '\0';
 
 	if (bgtk_ensure_log_dir(dir, sizeof(dir)) < 0) {
 		char ts[40];
 		bgtk_log_timestamp(ts, sizeof(ts));
 		bgtk_log_fp = stderr;
-		fprintf(stderr, "%s [%s] log dir unavailable; using stderr only\n",
+		fprintf(stderr,
+			"%s [%s] log dir unavailable (HOME/XDG_CACHE_HOME?); "
+			"stderr only\n",
 			ts, bgtk_log_name);
+		bgtk_install_crash_handlers();
 		return;
 	}
 
@@ -110,16 +223,46 @@ void bgtk_log_open(const char *app_name)
 		bgtk_log_fp = stderr;
 		fprintf(stderr, "%s [%s] cannot open %s: %s (stderr only)\n",
 			ts, bgtk_log_name, path, strerror(errno));
+		bgtk_install_crash_handlers();
 		return;
 	}
+	/* Line-buffered + explicit fflush in log_v; also keep a raw fd. */
 	setvbuf(bgtk_log_fp, NULL, _IOLBF, 0);
-	/* First line after open — path is useful when diagnosing launch failures. */
+	bgtk_log_fd = fileno(bgtk_log_fp);
+	strncpy(bgtk_log_file_path, path, sizeof(bgtk_log_file_path) - 1);
+	bgtk_log_file_path[sizeof(bgtk_log_file_path) - 1] = '\0';
+
+	bgtk_install_crash_handlers();
+	if (!atexit_registered) {
+		atexit(bgtk_log_atexit);
+		atexit_registered = 1;
+	}
+
 	{
 		char ts[40];
+		char cwd[512];
+		const char *home = getenv("HOME");
+		const char *xdg = getenv("XDG_CACHE_HOME");
+		const char *disp = getenv("BGCE_SOCKET");
 		bgtk_log_timestamp(ts, sizeof(ts));
-		fprintf(bgtk_log_fp, "%s [%s] === log open pid=%ld path=%s ===\n",
-			ts, bgtk_log_name, (long)getpid(), path);
+		fprintf(bgtk_log_fp,
+			"%s [%s] === log open pid=%ld ppid=%ld path=%s ===\n",
+			ts, bgtk_log_name, (long)getpid(), (long)getppid(),
+			path);
+		if (!getcwd(cwd, sizeof(cwd)))
+			snprintf(cwd, sizeof(cwd), "(getcwd failed: %s)",
+				 strerror(errno));
+		fprintf(bgtk_log_fp, "%s [%s] cwd=%s\n", ts, bgtk_log_name, cwd);
+		fprintf(bgtk_log_fp, "%s [%s] HOME=%s XDG_CACHE_HOME=%s\n", ts,
+			bgtk_log_name, home ? home : "(unset)",
+			xdg ? xdg : "(unset)");
+		fprintf(bgtk_log_fp,
+			"%s [%s] BGCE_SOCKET=%s (default often /tmp/bgce.sock)\n",
+			ts, bgtk_log_name, disp ? disp : "(unset)");
 		fflush(bgtk_log_fp);
+		/* Tell the user where to look when launched from a compositor. */
+		fprintf(stderr, "%s [%s] logging to %s\n", ts, bgtk_log_name,
+			path);
 	}
 }
 
@@ -172,6 +315,30 @@ void bgtk_log_errno(const char *fmt, ...)
 	va_start(ap, fmt);
 	bgtk_log_v(1, fmt, ap);
 	va_end(ap);
+}
+
+void bgtk_log_flush(void)
+{
+	if (bgtk_log_fp)
+		fflush(bgtk_log_fp);
+	fflush(stderr);
+}
+
+const char *bgtk_log_path(void)
+{
+	return bgtk_log_file_path[0] ? bgtk_log_file_path : NULL;
+}
+
+void bgtk_log_die(int status, const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	bgtk_log_v(0, fmt, ap);
+	va_end(ap);
+	bgtk_log("fatal: exiting status=%d (log=%s)", status,
+		 bgtk_log_file_path[0] ? bgtk_log_file_path : "stderr");
+	bgtk_log_flush();
+	_exit(status);
 }
 
 int take_screenshot(struct BGTK_Context *ctx, const char *path)
@@ -361,30 +528,46 @@ FT_Face bgtk_font_face(struct BGTK_Context *ctx, int role)
 
 struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
 {
-	struct BGTK_Context *ctx =
-	    (struct BGTK_Context *)calloc(1, sizeof(struct BGTK_Context));
+	struct BGTK_Context *ctx;
+
+	bgtk_log("bgtk_init begin conn_fd=%d buffer=%p %dx%d", conn_fd, buffer,
+		 width, height);
+	if (conn_fd < 0)
+		bgtk_log("bgtk_init warning: conn_fd < 0 (mock/offline?)");
+	if (!buffer) {
+		bgtk_log("bgtk_init failed: null shm buffer");
+		return NULL;
+	}
+	if (width < 1 || height < 1) {
+		bgtk_log("bgtk_init failed: bad size %dx%d", width, height);
+		return NULL;
+	}
+
+	ctx = (struct BGTK_Context *)calloc(1, sizeof(struct BGTK_Context));
 	if (!ctx) {
-		perror("calloc");
+		bgtk_log_errno("bgtk_init calloc BGTK_Context");
 		return NULL;
 	}
 
 	ctx->conn_fd = conn_fd;
 	ctx->shm_buffer = buffer;
-	if (!ctx->shm_buffer) {
-		// Real server path requires caller-provided buffer.
-		free(ctx);
-		return NULL;
-	}
 	ctx->width = width;
 	ctx->height = height;
 	ctx->buffer_mapped = 1; /* caller mapped via bgce_get_buffer / mmap */
 
 	bgtk_init_resources(ctx);
 	if (!ctx->ft_library) {
-		// freetype failed; buffer is caller-owned for real init.
+		bgtk_log("bgtk_init failed: FreeType init failed "
+			 "(fonts/libfreetype missing?)");
 		free(ctx);
 		return NULL;
 	}
+	bgtk_log("bgtk_init ok faces sans=%s mono=%s serif=%s log=%s",
+		 ctx->ft_face ? "yes" : "no",
+		 ctx->ft_face_mono ? "yes" : "no",
+		 ctx->ft_face_serif ? "yes" : "no",
+		 bgtk_log_file_path[0] ? bgtk_log_file_path : "stderr");
+	bgtk_log_flush();
 	return ctx;
 }
 

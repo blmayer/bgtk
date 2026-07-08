@@ -1603,16 +1603,22 @@ static void load_bgce_config(struct config *c)
 
 int main(void)
 {
+	setvbuf(stderr, NULL, _IONBF, 0);
 	bgtk_log_open("settings");
+	bgtk_log("starting settings");
 
 	int conn = bgce_connect();
 	if (conn < 0) {
-		bgtk_log_errno("bgce_connect");
+		bgtk_log_errno("bgce_connect (is bgce running?)");
 		return 1;
 	}
+	bgtk_log("bgce_connect ok fd=%d", conn);
 
 	struct ServerInfo info;
-	bgce_get_server_info(conn, &info);
+	if (bgce_get_server_info(conn, &info) != 0)
+		bgtk_log("bgce_get_server_info failed (continuing)");
+	else
+		bgtk_log("server display %ux%u", info.width, info.height);
 
 	struct BufferRequest req = { .width = 700, .height = 480 };
 	void *buf = bgce_get_buffer(conn, req);
@@ -1621,19 +1627,24 @@ int main(void)
 		bgce_disconnect(conn);
 		return 1;
 	}
+	bgtk_log("bgce_get_buffer ok %p", buf);
 
 	struct BGTK_Context *c = bgtk_init(conn, buf, 700, 480);
 	if (!c) {
-		bgtk_log("bgtk_init failed");
+		bgtk_log("bgtk_init failed — check fonts / FreeType");
 		bgce_disconnect(conn);
 		return 1;
 	}
 
 	struct config config;
 	parse_config(&config);
+	bgtk_log("bgtk.conf loaded; overlaying bgce.conf");
 	/* Full BGCE file: background + cursors + shortcuts. */
 	load_bgce_config(&config);
+	bgtk_log("building UI %dx%d", 700, 480);
 	settings_build_ui(c, &config, 700, 480);
+	bgtk_log("UI ready; entering main loop");
+	bgtk_log_flush();
 
 	struct BGCEMessage msg;
 	while (bgce_recv_msg(conn, &msg) > 0) {

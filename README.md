@@ -120,17 +120,25 @@ Colors use `#RRGGBB` or `#RRGGBBAA` format. Lines starting with `#` or `;` are c
 
 ### Logging
 
-Each process writes a dedicated log under `~/.cache/bgtk/` (or `$XDG_CACHE_HOME/bgtk/`), separate from BGCE server logs:
+Each process writes a dedicated log under `~/.cache/bgtk/` (or `$XDG_CACHE_HOME/bgtk/`), separate from BGCE server logs. Startup prints the path to stderr (when available). Crashes (SIGSEGV/ABRT/…) append a last line and backtrace to the same file.
 
 | Process | Log file |
 |---------|----------|
 | library fallback | `~/.cache/bgtk/bgtk.log` |
 | `terminal` | `~/.cache/bgtk/terminal.log` |
 | `launcher` | `~/.cache/bgtk/launcher.log` |
+| `settings` | `~/.cache/bgtk/settings.log` |
+| `sys_status` | `~/.cache/bgtk/sys_status.log` |
 | `test_app` | `~/.cache/bgtk/test_app.log` |
 | … | `~/.cache/bgtk/<app_name>.log` |
 
-Apps call `bgtk_log_open("app_name")` at startup; use `bgtk_log()` / `bgtk_log_errno()` for diagnostics.
+```sh
+# After a crash or silent exit:
+tail -50 ~/.cache/bgtk/settings.log
+# or: ls -lt ~/.cache/bgtk/
+```
+
+Apps call `bgtk_log_open("app_name")` first; use `bgtk_log()` / `bgtk_log_errno()` / `bgtk_log_die()`.
 
 
 ## Download

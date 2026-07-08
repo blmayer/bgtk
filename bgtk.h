@@ -384,12 +384,19 @@ struct BGTK_Widget {
 // --- Logging (dedicated files under ~/.cache/bgtk/, not shared with BGCE) ---
 // Open $XDG_CACHE_HOME/bgtk/<app_name>.log (or ~/.cache/bgtk/...). Creates dirs.
 // Call once at process start with a per-app name (e.g. "terminal", "launcher").
+// Installs SIGSEGV/ABRT/BUS/FPE/ILL handlers that append a last line to the log.
 // Library code uses "bgtk" if nothing was opened yet.
 void bgtk_log_open(const char *app_name);
 // Timestamped line to the app log (and stderr). Safe before bgtk_log_open.
 void bgtk_log(const char *fmt, ...);
 // Like bgtk_log but appends ": <strerror(errno)>" for the current errno.
 void bgtk_log_errno(const char *fmt, ...);
+// Force flush log file + stderr (call before risky work or after fatal errors).
+void bgtk_log_flush(void);
+// Path of the open log file, or NULL if logging only to stderr.
+const char *bgtk_log_path(void);
+// Log a fatal line, flush, then exit(status). Use instead of silent abort.
+void bgtk_log_die(int status, const char *fmt, ...);
 
 // --- Core Functions ---
 

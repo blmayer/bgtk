@@ -852,26 +852,29 @@ int main(void)
 	int need_draw = 1;
 	struct BGTK_Widget *root;
 
+	setvbuf(stderr, NULL, _IONBF, 0);
 	bgtk_log_open("sys_status");
 	bgtk_log("starting system status");
 
 	conn = bgce_connect();
 	if (conn < 0) {
-		bgtk_log_errno("bgce_connect");
+		bgtk_log_errno("bgce_connect (is bgce running?)");
 		return 1;
 	}
+	bgtk_log("bgce_connect ok fd=%d", conn);
 	/* Bootstrap buffer so FreeType is available to measure labels. */
 	req.width = BOOT_W;
 	req.height = BOOT_H;
 	buf = bgce_get_buffer(conn, req);
 	if (!buf) {
-		bgtk_log("bgce_get_buffer failed");
+		bgtk_log("bgce_get_buffer %dx%d failed", BOOT_W, BOOT_H);
 		bgce_disconnect(conn);
 		return 1;
 	}
+	bgtk_log("bgce_get_buffer ok %p", buf);
 	ctx = bgtk_init(conn, buf, BOOT_W, BOOT_H);
 	if (!ctx) {
-		bgtk_log("bgtk_init failed");
+		bgtk_log("bgtk_init failed — check fonts / FreeType");
 		bgce_disconnect(conn);
 		return 1;
 	}
