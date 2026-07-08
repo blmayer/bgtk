@@ -187,6 +187,35 @@ int main(void)
 	}
 	snap(ctx, img, ts, width, height, "term_04_scroll.png");
 
+	/* --- Test 5b: scrollback view (mouse-wheel / PageUp equivalent) */
+	{
+		int before_sb = ts->sb_len;
+		int before_off = ts->view_off;
+
+		if (before_sb < 1) {
+			fprintf(stderr,
+				"test_terminal: expected scrollback after "
+				"overflow, sb_len=%d\n",
+				before_sb);
+			return 1;
+		}
+		if (!term_view_scroll(ts, 3) || ts->view_off != 3) {
+			fprintf(stderr,
+				"test_terminal: view_scroll up failed "
+				"off %d->%d sb=%d\n",
+				before_off, ts->view_off, ts->sb_len);
+			return 1;
+		}
+		snap(ctx, img, ts, width, height, "term_04b_scrollback.png");
+		if (!term_view_to_bottom(ts) || ts->view_off != 0) {
+			fprintf(stderr,
+				"test_terminal: view_to_bottom failed off=%d\n",
+				ts->view_off);
+			return 1;
+		}
+		snap(ctx, img, ts, width, height, "term_04c_scrollback_bottom.png");
+	}
+
 	/* --- Test 6: colour matrix ------------------------------------- */
 	term_feed(ts, "\033[2J\033[H", -1);
 	for (int fg = 30; fg <= 37; fg++) {

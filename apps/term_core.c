@@ -40,14 +40,22 @@ static struct Term_Cell default_cell(void)
 /* Create / destroy                                                   */
 /* ------------------------------------------------------------------ */
 
+#ifndef TERM_SCROLLBACK_LINES
+#define TERM_SCROLLBACK_LINES 2000
+#endif
+
 struct Term_State *term_create(int cols, int rows)
 {
 	struct Term_State *t = calloc(1, sizeof(*t));
-	if (!t) return NULL;
+	if (!t)
+		return NULL;
 	t->cols = cols;
 	t->rows = rows;
 	t->cells = calloc((size_t)cols * rows, sizeof(struct Term_Cell));
-	if (!t->cells) { free(t); return NULL; }
+	if (!t->cells) {
+		free(t);
+		return NULL;
+	}
 	for (int i = 0; i < cols * rows; i++)
 		t->cells[i] = default_cell();
 	t->cur_fg = 7;
@@ -55,18 +63,32 @@ struct Term_State *term_create(int cols, int rows)
 	t->scroll_bot = rows - 1;
 	t->pty_fd = -1;
 	memcpy(t->palette, default_palette, sizeof(default_palette));
+	t->sb_cap = TERM_SCROLLBACK_LINES;
+	t->sb = calloc((size_t)t->sb_cap * (size_t)cols, sizeof(struct Term_Cell));
+	if (!t->sb) {
+		/* Scrollback optional — terminal still works without it. */
+		t->sb_cap = 0;
+	}
+	t->sb_len = 0;
+	t->sb_start = 0;
+	t->view_off = 0;
 	return t;
 }
 
 void term_destroy(struct Term_State *t)
 {
-	if (!t) return;
+	if (!t)
+		return;
 	free(t->cells);
+	free(t->sb);
 	free(t);
 }
 
 int term_resize(struct Term_State *t, int cols, int rows)
 {
+	struct Term_Cell *nc, *nsb = NULL;
+	int copy_c, copy_r, r, c, i;
+
 	if (!t)
 		return -1;
 	if (cols < 1)
@@ -76,14 +98,14 @@ int term_resize(struct Term_State *t, int cols, int rows)
 	if (cols == t->cols && rows == t->rows)
 		return 0;
 
-	struct Term_Cell *nc = calloc((size_t)cols * (size_t)rows, sizeof(*nc));
+	nc = calloc((size_t)cols * (size_t)rows, sizeof(*nc));
 	if (!nc)
 		return -1;
 
-	int copy_c = cols < t->cols ? cols : t->cols;
-	int copy_r = rows < t->rows ? rows : t->rows;
-	for (int r = 0; r < rows; r++) {
-		for (int c = 0; c < cols; c++) {
+	copy_c = cols < t->cols ? cols : t->cols;
+	copy_r = rows < t->rows ? rows : t->rows;
+	for (r = 0; r < rows; r++) {
+		for (c = 0; c < cols; c++) {
 			if (r < copy_r && c < copy_c)
 				nc[r * cols + c] = t->cells[r * t->cols + c];
 			else
@@ -92,6 +114,37 @@ int term_resize(struct Term_State *t, int cols, int rows)
 	}
 	free(t->cells);
 	t->cells = nc;
+
+	/* Rebuild scrollback ring for the new column width. */
+	if (t->sb_cap > 0) {
+		nsb = calloc((size_t)t->sb_cap * (size_t)cols, sizeof(*nsb));
+		if (nsb) {
+			int old_cols = t->cols;
+			for (i = 0; i < t->sb_len; i++) {
+				int src = (t->sb_start + i) % t->sb_cap;
+				struct Term_Cell *srow =
+					t->sb + (size_t)src * (size_t)old_cols;
+				struct Term_Cell *drow =
+					nsb + (size_t)i * (size_t)cols;
+				for (c = 0; c < cols; c++) {
+					if (c < old_cols)
+						drow[c] = srow[c];
+					else
+						drow[c] = default_cell();
+				}
+			}
+			free(t->sb);
+			t->sb = nsb;
+			t->sb_start = 0;
+		} else {
+			free(t->sb);
+			t->sb = NULL;
+			t->sb_cap = 0;
+			t->sb_len = 0;
+			t->sb_start = 0;
+		}
+	}
+
 	t->cols = cols;
 	t->rows = rows;
 	if (t->cur_col >= cols)
@@ -100,6 +153,8 @@ int term_resize(struct Term_State *t, int cols, int rows)
 		t->cur_row = rows - 1;
 	t->scroll_top = 0;
 	t->scroll_bot = rows - 1;
+	if (t->view_off > t->sb_len)
+		t->view_off = t->sb_len;
 	return 0;
 }
 
@@ -110,6 +165,86 @@ int term_resize(struct Term_State *t, int cols, int rows)
 static struct Term_Cell *cell_at(struct Term_State *t, int col, int row)
 {
 	return &t->cells[row * t->cols + col];
+}
+
+/* Push a full screen row into scrollback (oldest may drop). */
+static void sb_push_row(struct Term_State *t, const struct Term_Cell *row)
+{
+	int dst;
+
+	if (!t || !t->sb || t->sb_cap < 1 || !row)
+		return;
+	if (t->sb_len < t->sb_cap) {
+		dst = (t->sb_start + t->sb_len) % t->sb_cap;
+		memcpy(t->sb + (size_t)dst * (size_t)t->cols, row,
+		       (size_t)t->cols * sizeof(struct Term_Cell));
+		t->sb_len++;
+	} else {
+		/* Overwrite oldest; advance start. */
+		dst = t->sb_start;
+		memcpy(t->sb + (size_t)dst * (size_t)t->cols, row,
+		       (size_t)t->cols * sizeof(struct Term_Cell));
+		t->sb_start = (t->sb_start + 1) % t->sb_cap;
+	}
+	/* Keep view pinned to bottom while live output scrolls. */
+	if (t->view_off == 0)
+		return;
+	/* If user is scrolled up, stay relative to history (optional stick).
+	 * Prefer jump-to-bottom on new output so shell output is visible. */
+	t->view_off = 0;
+}
+
+/* Cell for viewport row r (0..rows-1) given view_off into scrollback. */
+static struct Term_Cell get_visible_cell(struct Term_State *t, int col, int row)
+{
+	int first_abs, abs, hist_i;
+
+	if (!t || col < 0 || col >= t->cols || row < 0 || row >= t->rows)
+		return default_cell();
+	/* Absolute: history [0..sb_len), live screen [sb_len..sb_len+rows). */
+	first_abs = t->sb_len - t->view_off;
+	abs = first_abs + row;
+	if (abs < 0)
+		return default_cell();
+	if (abs < t->sb_len) {
+		if (!t->sb || t->sb_cap < 1)
+			return default_cell();
+		hist_i = (t->sb_start + abs) % t->sb_cap;
+		return t->sb[(size_t)hist_i * (size_t)t->cols + (size_t)col];
+	}
+	abs -= t->sb_len;
+	if (abs >= 0 && abs < t->rows)
+		return *cell_at(t, col, abs);
+	return default_cell();
+}
+
+int term_view_scroll(struct Term_State *t, int delta_lines)
+{
+	int old, max_off;
+
+	if (!t || delta_lines == 0)
+		return 0;
+	max_off = t->sb_len;
+	if (max_off < 0)
+		max_off = 0;
+	old = t->view_off;
+	t->view_off += delta_lines;
+	if (t->view_off < 0)
+		t->view_off = 0;
+	if (t->view_off > max_off)
+		t->view_off = max_off;
+	return t->view_off != old;
+}
+
+int term_view_to_bottom(struct Term_State *t)
+{
+	int old;
+
+	if (!t)
+		return 0;
+	old = t->view_off;
+	t->view_off = 0;
+	return old != 0;
 }
 
 static void scroll_up(struct Term_State *t)
@@ -123,6 +258,9 @@ static void scroll_up(struct Term_State *t)
 		bot = t->rows - 1;
 	if (top >= bot)
 		return;
+	/* Full primary screen scroll: line leaving the top goes to history. */
+	if (top == 0 && bot == t->rows - 1)
+		sb_push_row(t, &t->cells[0]);
 	/* Move rows top+1..bot → top..bot-1; clear bot. Overlap-safe. */
 	row_bytes = (size_t)(bot - top) * (size_t)t->cols * sizeof(struct Term_Cell);
 	memmove(&t->cells[top * t->cols], &t->cells[(top + 1) * t->cols],
@@ -467,8 +605,8 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 	/* background (full cell rects — also clears any prior glyph bleed) */
 	for (int r = 0; r < t->rows; r++) {
 		for (int c = 0; c < t->cols; c++) {
-			struct Term_Cell *cl = cell_at(t, c, r);
-			int bi = cl->bg;
+			struct Term_Cell cl = get_visible_cell(t, c, r);
+			int bi = cl.bg;
 			uint32_t bg;
 			int x0, y0;
 
@@ -500,7 +638,7 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 	 * overwrite neighbours (looks like "mumbled" text under vi j/k). */
 	for (int r = 0; r < t->rows; r++) {
 		for (int c = 0; c < t->cols; c++) {
-			struct Term_Cell *cl = cell_at(t, c, r);
+			struct Term_Cell cl = get_visible_cell(t, c, r);
 			int fi;
 			uint32_t fg;
 			FT_UInt gidx;
@@ -509,11 +647,11 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 			int cell_x0, cell_y0, cell_x1, cell_y1;
 			unsigned char uch;
 
-			uch = (unsigned char)cl->ch;
+			uch = (unsigned char)cl.ch;
 			if (uch <= (unsigned char)' ')
 				continue;
-			fi = cl->fg;
-			if (cl->bold && fi < 8)
+			fi = cl.fg;
+			if (cl.bold && fi < 8)
 				fi += 8;
 			if (fi < 0 || fi > 15)
 				fi = 7;
@@ -573,8 +711,8 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 		}
 	}
 
-	/* cursor (thin bar, clipped to cell) */
-	if (t->cur_row >= 0 && t->cur_row < t->rows &&
+	/* cursor only on live bottom view (not while scrolled into history) */
+	if (t->view_off == 0 && t->cur_row >= 0 && t->cur_row < t->rows &&
 	    t->cur_col >= 0 && t->cur_col < t->cols) {
 		int cx = t->cur_col * cw, cy = t->cur_row * ch;
 		int bar = cw > 2 ? 2 : 1;

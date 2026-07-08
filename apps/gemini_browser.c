@@ -427,6 +427,18 @@ static char **wrap_text(FT_Face face, const char *text, int max_width, int *nlin
 	return lines;
 }
 
+/* Drop offscreen scroll buffer so the next draw reallocates for new height. */
+static void content_scroll_invalidate_tmp(void)
+{
+	if (!content_scroll)
+		return;
+	if (content_scroll->data.scrollable.tmp) {
+		free(content_scroll->data.scrollable.tmp);
+		content_scroll->data.scrollable.tmp = NULL;
+	}
+	content_scroll->data.scrollable.widget_capacity = 0;
+}
+
 /* replace page content from gemtext body */
 static void rebuild_content_from_gemtext(const char *body)
 {
@@ -443,6 +455,7 @@ static void rebuild_content_from_gemtext(const char *body)
 		content_scroll->data.scrollable.items = NULL;
 		content_scroll->data.scrollable.widget_count = 0;
 	}
+	content_scroll_invalidate_tmp();
 	num_page_links = 0;
 
 	if (!body)
@@ -654,6 +667,7 @@ static void rebuild_content_from_gemtext(const char *body)
 	content_scroll->data.scrollable.items = new_items;
 	content_scroll->data.scrollable.widget_count = cnt;
 	content_scroll->data.scrollable.scroll_y = 0;
+	content_scroll_invalidate_tmp();
 	bgtk_log("rebuild: %d line widgets, %d links", cnt, num_page_links);
 }
 
@@ -729,6 +743,7 @@ static void load_url(const char *url)
 		content_scroll->data.scrollable.items = NULL;
 		content_scroll->data.scrollable.widget_count = 0;
 	}
+	content_scroll_invalidate_tmp();
 	num_page_links = 0;
 
 	if (feres != 0 || status / 10 != 2) {
@@ -745,6 +760,7 @@ static void load_url(const char *url)
 		content_scroll->data.scrollable.items = errs;
 		content_scroll->data.scrollable.widget_count = errs ? 1 : 0;
 		content_scroll->data.scrollable.scroll_y = 0;
+		content_scroll_invalidate_tmp();
 	} else {
 		bgtk_log("load_url: rendering success body (%zu bytes)",
 			 body ? strlen(body) : 0);
@@ -771,13 +787,6 @@ static void load_url(const char *url)
 	bgtk_log("load_url: draw complete for %s", current_url);
 }
 
-static void go_button_cb(void *userdata)
-{
-	(void)userdata;
-	if (addr_input)
-		load_url(addr_input->data.text_input.text);
-}
-
 static void addr_on_enter(void)
 {
 	if (addr_input)
@@ -792,12 +801,6 @@ int main(void)
 	struct BufferRequest req;
 	void *buffer;
 	int usable_w;
-	struct BGTK_Widget *go_label;
-	struct BGTK_Widget *go_btn;
-	int input_w;
-	struct BGTK_Widget *addr_items[2];
-	struct BGTK_Widget *addr_row;
-	int v_margins;
 	int reserved;
 	int scroll_h;
 	struct BGTK_Widget *main_items[2];
@@ -851,35 +854,23 @@ int main(void)
 		 (void *)ctx->ft_face, (void *)ctx->ft_face_mono,
 		 (void *)ctx->ft_face_serif);
 
-	usable_w = width - 20;
+	/* Frame pad 4×2; keep chrome tight so the URL bar sits near the bottom. */
+	usable_w = width - 16;
 
-	/* button first so we can size the address field to fill the row */
-	go_label = bgtk_text(ctx, "Go",
-			     (BGTK_Options){.padding = 2, .margin = 0});
-	go_btn = bgtk_button(ctx, go_label, go_button_cb, NULL,
-			     (BGTK_Options){.padding = 4, .margin = 2});
-	input_w = usable_w - go_btn->w - 16;
-	addr_input = bgtk_text_input(ctx, current_url,
-				     input_w > 100 ? input_w : 400, 0,
+	/* Full-width URL bar; Enter navigates (no Go button). */
+	addr_input = bgtk_text_input(ctx, current_url, usable_w, 0,
 				     (BGTK_Options){.padding = 4, .margin = 2});
 	addr_input->data.text_input.on_enter = addr_on_enter;
 
-	addr_items[0] = addr_input;
-	addr_items[1] = go_btn;
-	addr_row = bgtk_list(ctx, addr_items, 2,
-			     (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
-					    .padding = 2,
-					    .margin = 1});
-
 	content_scroll =
 		bgtk_scrollable(ctx, NULL, 0,
-				(BGTK_Options){.padding = 2, .margin = 3});
+				(BGTK_Options){.padding = 2, .margin = 2});
 
-	v_margins = 16;
-	reserved = (addr_row ? addr_row->h : 24) + v_margins;
-	scroll_h = height - reserved - 24;
-	if (scroll_h < 100)
-		scroll_h = 180;
+	/* Fill remaining height: frame pad + list chrome + address bar. */
+	reserved = (addr_input ? addr_input->h : 28) + 16;
+	scroll_h = height - reserved;
+	if (scroll_h < 80)
+		scroll_h = 80;
 	content_scroll->w = usable_w;
 	content_scroll->h = scroll_h;
 
@@ -894,7 +885,7 @@ int main(void)
 	}
 
 	main_items[0] = content_scroll;
-	main_items[1] = addr_row;
+	main_items[1] = addr_input;
 	main_list = bgtk_list(ctx, main_items, 2,
 			      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
 					     .padding = 2,
@@ -933,26 +924,72 @@ int main(void)
 
 		int res = 0;
 		switch (msg.type) {
-		case MSG_INPUT_EVENT:
-			if (msg.data.input_event.type == EV_REL ||
-			    msg.data.input_event.type == EV_ABS)
+		case MSG_INPUT_EVENT: {
+			struct InputEvent *ev = &msg.data.input_event;
+
+			/* Ignore pure pointer motion (not wheel). Wheel is
+			 * EV_REL/REL_WHEEL and must reach the scrollable. */
+			if (ev->type == EV_ABS)
 				break;
-			bgtk_update_modifiers(ctx, msg.data.input_event);
-			if (bgtk_is_app_quit_event(ctx,
-						   msg.data.input_event)) {
+			if (ev->type == EV_REL && ev->code != REL_WHEEL)
+				break;
+
+			bgtk_update_modifiers(ctx, *ev);
+			if (bgtk_is_app_quit_event(ctx, *ev)) {
 				bgtk_log("quit key type=%d code=%d value=%d "
 					 "mods shift=%d ctrl=%d alt=%d",
-					 msg.data.input_event.type,
-					 msg.data.input_event.code,
-					 msg.data.input_event.value,
+					 ev->type, ev->code, ev->value,
 					 ctx->shift_held, ctx->ctrl_held,
 					 ctx->alt_held);
 				quit_reason = "app quit key (Esc or Ctrl+C)";
 				goto done;
 			}
-			res = bgtk_handle_input_event(ctx,
-						      msg.data.input_event);
+
+			/* Browser chords (before text-input eats the key). */
+			if (ev->type == EV_KEY &&
+			    (ev->value == 1 || ev->value == 2)) {
+				if (ctx->ctrl_held && ev->code == KEY_L) {
+					bgtk_set_focus(ctx, addr_input);
+					res = 1;
+					break;
+				}
+				if (ctx->ctrl_held && ev->code == KEY_R) {
+					load_url(current_url);
+					res = 1;
+					break;
+				}
+				if (ev->code == KEY_ESC) {
+					if (ctx->focused_widget == addr_input) {
+						bgtk_set_focus(ctx,
+							       content_scroll);
+						res = 1;
+						break;
+					}
+				}
+				/* Scroll page when focus is not the URL field. */
+				if (content_scroll &&
+				    ctx->focused_widget != addr_input &&
+				    content_scroll->handle_event &&
+				    (ev->code == KEY_UP ||
+				     ev->code == KEY_DOWN ||
+				     ev->code == KEY_PAGEUP ||
+				     ev->code == KEY_PAGEDOWN ||
+				     ev->code == KEY_HOME ||
+				     ev->code == KEY_END ||
+				     ev->code == KEY_SPACE ||
+				     ev->code == KEY_J ||
+				     ev->code == KEY_K)) {
+					if (content_scroll->handle_event(
+						    content_scroll, *ev)) {
+						res = 1;
+						break;
+					}
+				}
+			}
+
+			res = bgtk_handle_input_event(ctx, *ev);
 			break;
+		}
 		case MSG_FOCUS_CHANGE:
 			bgtk_log("focus change state=%d",
 				 msg.data.focus_event.state);
@@ -967,6 +1004,25 @@ int main(void)
 				if (ctx->root_widget) {
 					ctx->root_widget->w = ctx->width;
 					ctx->root_widget->h = ctx->height;
+				}
+				/* Refit content + URL bar after resize. */
+				if (content_scroll && addr_input) {
+					int ah = addr_input->h > 0 ? addr_input->h
+								  : 28;
+					int sh = ctx->height - ah - 16;
+					if (sh < 80)
+						sh = 80;
+					content_scroll->w = ctx->width - 16;
+					content_scroll->h = sh;
+					addr_input->w = ctx->width - 16;
+					if (content_scroll->data.scrollable.tmp) {
+						free(content_scroll->data
+							     .scrollable.tmp);
+						content_scroll->data.scrollable
+							.tmp = NULL;
+						content_scroll->data.scrollable
+							.widget_capacity = 0;
+					}
 				}
 				bgtk_draw_widgets(ctx);
 			}

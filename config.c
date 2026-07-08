@@ -322,20 +322,26 @@ static void pick_default_font_family(char *out, size_t outlen, int family)
 void init_config_defaults(struct config *config)
 {
 	config->type = BG_COLOR;
-	/* Default "Paper" theme: warm light surface, soft chrome, readable ink. */
-	config->color = 0xFFF4F1EA;
+	/*
+	 * Default "Goldie" (sowm-inspired): mustard desktop, black floating
+	 * cards, thick warm borders, sand accent for selection/focus.
+	 */
+	config->color = 0xFFF5C078;
 
-	config->theme.background = 0xFFF4F1EA;
-	config->theme.button = 0xFFE8E2D6;
-	config->theme.button_text = 0xFF1C1917;
-	config->theme.button_border_size = 1;
-	config->theme.input_border_size = 1;
-	config->theme.frame_border_size = 2;
-	config->theme.frame_border_color = 0xFFC4B8A8;
-	config->theme.focus = 0xFFB45309;
-	config->theme.focus_bg = 0xFFFFF7ED;
-	config->theme.highlight = 0xFF78716C;
+	config->theme.background = 0xFF0A0A0A;
+	config->theme.button = 0xFF1C1814;
+	config->theme.button_text = 0xFFF5E6D3;
+	config->theme.button_border_size = 3;
+	config->theme.input_border_size = 3;
+	config->theme.frame_border_size = 6;
+	config->theme.frame_border_color = 0xFFE0A060;
+	config->theme.focus = 0xFFE0A060;
+	config->theme.focus_bg = 0xFF2A2018;
+	config->theme.input_bg = 0xFF1C1814;
+	config->theme.highlight = 0xFFD4B8A0;
 	config->theme.text_baseline_offset = 0;
+	config->theme.margin = 6;
+	config->theme.padding = 8;
 
 	/* Font defaults under [font]: sans, mono, serif, size. */
 	config->font_sans_path[0] = '\0';
@@ -343,9 +349,9 @@ void init_config_defaults(struct config *config)
 	config->font_serif_path[0] = '\0';
 	config->font_size = 14;
 
-	// Background image fields (safe defaults)
+	// Background image fields (safe defaults; mode matches BGCE default)
 	config->path[0] = '\0';
-	config->mode = IMAGE_TILED;
+	config->mode = IMAGE_SCALED;
 
 	pick_default_font_family(config->font_sans_path, MAX_PATH_LEN,
 				 FONT_FAMILY_SANS);
@@ -420,10 +426,14 @@ int write_config(const struct config *config)
 	fprintf(f, "focus = %s\n", c);
 	format_hex_color(config->theme.focus_bg, c, sizeof(c));
 	fprintf(f, "focus_bg = %s\n", c);
+	format_hex_color(config->theme.input_bg, c, sizeof(c));
+	fprintf(f, "input_bg = %s\n", c);
 	format_hex_color(config->theme.highlight, c, sizeof(c));
 	fprintf(f, "highlight = %s\n", c);
 	fprintf(f, "text_baseline_offset = %d\n",
 		config->theme.text_baseline_offset);
+	fprintf(f, "margin = %d\n", config->theme.margin);
+	fprintf(f, "padding = %d\n", config->theme.padding);
 
 	fprintf(f, "\n[font]\n");
 	if (config->font_sans_path[0])
@@ -496,12 +506,11 @@ int parse_config(struct config *config)
 			} else if (strcmp(key, "color") == 0 &&
 				   config->type == BG_COLOR) {
 				config->color = parse_hex_color(value);
-			} else if (strcmp(key, "path") == 0 &&
-				   config->type == BG_IMAGE) {
+			} else if (strcmp(key, "path") == 0) {
+				/* Accept path even if type= comes later (BGCE order). */
 				strncpy(config->path, value, MAX_PATH_LEN - 1);
 				config->path[MAX_PATH_LEN - 1] = '\0';
-			} else if (strcmp(key, "mode") == 0 &&
-				   config->type == BG_IMAGE) {
+			} else if (strcmp(key, "mode") == 0) {
 				if (strcmp(value, "tiled") == 0) {
 					config->mode = IMAGE_TILED;
 				} else if (strcmp(value, "scaled") == 0) {
@@ -530,10 +539,16 @@ int parse_config(struct config *config)
 				config->theme.focus = parse_hex_color(value);
 			} else if (strcmp(key, "focus_bg") == 0) {
 				config->theme.focus_bg = parse_hex_color(value);
+			} else if (strcmp(key, "input_bg") == 0) {
+				config->theme.input_bg = parse_hex_color(value);
 			} else if (strcmp(key, "highlight") == 0) {
 				config->theme.highlight = parse_hex_color(value);
 			} else if (strcmp(key, "text_baseline_offset") == 0) {
 				config->theme.text_baseline_offset = atoi(value);
+			} else if (strcmp(key, "margin") == 0) {
+				config->theme.margin = atoi(value);
+			} else if (strcmp(key, "padding") == 0) {
+				config->theme.padding = atoi(value);
 			}
 		} else if (strcmp(current_section, "font") == 0) {
 			if (strcmp(key, "sans") == 0) {

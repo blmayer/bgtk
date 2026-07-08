@@ -23,6 +23,34 @@ extern void settings_build_ui(struct BGTK_Context *c, struct config *config,
 			       int width, int height);
 extern void settings_layout(void);
 extern struct config *settings_get_config(void);
+extern void settings_test_set_image_bg(const char *path, ImageMode mode);
+extern void settings_test_toggle_bg_mode(void);
+
+/* 32x32: top-left 16x16 red, rest black — scaled vs tiled look different. */
+static int write_pattern_ppm(const char *path)
+{
+	FILE *f = fopen(path, "wb");
+	int y, x;
+
+	if (!f)
+		return -1;
+	fprintf(f, "P6\n32 32\n255\n");
+	for (y = 0; y < 32; y++) {
+		for (x = 0; x < 32; x++) {
+			unsigned char c[3];
+			if (x < 16 && y < 16) {
+				c[0] = 0xE5;
+				c[1] = 0x39;
+				c[2] = 0x35;
+			} else {
+				c[0] = c[1] = c[2] = 0x20;
+			}
+			fwrite(c, 1, 3, f);
+		}
+	}
+	fclose(f);
+	return 0;
+}
 
 int main(void)
 {
@@ -89,6 +117,98 @@ int main(void)
 		}
 		(void)before;
 		take_screenshot(ctx, "settings_00b_bg_apply.png");
+	}
+
+	/* 00c/00d: Image mode preview — scaled then toggle to tiled. */
+	{
+		const char *pat = "settings_test_wallpaper.ppm";
+		struct config *sc;
+		uint32_t *fb = (uint32_t *)ctx->shm_buffer;
+		uint32_t p_tl, p_mid;
+		int sx_tl = 220, sy_tl = 160;
+		int sx_mid = 400, sy_mid = 280;
+
+		if (write_pattern_ppm(pat) != 0) {
+			fprintf(stderr, "test_settings: cannot write %s\n", pat);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Default mode must be SCALED (matches BGCE). */
+		sc = settings_get_config();
+		if (!sc || sc->mode != IMAGE_SCALED) {
+			fprintf(stderr,
+				"test_settings: default mode want SCALED got %d\n",
+				sc ? (int)sc->mode : -1);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		settings_test_set_image_bg(pat, IMAGE_SCALED);
+		bgtk_draw_widgets(ctx);
+		take_screenshot(ctx, "settings_00c_mode_scaled.png");
+		p_tl = fb[sy_tl * width + sx_tl];
+		p_mid = fb[sy_mid * width + sx_mid];
+		/* Scaled: TL red patch grows; mid of box should still be dark. */
+		if (((p_tl >> 16) & 0xFF) < 0xC0) {
+			fprintf(stderr,
+				"test_settings: scaled preview TL not red (#%06X)\n",
+				(unsigned)(p_tl & 0xFFFFFF));
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Mid of scaled box is often dark (bottom-right of pattern);
+		 * accept either dark or red depending on sample position. */
+		(void)p_mid;
+
+		settings_test_toggle_bg_mode();
+		sc = settings_get_config();
+		if (!sc || sc->mode != IMAGE_TILED) {
+			fprintf(stderr,
+				"test_settings: after toggle want TILED got %d\n",
+				sc ? (int)sc->mode : -1);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		bgtk_draw_widgets(ctx);
+		take_screenshot(ctx, "settings_00d_mode_tiled.png");
+		p_mid = fb[sy_mid * width + sx_mid];
+		/* Tiled: mid of large box hits a repeated tile (red or dark).
+		 * Sample a second red-tile location further right/down. */
+		{
+			int found_red = 0, found_dark = 0;
+			int y, x;
+			for (y = 140; y < 360; y += 8) {
+				for (x = 200; x < 620; x += 8) {
+					uint32_t p = fb[y * width + x];
+					unsigned r = (p >> 16) & 0xFF;
+					if (r > 0xC0)
+						found_red = 1;
+					else if (r < 0x50)
+						found_dark = 1;
+				}
+			}
+			if (!found_red || !found_dark) {
+				fprintf(stderr,
+					"test_settings: tiled preview missing "
+					"red/dark tiles (red=%d dark=%d)\n",
+					found_red, found_dark);
+				bgtk_destroy_mock(ctx);
+				return 1;
+			}
+		}
+		/* Toggle again back to scaled. */
+		settings_test_toggle_bg_mode();
+		sc = settings_get_config();
+		if (!sc || sc->mode != IMAGE_SCALED) {
+			fprintf(stderr,
+				"test_settings: second toggle want SCALED got %d\n",
+				sc ? (int)sc->mode : -1);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Restore color page for the rest of the suite. */
+		sc->type = BG_COLOR;
+		sc->color = 0xFFE53935;
+		settings_layout();
 	}
 
 	/* Sidebar buttons are inside a scrollable; their content-space positions

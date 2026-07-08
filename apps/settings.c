@@ -77,7 +77,10 @@ static struct BGTK_Widget *theme_input_border_input;
 static struct BGTK_Widget *theme_frame_color_input;
 static struct BGTK_Widget *theme_focus_input;
 static struct BGTK_Widget *theme_focus_bg_input;
+static struct BGTK_Widget *theme_input_bg_input;
 static struct BGTK_Widget *theme_highlight_input;
+static struct BGTK_Widget *theme_margin_input;
+static struct BGTK_Widget *theme_padding_input;
 
 /* Font dropdown: open for one role (sans/mono/serif) at a time. */
 static int font_dropdown_open;
@@ -830,8 +833,14 @@ static void apply_theme(void *userdata)
 		cfg.theme.focus = parse_color_input(theme_focus_input->data.text_input.text);
 	if (theme_focus_bg_input)
 		cfg.theme.focus_bg = parse_color_input(theme_focus_bg_input->data.text_input.text);
+	if (theme_input_bg_input)
+		cfg.theme.input_bg = parse_color_input(theme_input_bg_input->data.text_input.text);
 	if (theme_highlight_input)
 		cfg.theme.highlight = parse_color_input(theme_highlight_input->data.text_input.text);
+	if (theme_margin_input && theme_margin_input->data.text_input.text)
+		cfg.theme.margin = atoi(theme_margin_input->data.text_input.text);
+	if (theme_padding_input && theme_padding_input->data.text_input.text)
+		cfg.theme.padding = atoi(theme_padding_input->data.text_input.text);
 	write_config(&cfg);
 	if (ctx)
 		ctx->theme = cfg.theme;
@@ -1037,13 +1046,15 @@ static char *build_font_html(void)
 
 static char *build_theme_html(void)
 {
-	char bg[16], btn[16], btxt[16], fbc[16], foc[16], fbg[16], hi[16];
+	char bg[16], btn[16], btxt[16], fbc[16], foc[16], fbg[16], ibg[16],
+		hi[16];
 	format_hex_color(cfg.theme.background, bg, sizeof(bg));
 	format_hex_color(cfg.theme.button, btn, sizeof(btn));
 	format_hex_color(cfg.theme.button_text, btxt, sizeof(btxt));
 	format_hex_color(cfg.theme.frame_border_color, fbc, sizeof(fbc));
 	format_hex_color(cfg.theme.focus, foc, sizeof(foc));
 	format_hex_color(cfg.theme.focus_bg, fbg, sizeof(fbg));
+	format_hex_color(cfg.theme.input_bg, ibg, sizeof(ibg));
 	format_hex_color(cfg.theme.highlight, hi, sizeof(hi));
 
 	char *buf = malloc(6144);
@@ -1059,7 +1070,10 @@ static char *build_theme_html(void)
 		"<tr><td>Frame border color</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
 		"<tr><td>Focus</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
 		"<tr><td>Focus background</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
+		"<tr><td>Input background</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
 		"<tr><td>Highlight</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
+		"<tr><td>Margin</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td></tr>"
+		"<tr><td>Padding</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td></tr>"
 		"</table>"
 		"<div><button>Apply</button></div>"
 		"</body></html>",
@@ -1067,7 +1081,8 @@ static char *build_theme_html(void)
 		cfg.theme.frame_border_size,
 		cfg.theme.button_border_size,
 		cfg.theme.input_border_size,
-		fbc, foc, fbg, hi);
+		fbc, foc, fbg, ibg, hi,
+		cfg.theme.margin, cfg.theme.padding);
 	return buf;
 }
 
@@ -1099,6 +1114,74 @@ static void preview_fit(int max_w, int max_h, int *out_w, int *out_h)
 		ph = 1;
 	*out_w = pw;
 	*out_h = ph;
+}
+
+/* Render source into dest (pw x ph) like BGCE apply_background. */
+static void blit_wallpaper_preview(uint32_t *dst, int pw, int ph,
+				   const uint32_t *src, int sw, int sh,
+				   ImageMode mode)
+{
+	int x, y;
+
+	if (!dst || !src || pw < 1 || ph < 1 || sw < 1 || sh < 1)
+		return;
+	if (mode == IMAGE_TILED) {
+		for (y = 0; y < ph; y++) {
+			int sy = y % sh;
+			for (x = 0; x < pw; x++)
+				dst[y * pw + x] = src[sy * sw + (x % sw)];
+		}
+		return;
+	}
+	/* IMAGE_SCALED: stretch to fill preview (nearest). */
+	for (y = 0; y < ph; y++) {
+		int sy = (int)((long)y * sh / ph);
+		if (sy >= sh)
+			sy = sh - 1;
+		for (x = 0; x < pw; x++) {
+			int sx = (int)((long)x * sw / pw);
+			if (sx >= sw)
+				sx = sw - 1;
+			dst[y * pw + x] = src[sy * sw + sx];
+		}
+	}
+}
+
+/* Load wallpaper and paint preview buffer in scaled or tiled mode. */
+static struct BGTK_Widget *make_image_preview(int pw, int ph, const char *path,
+					     ImageMode mode)
+{
+	struct BGTK_Widget *img;
+	uint32_t *src = NULL, *dst = NULL;
+	int sw = 0, sh = 0;
+
+	if (pw < 1)
+		pw = 1;
+	if (ph < 1)
+		ph = 1;
+	if (load_image(path, &src, &sw, &sh) != 0 || !src || sw < 1 || sh < 1) {
+		free(src);
+		return NULL;
+	}
+	dst = malloc((size_t)pw * (size_t)ph * sizeof(uint32_t));
+	if (!dst) {
+		free(src);
+		return NULL;
+	}
+	blit_wallpaper_preview(dst, pw, ph, src, sw, sh, mode);
+	free(src);
+
+	img = bgtk_image(ctx, NULL, pw, ph, (BGTK_Options){.padding = 0, .margin = 4});
+	if (!img) {
+		free(dst);
+		return NULL;
+	}
+	img->data.image.pixels = dst;
+	img->data.image.img_w = pw;
+	img->data.image.img_h = ph;
+	img->w = pw + 8;
+	img->h = ph + 8;
+	return img;
 }
 
 /* Solid fill in framebuffer format 0xAARRGGBB (matches draw_rect / BGCE). */
@@ -1178,12 +1261,10 @@ static void add_bg_preview(struct BGTK_Widget *page, int panel_w, int panel_h)
 	preview_fit(max_w, max_h, &pw, &ph);
 
 	if (cfg.type == BG_IMAGE && cfg.path[0] && access(cfg.path, R_OK) == 0) {
-		preview = bgtk_image(ctx, cfg.path, pw, ph,
-				     (BGTK_Options){.padding = 0, .margin = 4});
-		if (preview) {
-			preview->w = pw + 8;
-			preview->h = ph + 8;
-		}
+		/* Preview respects cfg.mode (scaled stretch vs tile repeat). */
+		preview = make_image_preview(pw, ph, cfg.path, cfg.mode);
+		if (!preview)
+			preview = make_solid_preview(pw, ph, 0xFF333333);
 	} else if (cfg.type == BG_IMAGE) {
 		/* Image selected but missing file — dark placeholder. */
 		preview = make_solid_preview(pw, ph, 0xFF333333);
@@ -1255,7 +1336,10 @@ static void rebuild_content(void)
 	theme_bg_input = theme_btn_input = theme_btn_text_input = NULL;
 	theme_frame_border_input = theme_btn_border_input = NULL;
 	theme_input_border_input = theme_frame_color_input = NULL;
-	theme_focus_input = theme_focus_bg_input = theme_highlight_input = NULL;
+	theme_focus_input = theme_focus_bg_input = theme_input_bg_input = NULL;
+	theme_highlight_input = NULL;
+	theme_margin_input = NULL;
+	theme_padding_input = NULL;
 
 	/* Free old font cache only when leaving font page */
 	if (current_page != 3 && font_list_cache) {
@@ -1413,7 +1497,10 @@ static void rebuild_content(void)
 		theme_frame_color_input = get_input(page, 6);
 		theme_focus_input = get_input(page, 7);
 		theme_focus_bg_input = get_input(page, 8);
-		theme_highlight_input = get_input(page, 9);
+		theme_input_bg_input = get_input(page, 9);
+		theme_highlight_input = get_input(page, 10);
+		theme_margin_input = get_input(page, 11);
+		theme_padding_input = get_input(page, 12);
 		struct BGTK_Widget *b = get_button(page, 0);
 		if (b) b->data.button.callback = apply_theme;
 		break;
@@ -1551,6 +1638,25 @@ struct config *settings_get_config(void)
 {
 	return &cfg;
 }
+
+#ifdef SETTINGS_TEST_MODE
+/* Test helpers: set image wallpaper + mode and rebuild (exercises preview). */
+void settings_test_set_image_bg(const char *path, ImageMode mode)
+{
+	cfg.type = BG_IMAGE;
+	cfg.mode = mode;
+	if (path) {
+		strncpy(cfg.path, path, MAX_PATH_LEN - 1);
+		cfg.path[MAX_PATH_LEN - 1] = '\0';
+	}
+	rebuild_content();
+}
+
+void settings_test_toggle_bg_mode(void)
+{
+	toggle_bg_mode(NULL);
+}
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Real BGCE app main (Linux only)                                     */

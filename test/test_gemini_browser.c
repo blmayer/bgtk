@@ -588,30 +588,22 @@ int main(void)
 		return 1;
 	}
 
-	int usable_w = width - 20;
+	int usable_w = width - 16;
 
-	/* create button first to know its size, then size the input to make the row (address bar + button) full width */
-	struct BGTK_Widget *go_label = bgtk_text(ctx, "Go", (BGTK_Options){.padding = 2, .margin = 0});
-	struct BGTK_Widget *go_btn = bgtk_button(ctx, go_label, NULL, NULL,
-						 (BGTK_Options){.padding = 4, .margin = 2});
-	int input_w = usable_w - go_btn->w - 16;  /* leave room for row padding/margins */
-	addr_input = bgtk_text_input(ctx, "gemini://geminiprotocol.net/", input_w > 100 ? input_w : 400, 0,
+	/* Full-width URL bar; Enter navigates. */
+	addr_input = bgtk_text_input(ctx, "gemini://geminiprotocol.net/",
+				     usable_w, 0,
 				     (BGTK_Options){.padding = 4, .margin = 2});
 	addr_input->data.text_input.on_enter = demo_addr_on_enter;
 
-	struct BGTK_Widget *addr_items[2] = {addr_input, go_btn};
-	struct BGTK_Widget *addr_row = bgtk_list(ctx, addr_items, 2,
-						 (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .padding = 2, .margin = 1});
-
-	content_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 2, .margin = 3});
-	int v_margins = 16;
-	int reserved = (addr_row ? addr_row->h : 24) + v_margins;
-	int scroll_h = height - reserved - 24;
-	if (scroll_h < 100) scroll_h = 180;
+	content_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 2, .margin = 2});
+	int reserved = (addr_input->h > 0 ? addr_input->h : 28) + 16;
+	int scroll_h = height - reserved;
+	if (scroll_h < 80) scroll_h = 80;
 	content_scroll->w = usable_w;
 	content_scroll->h = scroll_h;
 
-	struct BGTK_Widget *main_items[2] = {content_scroll, addr_row};
+	struct BGTK_Widget *main_items[2] = {content_scroll, addr_input};
 	struct BGTK_Widget *main_list = bgtk_list(ctx, main_items, 2,
 						  (BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .padding = 2, .margin = 2});
 
@@ -624,6 +616,74 @@ int main(void)
 	load_real_url("gemini://geminiprotocol.net/");
 	bgtk_draw_widgets(ctx);
 	take_screenshot(ctx, "gemini_browser_00_real_capsule.png");
+
+	/* Wheel scroll: force a short viewport so content is taller. */
+	{
+		int before, after;
+		struct InputEvent w = {0};
+
+		content_scroll->h = 180;
+		if (content_scroll->data.scrollable.tmp) {
+			free(content_scroll->data.scrollable.tmp);
+			content_scroll->data.scrollable.tmp = NULL;
+			content_scroll->data.scrollable.widget_capacity = 0;
+		}
+		bgtk_draw_widgets(ctx);
+		before = content_scroll->data.scrollable.scroll_y;
+		w.type = EV_REL;
+		w.code = REL_WHEEL;
+		w.value = -3; /* scroll down */
+		w.x = content_scroll->x + content_scroll->w / 2;
+		w.y = content_scroll->y + 40;
+		if (!bgtk_inject_event(ctx, w)) {
+			fprintf(stderr,
+				"test_gemini_browser: wheel not handled "
+				"(content_h=%d view_h=%d)\n",
+				content_scroll->data.scrollable.content_height,
+				content_scroll->h);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		after = content_scroll->data.scrollable.scroll_y;
+		if (after <= before) {
+			fprintf(stderr,
+				"test_gemini_browser: scroll_y %d -> %d "
+				"(content_h=%d)\n",
+				before, after,
+				content_scroll->data.scrollable.content_height);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Keyboard page-down also scrolls when content is focused. */
+		bgtk_set_focus(ctx, content_scroll);
+		{
+			struct InputEvent k = {0};
+			int y0 = content_scroll->data.scrollable.scroll_y;
+			k.type = EV_KEY;
+			k.code = KEY_PAGEDOWN;
+			k.value = 1;
+			if (!bgtk_inject_event(ctx, k) ||
+			    content_scroll->data.scrollable.scroll_y <= y0) {
+				fprintf(stderr,
+					"test_gemini_browser: PageDown scroll "
+					"failed (%d -> %d)\n",
+					y0,
+					content_scroll->data.scrollable.scroll_y);
+				bgtk_destroy_mock(ctx);
+				return 1;
+			}
+		}
+		take_screenshot(ctx, "gemini_browser_00b_scrolled.png");
+		/* Restore full height for the rest of the suite. */
+		content_scroll->h = scroll_h;
+		if (content_scroll->data.scrollable.tmp) {
+			free(content_scroll->data.scrollable.tmp);
+			content_scroll->data.scrollable.tmp = NULL;
+			content_scroll->data.scrollable.widget_capacity = 0;
+		}
+		content_scroll->data.scrollable.scroll_y = 0;
+		bgtk_draw_widgets(ctx);
+	}
 
 	/* Focus the address bar (real UI element) */
 	{

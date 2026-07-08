@@ -17,6 +17,8 @@
 #define EV_ABS 3
 
 /* Relative axes */
+#define REL_X     0
+#define REL_Y     1
 #define REL_WHEEL 8
 
 /* Buttons (normally BTN_LEFT etc.) */

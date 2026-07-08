@@ -332,6 +332,8 @@ struct BGTK_Widget {
 			void *cb_data;  // user data forwarded to callback
 			int pressed;  // non-zero while mouse button is held down on this widget
 			uint32_t bg_override;  // 0 = use theme, non-zero = custom bg color
+			/* -1 = theme.button_border_size; >=0 forces this border width. */
+			int border_w;
 		} button;
 		struct {
 			char* text;

@@ -339,7 +339,23 @@ int main(void)
 				int mods;
 				char out[8];
 				int n;
+				int need_draw = 0;
 
+				/* Mouse wheel → scrollback view (not PTY). */
+				if (ev->type == EV_REL &&
+				    ev->code == REL_WHEEL) {
+					/* value>0 = wheel up = older history */
+					int lines = ev->value * 3;
+					if (lines == 0)
+						break;
+					if (term_view_scroll(ts, lines)) {
+						term_render(ts, ctx,
+							    img->data.image.pixels,
+							    inner_w, inner_h);
+						bgtk_draw_widgets(ctx);
+					}
+					break;
+				}
 				if (ev->type != EV_KEY)
 					break;
 				/* Ignore input while unfocused (stale mod
@@ -364,7 +380,46 @@ int main(void)
 				 * on release. */
 				if (ev->value != 1 && ev->value != 2)
 					break;
+
+				/* Shift+PageUp/PageDown or PageUp/Down:
+				 * scroll history without sending to the shell. */
 				mods = bgtk_mods_from_ctx(ctx);
+				if (ev->code == KEY_PAGEUP ||
+				    ev->code == KEY_PAGEDOWN) {
+					int delta = (ev->code == KEY_PAGEUP)
+							    ? ts->rows
+							    : -ts->rows;
+					if (delta == 0)
+						delta = (ev->code == KEY_PAGEUP)
+								? 1
+								: -1;
+					if (term_view_scroll(ts, delta)) {
+						term_render(ts, ctx,
+							    img->data.image.pixels,
+							    inner_w, inner_h);
+						bgtk_draw_widgets(ctx);
+					}
+					break;
+				}
+				/* Shift+Up/Down: line-wise history scroll. */
+				if ((mods & BGTK_MOD_SHIFT) &&
+				    (ev->code == KEY_UP ||
+				     ev->code == KEY_DOWN)) {
+					int delta =
+						(ev->code == KEY_UP) ? 1 : -1;
+					if (term_view_scroll(ts, delta)) {
+						term_render(ts, ctx,
+							    img->data.image.pixels,
+							    inner_w, inner_h);
+						bgtk_draw_widgets(ctx);
+					}
+					break;
+				}
+
+				/* Typing returns to live bottom, then to PTY. */
+				if (term_view_to_bottom(ts))
+					need_draw = 1;
+
 				n = bgtk_key_to_bytes(ev->code, mods,
 						      BGTK_KEY_TTY, out,
 						      sizeof(out));
@@ -390,6 +445,12 @@ int main(void)
 				 * sticky mod so the next j/k is a plain letter. */
 				if (ev->code == KEY_ESC)
 					bgtk_clear_modifiers(ctx);
+				if (need_draw) {
+					term_render(ts, ctx,
+						    img->data.image.pixels,
+						    inner_w, inner_h);
+					bgtk_draw_widgets(ctx);
+				}
 				break;
 			}
 			case MSG_FOCUS_CHANGE:

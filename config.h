@@ -34,10 +34,15 @@ typedef struct {
 	uint32_t focus;
 	/* Focused text-input field fill. */
 	uint32_t focus_bg;
-	/* Accent: headers, links, selected chrome (replaces hard-coded fuchsia/blue). */
+	/* Unfocused text-input field fill. */
+	uint32_t input_bg;
+	/* Accent: headers, links, selected list rows. */
 	uint32_t highlight;
 	/* Global FreeType baseline tweak (px; added after per-widget baseline_offset). */
 	int text_baseline_offset;
+	/* Default external / internal spacing apps should use for chrome. */
+	int margin;
+	int padding;
 } BGTK_Theme;
 
 // Config structure

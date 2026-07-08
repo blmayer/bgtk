@@ -85,41 +85,105 @@ static void update_matches(const char* prefix)
 	selected = num_matches > 0 ? 0 : -1;
 }
 
+static void on_enter_pressed(void);
+
+/* Click a match row: select + launch (file-list style). */
+static void match_row_cb(void *userdata)
+{
+	int i = (int)(intptr_t)userdata;
+	if (i < 0 || i >= num_matches)
+		return;
+	selected = i;
+	on_enter_pressed();
+}
+
 static void rebuild_matches_ui(void)
 {
-	if (!matches_scroll)
+	int pad, mar, row_w, i, n;
+	struct BGTK_Widget **items;
+
+	if (!matches_scroll || !ctx)
 		return;
 
-	int oldc = matches_scroll->data.scrollable.widget_count;
-	for (int i = 0; i < oldc; i++) {
-		struct BGTK_Widget* tw = matches_scroll->data.scrollable.items[i];
-		if (tw) {
-			free(tw->data.text.text);
-			free(tw);
+	/* Free old rows (buttons own their label text widgets). */
+	{
+		int oldc = matches_scroll->data.scrollable.widget_count;
+		for (i = 0; i < oldc; i++) {
+			struct BGTK_Widget *row =
+				matches_scroll->data.scrollable.items[i];
+			if (!row)
+				continue;
+			if (row->type == BGTK_WIDGET_BUTTON &&
+			    row->data.button.label) {
+				struct BGTK_Widget *lab = row->data.button.label;
+				if (lab->type == BGTK_WIDGET_TEXT &&
+				    lab->data.text.text)
+					free(lab->data.text.text);
+				free(lab);
+			} else if (row->type == BGTK_WIDGET_TEXT &&
+				   row->data.text.text) {
+				free(row->data.text.text);
+			}
+			free(row);
+		}
+		free(matches_scroll->data.scrollable.items);
+		matches_scroll->data.scrollable.items = NULL;
+		matches_scroll->data.scrollable.widget_count = 0;
+		if (matches_scroll->data.scrollable.tmp) {
+			free(matches_scroll->data.scrollable.tmp);
+			matches_scroll->data.scrollable.tmp = NULL;
+			matches_scroll->data.scrollable.widget_capacity = 0;
 		}
 	}
-	free(matches_scroll->data.scrollable.items);
-	matches_scroll->data.scrollable.items = NULL;
-	matches_scroll->data.scrollable.widget_count = 0;
 
-	int n = num_matches;
+	n = num_matches;
 	if (n < 1) {
 		bgtk_draw_widgets(ctx);
 		return;
 	}
 
-	struct BGTK_Widget** items = calloc(n, sizeof(struct BGTK_Widget*));
+	items = calloc((size_t)n, sizeof(struct BGTK_Widget *));
 	if (!items)
 		return;
 
-	for (int i = 0; i < n; i++) {
-		char label[128];
-		const char* name = match_ptrs[i];
-		if (i == selected)
-			snprintf(label, sizeof(label), "\xe2\x96\xb6 %s", name);
+	pad = ctx->theme.padding > 0 ? ctx->theme.padding : 8;
+	mar = 0;
+	row_w = matches_scroll->w > 40 ? matches_scroll->w - 8 : 400;
+
+	/*
+	 * sowm-style file list: full-width borderless rows on the panel
+	 * background; selected row uses theme.highlight fill (soft sand).
+	 */
+	for (i = 0; i < n; i++) {
+		struct BGTK_Widget *lab;
+		struct BGTK_Widget *row;
+		const char *name = match_ptrs[i];
+		int sel = (i == selected);
+
+		lab = bgtk_text(ctx, (char *)name,
+				(BGTK_Options){.padding = 2, .margin = 0});
+		if (!lab)
+			continue;
+		row = bgtk_button(ctx, lab, match_row_cb,
+				  (void *)(intptr_t)i,
+				  (BGTK_Options){.padding = pad / 2 + 2,
+						 .margin = mar});
+		if (!row) {
+			free(lab->data.text.text);
+			free(lab);
+			continue;
+		}
+		row->w = row_w;
+		row->data.button.border_w = 0;
+		if (sel)
+			row->data.button.bg_override = ctx->theme.highlight
+							       ? ctx->theme.highlight
+							       : 0xFFD4B8A0;
 		else
-			snprintf(label, sizeof(label), "  %s", name);
-		items[i] = bgtk_text(ctx, label, (BGTK_Options){.padding = 1, .margin = 0});
+			row->data.button.bg_override = ctx->theme.background
+							       ? ctx->theme.background
+							       : 0xFF0A0A0A;
+		items[i] = row;
 	}
 
 	matches_scroll->data.scrollable.items = items;
@@ -194,11 +258,17 @@ static void on_enter_pressed(void)
 /* Size input + match list to fill the current window. */
 static void layout_launcher(void)
 {
+	int pad, mar, bw, inner_w, inner_h, input_h;
+
 	if (!ctx)
 		return;
-	int pad = 8;
-	int inner_w = ctx->width - 2 * pad;
-	int inner_h = ctx->height - 2 * pad;
+	pad = ctx->theme.padding > 0 ? ctx->theme.padding : 8;
+	mar = ctx->theme.margin > 0 ? ctx->theme.margin : 6;
+	bw = (int)ctx->theme.frame_border_size;
+	if (bw < 0)
+		bw = 0;
+	inner_w = ctx->width - 2 * (pad + bw + mar);
+	inner_h = ctx->height - 2 * (pad + bw + mar);
 	if (inner_w < 40)
 		inner_w = 40;
 	if (inner_h < 40)
@@ -206,12 +276,11 @@ static void layout_launcher(void)
 
 	if (text_input) {
 		text_input->w = inner_w;
-		/* height stays content-sized; force a sensible min */
 		if (text_input->h < 28)
 			text_input->h = 28;
 	}
 	if (matches_scroll) {
-		int input_h = text_input ? text_input->h + 8 : 36;
+		input_h = text_input ? text_input->h + mar : 36;
 		matches_scroll->w = inner_w;
 		matches_scroll->h = inner_h - input_h;
 		if (matches_scroll->h < 40)
@@ -259,37 +328,57 @@ int main(void)
 		bgtk_log("bgtk_init failed — check fonts / log above");
 		return 1;
 	}
-	bgtk_log("building launcher UI");
+	bgtk_log("building launcher UI (goldie file-list)");
 
-	text_input = bgtk_text_input(ctx, "", 440, 0, (BGTK_Options){.padding = 6, .margin = 4});
-	if (!text_input) {
-		bgtk_log("bgtk_text_input failed");
-		return 1;
+	{
+		int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 8;
+		int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 6;
+
+		text_input = bgtk_text_input(
+			ctx, "", 440, 0,
+			(BGTK_Options){.padding = pad, .margin = mar / 2});
+		if (!text_input) {
+			bgtk_log("bgtk_text_input failed");
+			return 1;
+		}
+		text_input->data.text_input.on_change = on_text_change;
+		text_input->data.text_input.on_tab = on_tab_pressed;
+		text_input->data.text_input.on_enter = on_enter_pressed;
+
+		matches_scroll = bgtk_scrollable(
+			ctx, NULL, 0,
+			(BGTK_Options){.padding = pad / 2, .margin = mar / 2});
+		if (!matches_scroll) {
+			bgtk_log("bgtk_scrollable failed");
+			return 1;
+		}
+
+		{
+			struct BGTK_Widget *layout_items[2] = { text_input,
+							       matches_scroll };
+			struct BGTK_Widget *layout = bgtk_list(
+				ctx, layout_items, 2,
+				(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+					       .margin = mar / 2,
+					       .padding = 0});
+			struct BGTK_Widget *frame;
+
+			if (!layout) {
+				bgtk_log("bgtk_list failed");
+				return 1;
+			}
+			/* Thick gold frame around the black list panel. */
+			frame = bgtk_frame(ctx, layout, width, height,
+					  (BGTK_Options){.padding = pad,
+							 .margin = 0});
+			if (!frame) {
+				bgtk_log("bgtk_frame failed");
+				return 1;
+			}
+			ctx->root_widget = frame;
+		}
 	}
-	text_input->data.text_input.on_change = on_text_change;
-	text_input->data.text_input.on_tab = on_tab_pressed;
-	text_input->data.text_input.on_enter = on_enter_pressed;
 
-	matches_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 4});
-	if (!matches_scroll) {
-		bgtk_log("bgtk_scrollable failed");
-		return 1;
-	}
-
-	struct BGTK_Widget* layout_items[2] = {text_input, matches_scroll};
-	struct BGTK_Widget* layout = bgtk_list(ctx, layout_items, 2, (BGTK_Options){.orientation = BGTK_LIST_VERTICAL});
-	if (!layout) {
-		bgtk_log("bgtk_list failed");
-		return 1;
-	}
-
-	struct BGTK_Widget* frame = bgtk_frame(ctx, layout, width, height, (BGTK_Options){.padding = 8});
-	if (!frame) {
-		bgtk_log("bgtk_frame failed");
-		return 1;
-	}
-
-	ctx->root_widget = frame;
 	layout_launcher();
 	bgtk_log("first draw / focus");
 	bgtk_log_flush();
@@ -320,17 +409,39 @@ int main(void)
 
 		int need_draw = 0;
 		switch (msg.type) {
-		case MSG_INPUT_EVENT:
-			if (msg.data.input_event.type == EV_REL ||
-			    msg.data.input_event.type == EV_ABS)
+		case MSG_INPUT_EVENT: {
+			struct InputEvent *ev = &msg.data.input_event;
+
+			/* Allow wheel scroll on the match list. */
+			if (ev->type == EV_ABS)
 				break;
-			bgtk_update_modifiers(ctx, msg.data.input_event);
-			if (bgtk_is_app_quit_event(ctx, msg.data.input_event)) {
+			if (ev->type == EV_REL && ev->code != REL_WHEEL)
+				break;
+			bgtk_update_modifiers(ctx, *ev);
+			if (bgtk_is_app_quit_event(ctx, *ev)) {
 				quit = 1;
 				break;
 			}
-			need_draw = bgtk_handle_input_event(ctx, msg.data.input_event);
+			/* Arrow keys move selection in the file list. */
+			if (ev->type == EV_KEY &&
+			    (ev->value == 1 || ev->value == 2) &&
+			    num_matches > 0) {
+				if (ev->code == KEY_DOWN ||
+				    ev->code == KEY_J) {
+					selected = (selected + 1) % num_matches;
+					rebuild_matches_ui();
+					break;
+				}
+				if (ev->code == KEY_UP || ev->code == KEY_K) {
+					selected = (selected - 1 + num_matches) %
+						   num_matches;
+					rebuild_matches_ui();
+					break;
+				}
+			}
+			need_draw = bgtk_handle_input_event(ctx, *ev);
 			break;
+		}
 		case MSG_FOCUS_CHANGE:
 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
 			need_draw = 1;

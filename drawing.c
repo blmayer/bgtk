@@ -67,15 +67,29 @@ void clear_buffer(struct BGTK_Context *ctx)
 void draw_rect(struct BGTK_Context *ctx, uint32_t *pixels, int x, int y, int w,
 	       int h, uint32_t color)
 {
-	// Basic clipping and drawing
 	int x1 = x;
 	int y1 = y;
 	int x2 = x + w;
 	int y2 = y + h;
+	int stride;
+	uint32_t c;
 
-	// TODO: stride can be of a tmp buffer != from ctx
-	int stride = ctx->width;
-	uint32_t c = (0xFFu << 24) | (color & 0x00FFFFFF);  // force full alpha for mock/PNG
+	if (!ctx || !pixels || w <= 0 || h <= 0)
+		return;
+	/* Clip to buffer — unclipped writes into BGCE mmap shm → SIGBUS. */
+	if (x1 < 0)
+		x1 = 0;
+	if (y1 < 0)
+		y1 = 0;
+	if (x2 > ctx->width)
+		x2 = ctx->width;
+	if (y2 > ctx->height)
+		y2 = ctx->height;
+	if (x1 >= x2 || y1 >= y2)
+		return;
+
+	stride = ctx->width;
+	c = (0xFFu << 24) | (color & 0x00FFFFFF);
 	for (int j = y1; j < y2; j++) {
 		for (int i = x1; i < x2; i++) {
 			pixels[j * stride + i] = c;
@@ -196,21 +210,24 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 		}
 		break;
 
-	case BGTK_WIDGET_SCROLLABLE:
+	case BGTK_WIDGET_SCROLLABLE: {
+		/* Must match draw_scrollable layout exactly:
+		 *   child.y = current_y + margin
+		 *   current_y += h + 2*margin
+		 * Underestimating height caused OOB writes into the
+		 * offscreen buffer (heap corruption / SIGBUS on shm). */
+		int cy = 0;
 		w->data.scrollable.content_height = 0;
 		for (int i = 0; i < w->data.scrollable.widget_count; i++) {
 			struct BGTK_Widget *child = w->data.scrollable.items[i];
+			if (!child)
+				continue;
 			calculate_widget_size(ctx, child);
-			w->data.scrollable.content_height +=
-			    child->h + 2 * w->margin;
+			cy += child->h + 2 * w->margin;
 		}
-
-		// Subtract the last margin (no margin after the last
-		// widget)
-		if (w->data.scrollable.widget_count > 0) {
-			w->data.scrollable.content_height -= 2 * w->margin;
-		}
+		w->data.scrollable.content_height = cy;
 		break;
+	}
 	case BGTK_WIDGET_LIST:
 		w->data.list_widget.content_width = 0;
 		w->data.list_widget.content_height = 0;
@@ -259,6 +276,13 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 		// Text input is a fixed-size widget; its size is set by
 		// the constructor (bgtk_text_input). Do not resize
 		// based on content.
+		break;
+	case BGTK_WIDGET_FRAME:
+		/* Must recurse: root is usually a frame; without this,
+		 * nested scrollables never get content_height and cannot
+		 * scroll (and their offscreen buffer is sized wrong). */
+		if (w->data.frame.child)
+			calculate_widget_size(ctx, w->data.frame.child);
 		break;
 	default:
 		break;
@@ -535,14 +559,25 @@ static void draw_button(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
 		  w->w - 2 * w->margin, w->h - 2 * w->margin, bg);
 
-	// Border
-	int bw = ctx->theme.button_border_size;
+	/* Border: per-button override (-1 = theme). */
+	int bw = w->data.button.border_w >= 0
+			 ? w->data.button.border_w
+			 : (int)ctx->theme.button_border_size;
+	if (bw < 0)
+		bw = 0;
 
-	uint32_t border = ctx->theme.button_text;
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->w - 2 * w->margin, bw, border);	// Top
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->h - bw - w->margin, w->w - 2 * w->margin, bw, border);	// Bottom
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, bw, w->h - 2 * w->margin, border);	// Left
-	draw_rect(ctx, pixels, w->x + w->w - bw - w->margin, w->y + w->margin, bw, w->h - 2 * w->margin, border);	// Right
+	if (bw > 0) {
+		uint32_t border = ctx->theme.button_text;
+		draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
+			  w->w - 2 * w->margin, bw, border);
+		draw_rect(ctx, pixels, w->x + w->margin,
+			  w->y + w->h - bw - w->margin, w->w - 2 * w->margin, bw,
+			  border);
+		draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, bw,
+			  w->h - 2 * w->margin, border);
+		draw_rect(ctx, pixels, w->x + w->w - bw - w->margin,
+			  w->y + w->margin, bw, w->h - 2 * w->margin, border);
+	}
 
 	if (w->data.button.label) {
 		int off = w->data.button.pressed ? 1 : 0;
@@ -587,50 +622,105 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 {
 	(void)pixels;
 	int content_height = w->data.scrollable.content_height;
-	if (w->h > content_height) {
-		content_height = w->h;
-	}
+	int current_y = 0;
+	int i;
+	size_t need;
+	struct BGTK_Context tmp_ctx;
+	uint32_t *buff;
+	uint32_t *tmp;
+	int dst_x0, dst_y0, copy_w, rows;
 
+	if (w->w < 1 || w->h < 1)
+		return;
+	if (content_height < w->h)
+		content_height = w->h;
+	/* Cap insane heights so (int)pixel count cannot wrap. */
+	if (content_height > 100000)
+		content_height = 100000;
+
+	/* Reallocate offscreen buffer when page content or width changes. */
+	need = (size_t)w->w * (size_t)content_height;
+	if (need == 0)
+		return;
+	if (w->data.scrollable.tmp &&
+	    (size_t)w->data.scrollable.widget_capacity != need) {
+		free(w->data.scrollable.tmp);
+		w->data.scrollable.tmp = NULL;
+		w->data.scrollable.widget_capacity = 0;
+	}
 	if (!w->data.scrollable.tmp) {
-		w->data.scrollable.tmp =
-		    calloc(w->w * content_height, sizeof(uint32_t));
+		w->data.scrollable.tmp = calloc(need, sizeof(uint32_t));
 		if (!w->data.scrollable.tmp) {
 			fprintf(stderr,
-				"Failed to allocate off-screen buffer\n");
+				"Failed to allocate off-screen buffer (%dx%d)\n",
+				w->w, content_height);
 			return;
 		}
+		/* Pixel count (fits: w*h capped above). */
+		w->data.scrollable.widget_capacity = (int)need;
 	}
-	// Draw into temp buffer with correct stride.
-	struct BGTK_Context tmp_ctx = *ctx;
+
+	tmp_ctx = *ctx;
 	tmp_ctx.width = w->w;
 	tmp_ctx.height = content_height;
+	tmp_ctx.shm_buffer = w->data.scrollable.tmp;
 
 	draw_rect(&tmp_ctx, w->data.scrollable.tmp, 0, 0, w->w, content_height,
 		  ctx->theme.background);
 
-	int current_y = 0;
-	for (int i = 0; i < w->data.scrollable.widget_count; i++) {
+	current_y = 0;
+	for (i = 0; i < w->data.scrollable.widget_count; i++) {
 		struct BGTK_Widget *child = w->data.scrollable.items[i];
+		int bottom;
 
+		if (!child)
+			continue;
 		child->x = w->margin + w->padding;
 		if (w->flags & BGTK_FLAG_CENTER) {
 			child->x =
 			    w->margin + (w->w - 2 * w->margin - child->w) / 2;
 		}
 		child->y = current_y + w->margin;
-
-		draw_widget(&tmp_ctx, child, w->data.scrollable.tmp);
+		bottom = child->y + child->h;
+		/* Skip draw if entirely past buffer (defensive). */
+		if (child->y < content_height && bottom > 0)
+			draw_widget(&tmp_ctx, child, w->data.scrollable.tmp);
 		current_y += child->h + 2 * w->margin;
 	}
 
-	uint32_t *buff = ctx->shm_buffer;
-	uint32_t *tmp = w->data.scrollable.tmp;
-	for (int row = 0; row < w->h; row++) {
-		int src_row = w->data.scrollable.scroll_y + row;
-		if (src_row < content_height) {
-			memcpy(&buff[(w->y + row) * ctx->width + w->x],
-			       &tmp[src_row * w->w], w->w * 4);
-		}
+	/* Blit visible rows into the window buffer — clip to shm bounds.
+	 * Writing past mmap'd BGCE shm is a common SIGBUS. */
+	buff = (uint32_t *)ctx->shm_buffer;
+	tmp = w->data.scrollable.tmp;
+	if (!buff || !tmp)
+		return;
+	dst_x0 = w->x;
+	dst_y0 = w->y;
+	copy_w = w->w;
+	if (dst_x0 < 0) {
+		copy_w += dst_x0;
+		dst_x0 = 0;
+	}
+	if (dst_x0 + copy_w > ctx->width)
+		copy_w = ctx->width - dst_x0;
+	if (copy_w <= 0)
+		return;
+	rows = w->h;
+	if (dst_y0 < 0) {
+		rows += dst_y0;
+		dst_y0 = 0;
+	}
+	if (dst_y0 + rows > ctx->height)
+		rows = ctx->height - dst_y0;
+	for (i = 0; i < rows; i++) {
+		int src_row = w->data.scrollable.scroll_y + (i + (dst_y0 - w->y));
+		int src_x = (dst_x0 > w->x) ? (dst_x0 - w->x) : 0;
+
+		if (src_row < 0 || src_row >= content_height)
+			continue;
+		memcpy(&buff[(dst_y0 + i) * ctx->width + dst_x0],
+		       &tmp[src_row * w->w + src_x],
+		       (size_t)copy_w * sizeof(uint32_t));
 	}
 }
 
@@ -735,7 +825,9 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	uint32_t focus = ctx->theme.focus ? ctx->theme.focus : 0xFF0066FF;
 	uint32_t focus_bg =
 		ctx->theme.focus_bg ? ctx->theme.focus_bg : 0xFFE8F2FF;
-	uint32_t field_bg = focused ? focus_bg : 0xFFFFFFFF;
+	uint32_t input_bg =
+		ctx->theme.input_bg ? ctx->theme.input_bg : 0xFFFFFFFF;
+	uint32_t field_bg = focused ? focus_bg : input_bg;
 	uint32_t border = focused ? focus : 0xFF888888;
 	uint32_t text_color = ctx->theme.button_text ?
 		ctx->theme.button_text : 0xFF111111;

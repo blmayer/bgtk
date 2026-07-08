@@ -94,7 +94,26 @@ int main(void)
 	/* Full BGTK_Theme including focus / focus_bg / highlight. */
 	static const struct theme_case cases[] = {
 		{
-			.id = "00_paper",
+			.id = "00_goldie",
+			.name = "Goldie (default)",
+			.theme = {
+				.background = 0xFF0A0A0A,
+				.button = 0xFF1C1814,
+				.button_text = 0xFFF5E6D3,
+				.frame_border_color = 0xFFE0A060,
+				.frame_border_size = 6,
+				.button_border_size = 3,
+				.input_border_size = 3,
+				.focus = 0xFFE0A060,
+				.focus_bg = 0xFF2A2018,
+				.input_bg = 0xFF1C1814,
+				.highlight = 0xFFD4B8A0,
+				.margin = 6,
+				.padding = 8,
+			},
+		},
+		{
+			.id = "00b_paper",
 			.name = "Paper",
 			.theme = {
 				.background = 0xFFF4F1EA,
@@ -107,6 +126,8 @@ int main(void)
 				.focus = 0xFFB45309,
 				.focus_bg = 0xFFFFF7ED,
 				.highlight = 0xFF78716C,
+				.margin = 4,
+				.padding = 4,
 			},
 		},
 		{

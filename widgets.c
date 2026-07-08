@@ -287,87 +287,109 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 	return 0;
 }
 
-// Scrollable event handler
-static int
-scrollable_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+/* Clamp scroll_y into [0, max]; return 1 if value changed. */
+static int scrollable_nudge(struct BGTK_Widget *widget, int delta)
 {
-	// Keyboard events don't have meaningful pointer coordinates.
-	// Forward them to children without bounds checking.
-	if (ev.type == EV_KEY && ev.code < BTN_MISC) {
+	int old = widget->data.scrollable.scroll_y;
+	int max_y = widget->data.scrollable.content_height - widget->h;
+
+	if (max_y < 0)
+		max_y = 0;
+	widget->data.scrollable.scroll_y = old + delta;
+	if (widget->data.scrollable.scroll_y < 0)
+		widget->data.scrollable.scroll_y = 0;
+	if (widget->data.scrollable.scroll_y > max_y)
+		widget->data.scrollable.scroll_y = max_y;
+	return widget->data.scrollable.scroll_y != old;
+}
+
+// Scrollable event handler
+static int scrollable_handle_event(struct BGTK_Widget *widget,
+				   struct InputEvent ev)
+{
+	int in_bounds =
+	    (ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
+	     ev.y >= widget->y && ev.y < (widget->y + widget->h));
+
+	/* Keyboard scroll when this widget (or nothing texty) has focus. */
+	if (ev.type == EV_KEY && (ev.value == 1 || ev.value == 2) &&
+	    ev.code < BTN_MISC) {
+		int step = 24;
+		int page = widget->h > 40 ? widget->h - 24 : 40;
+		int max_y = widget->data.scrollable.content_height - widget->h;
+		int handled = 0;
+
+		if (max_y < 0)
+			max_y = 0;
+		if (ev.code == KEY_DOWN || ev.code == KEY_J)
+			handled = scrollable_nudge(widget, step);
+		else if (ev.code == KEY_UP || ev.code == KEY_K)
+			handled = scrollable_nudge(widget, -step);
+		else if (ev.code == KEY_PAGEDOWN || ev.code == KEY_SPACE)
+			handled = scrollable_nudge(widget, page);
+		else if (ev.code == KEY_PAGEUP)
+			handled = scrollable_nudge(widget, -page);
+		else if (ev.code == KEY_HOME) {
+			handled = (widget->data.scrollable.scroll_y != 0);
+			widget->data.scrollable.scroll_y = 0;
+		} else if (ev.code == KEY_END) {
+			handled = (widget->data.scrollable.scroll_y != max_y);
+			widget->data.scrollable.scroll_y = max_y;
+		} else {
+			/* Forward other keys to children (e.g. link activation). */
+			for (int i = 0; i < widget->data.scrollable.widget_count;
+			     i++) {
+				struct BGTK_Widget *child =
+					widget->data.scrollable.items[i];
+				if (child->handle_event &&
+				    child->handle_event(child, ev))
+					return 1;
+			}
+			return 0;
+		}
+		/* Caller (main loop / inject) redraws — no double-draw here. */
+		return handled ? 1 : 0;
+	}
+
+	/* Wheel: allow if pointer is over us (BGCE attaches cursor x,y). */
+	if (ev.type == EV_REL && ev.code == REL_WHEEL) {
+		if (!in_bounds)
+			return 0;
+		/* value > 0 = scroll up = content moves down (smaller scroll_y) */
+		if (!scrollable_nudge(widget, -(ev.value * 32)))
+			return 0;
+		return 1;
+	}
+
+	if (!in_bounds)
+		return 0;
+
+	/* Pass pointer events to children in content coordinates. */
+	{
+		struct InputEvent cev = ev;
+		cev.x = ev.x - widget->x;
+		cev.y = ev.y - widget->y + widget->data.scrollable.scroll_y;
+
 		for (int i = 0; i < widget->data.scrollable.widget_count; i++) {
 			struct BGTK_Widget *child =
-			    widget->data.scrollable.items[i];
-			if (child->handle_event(child, ev)) {
-				return 1;	// Event was handled by a child
-			}
+				widget->data.scrollable.items[i];
+
+			if (!(cev.x >= child->x && cev.x < child->x + child->w &&
+			      cev.y >= child->y && cev.y < child->y + child->h))
+				continue;
+
+			if (child->handle_event && child->handle_event(child, cev))
+				return 1;
+			break;
 		}
 	}
-	// First check if the event is within the scrollable's bounds
-	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
-	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
-		return 0;	// Event not in this widget
-	}
-	// Pass event to child widget if it exists
-	// Events are absolute screen coordinates, while children in the
-	// scrollable are positioned in scrollable CONTENT coordinates.
-	// Transform the event into content-space before forwarding.
-	struct InputEvent cev = ev;
-	cev.x = ev.x - widget->x;
-	cev.y = ev.y - widget->y + widget->data.scrollable.scroll_y;
 
-	for (int i = 0; i < widget->data.scrollable.widget_count; i++) {
-		struct BGTK_Widget *child = widget->data.scrollable.items[i];
-
-		if (!(cev.x >= child->x && cev.x < child->x + child->w &&
-		      cev.y >= child->y && cev.y < child->y + child->h)) {
-			continue;
-		}
-
-		if (child->handle_event(child, cev)) {
-			return 1;	// Event was handled by a child
-		}
-		// Coordinates matched this child, but it didn't handle the
-		// event. The scrollable should now try to handle it.
-		break;
-	}
-
-	// Handle mouse wheel for scrolling
-	// (wheel events come in as EV_REL / REL_WHEEL)
-	if (ev.type == EV_REL && ev.code == REL_WHEEL) {
-		int old_scroll_y = widget->data.scrollable.scroll_y;
-
-		widget->data.scrollable.scroll_y -= ev.value * 10;	// Scroll speed
-
-		// Clamp scroll_y to valid range
-		if (widget->data.scrollable.scroll_y < 0) {
-			widget->data.scrollable.scroll_y = 0;
-		}
-		if (widget->data.scrollable.scroll_y >
-		    widget->data.scrollable.content_height - widget->h) {
-			widget->data.scrollable.scroll_y =
-			    widget->data.scrollable.content_height - widget->h;
-		}
-		if (widget->data.scrollable.scroll_y < 0) {
-			widget->data.scrollable.scroll_y = 0;
-		}
-
-		if (widget->data.scrollable.scroll_y == old_scroll_y) {
-			return 0;	// Nothing changed; avoid needless
-			// redraw/blink
-		}
-
-		if (widget->ctx) {
-			bgtk_draw_widgets(widget->ctx);
-		}
-		return 1;	// Event handled
-	}
-
-	if (ev.code == BTN_LEFT && ev.value == 1) {
+	if (ev.type == EV_KEY && ev.code == BTN_LEFT && ev.value == 1) {
 		bgtk_set_focus(widget->ctx, widget);
 		return 1;
 	}
 
-	return 0;		// Event not handled
+	return 0;
 }
 
 // Frame event handler
@@ -382,6 +404,10 @@ static int frame_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 			return child->handle_event(child, ev);
 		return 0;
 	}
+	/* Wheel uses absolute x,y from BGCE; forward into child tree. */
+	if (ev.type == EV_REL && ev.code == REL_WHEEL && child &&
+	    child->handle_event)
+		return child->handle_event(child, ev);
 	// First check if the event is within the frame's bounds
 	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
 	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
@@ -568,6 +594,8 @@ struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,
 	widget->data.button.cb_data = cb_data;
 	widget->data.button.label = label;
 	widget->data.button.pressed = 0;
+	widget->data.button.bg_override = 0;
+	widget->data.button.border_w = -1; /* theme default */
 
 	// Override the default event handler with button-specific one
 	widget->handle_event = button_handle_event;
@@ -609,6 +637,7 @@ struct BGTK_Widget *bgtk_scrollable(struct BGTK_Context *ctx,
 
 	// Initialize tmp buffer to NULL, it will be allocated during drawing
 	widget->data.scrollable.tmp = NULL;
+	widget->data.scrollable.widget_capacity = 0;
 	// Override the default event handler with scrollable-specific one
 	widget->handle_event = scrollable_handle_event;
 
@@ -629,6 +658,19 @@ list_widget_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 				return 1;	// Event was handled by a child
 			}
 		}
+	}
+	/* Wheel: forward to children that contain the pointer. */
+	if (ev.type == EV_REL && ev.code == REL_WHEEL) {
+		for (int i = 0; i < widget->data.list_widget.widget_count; i++) {
+			struct BGTK_Widget *child =
+				widget->data.list_widget.items[i];
+			if (ev.x >= child->x && ev.x < child->x + child->w &&
+			    ev.y >= child->y && ev.y < child->y + child->h &&
+			    child->handle_event &&
+			    child->handle_event(child, ev))
+				return 1;
+		}
+		return 0;
 	}
 	// First check if the event is within the list's bounds
 	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&

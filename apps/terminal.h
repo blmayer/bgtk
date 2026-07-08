@@ -30,7 +30,7 @@ struct Term_State {
 	/* Current SGR attributes */
 	int cur_fg, cur_bg, cur_bold;
 
-	/* Scroll region */
+	/* Scroll region (DECSTBM); full-screen scrolls feed scrollback */
 	int scroll_top, scroll_bot;
 
 	/* Escape sequence parser state */
@@ -47,6 +47,14 @@ struct Term_State {
 
 	/* 16-colour palette */
 	uint32_t palette[16];
+
+	/* Scrollback: ring of full rows that left the top of the screen.
+	 * view_off: 0 = live bottom; higher = scrolled up into history. */
+	struct Term_Cell *sb; /* sb_cap * cols cells */
+	int sb_cap;	      /* max history rows */
+	int sb_len;	      /* 0..sb_cap */
+	int sb_start;	      /* ring index of oldest row */
+	int view_off;	      /* lines above live bottom (0..sb_len) */
 };
 
 /* Create / destroy terminal state */
@@ -58,12 +66,18 @@ int term_resize(struct Term_State *t, int cols, int rows);
 /* Feed raw bytes (from PTY or test harness) through the ANSI parser */
 void term_feed(struct Term_State *t, const char *data, int len);
 
-/* Render the cell grid into a pixel buffer */
+/* Render the cell grid into a pixel buffer (respects view_off scrollback). */
 void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 		 uint32_t *pixels, int px_w, int px_h);
 
 /* Compute cell_w / cell_h from the context's font */
 void term_measure_cell(struct Term_State *t, struct BGTK_Context *ctx);
+
+/* Scroll the view into history: positive delta = up (older), negative = down.
+ * Returns 1 if view_off changed. */
+int term_view_scroll(struct Term_State *t, int delta_lines);
+/* Jump to live bottom (view_off = 0). Returns 1 if changed. */
+int term_view_to_bottom(struct Term_State *t);
 
 /* Translate a linux keycode to bytes suitable for writing to a PTY.
  * Returns number of bytes written to out (0 if unknown key). */
