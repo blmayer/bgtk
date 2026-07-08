@@ -178,7 +178,7 @@ Defaults install to `/lib` and `/include` (override with `INSTALL_LIB` / `INSTAL
 
 ### Real applications (with BGCE)
 
-You need a running BGCE compositor. See the example programs in `apps/` (e.g. `image_viewer`, `launcher`, `test_app`).
+You need a running BGCE compositor. See the example programs in `apps/` (e.g. `image_viewer`, `launcher`, `sys_status`, `test_app`).
 
 ### Headless testing / development (recommended for UI work)
 

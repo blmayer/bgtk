@@ -78,7 +78,7 @@ works on Linux and macOS without BGCE.
 - Returns a frame widget; assign to `ctx->root_widget` before drawing
 
 ### 6. Apps
-- Real BGCE apps live under `apps/` (terminal, gemini_browser, launcher, image_viewer, test_app)
+- Real BGCE apps live under `apps/` (terminal, gemini_browser, launcher, image_viewer, sys_status, test_app)
 - Terminal logic is split: `term_core.c` (shared) + `terminal.c` (real main) + `test/test_terminal.c` (headless main)
 
 ## Development Guidelines
@@ -212,6 +212,7 @@ Build/run examples (on macOS, `make` defaults to headless targets):
 | `make test_terminal && ./test_terminal` | `test/test_terminal.c` | Terminal/ANSI rendering (`term_*.png`) |
 | `make test_html && ./test_html` | `test/test_html.c` | HTML → widget tree (`test_html_*.png`) |
 | `make test_gemini_browser && ./test_gemini_browser` | `test/test_gemini_browser.c` | Gemini browser UI flow (`gemini_browser_*.png`) |
+| `make test_sys_status && ./test_sys_status` | `test/test_sys_status.c` | System status dashboard (`sys_status_*.png`) |
 
 Headless binaries link `compat/bgce_stub.c` and use `-Icompat` so they compile
 on non-Linux machines. Real apps (`test_app`, `terminal`, `gemini_browser`,
