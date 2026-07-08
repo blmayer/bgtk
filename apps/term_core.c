@@ -448,6 +448,8 @@ void term_feed(struct Term_State *t, const char *data, int len)
 void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 		 uint32_t *pixels, int px_w, int px_h)
 {
+	/* Always draw with the mono face (falls back to sans only if mono
+	 * failed to load in bgtk_init). */
 	FT_Face face = bgtk_font_face(ctx, BGTK_FONT_MONO);
 	int cw, ch, asc;
 	int used_w, used_h;
@@ -594,22 +596,27 @@ void term_measure_cell(struct Term_State *t, struct BGTK_Context *ctx)
 	int max_adv = 0;
 	int max_extent = 0;
 	int c;
+	int fixed;
 
 	if (!face) {
 		t->cell_w = 8;
 		t->cell_h = 14;
+		bgtk_log("term_measure_cell: no mono face; using 8x14 cells");
 		return;
 	}
 	FT_Set_Pixel_Sizes(face, 0, ctx->font_size > 0 ? ctx->font_size : 14);
+	fixed = FT_IS_FIXED_WIDTH(face) ? 1 : 0;
 	asc = face->size->metrics.ascender >> 6;
 	desc = -(face->size->metrics.descender >> 6);
 	t->cell_h = asc + desc;
 	if (t->cell_h < 8)
 		t->cell_h = 8;
 
-	/* Use the max advance (and ink extent) over printable ASCII so a
-	 * non-mono fallback face cannot size cells from a skinny 'M' while
-	 * wider glyphs paint into the next column. */
+	/* True mono: use max_advance if set; else measure printable ASCII so a
+	 * proportional fallback cannot size cells from a skinny glyph. */
+	if (fixed && face->size->metrics.max_advance > 0)
+		max_adv = (int)(face->size->metrics.max_advance >> 6);
+
 	for (c = 32; c < 127; c++) {
 		int adv, extent;
 
@@ -627,6 +634,10 @@ void term_measure_cell(struct Term_State *t, struct BGTK_Context *ctx)
 	t->cell_w = max_adv > max_extent ? max_adv : max_extent;
 	if (t->cell_w < 6)
 		t->cell_w = 6;
+	bgtk_log("term_measure_cell: %dx%d fixed=%d family='%s' mono_path='%s'",
+		 t->cell_w, t->cell_h, fixed,
+		 face->family_name ? face->family_name : "?",
+		 ctx->font_mono_path[0] ? ctx->font_mono_path : "(none)");
 }
 
 /* ------------------------------------------------------------------ */

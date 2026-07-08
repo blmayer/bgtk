@@ -37,12 +37,31 @@ int main(void)
 
 	struct config config;
 	init_config_defaults(&config);
+	/* Distinct red wallpaper so preview packing (not theme paper) is obvious. */
+	config.type = BG_COLOR;
+	config.color = 0xFFE53935;
 
 	settings_build_ui(ctx, &config, width, height);
 
 	/* 00: Initial view - Background page is shown */
 	bgtk_draw_widgets(ctx);
 	take_screenshot(ctx, "settings_00_background.png");
+	/* Preview must be red (0xE53935), not BGR-swapped blue-ish. */
+	{
+		uint32_t *fb = (uint32_t *)ctx->shm_buffer;
+		/* Sample inside the preview box (content panel, mid). */
+		int sx = 400, sy = 250;
+		uint32_t p = fb[sy * width + sx];
+		unsigned r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
+		if (r < 0xC0 || g > 0x80 || b > 0x80) {
+			fprintf(stderr,
+				"test_settings: preview color wrong at %d,%d "
+				"got #%02X%02X%02X want ~#E53935 (R/B swap?)\n",
+				sx, sy, r, g, b);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+	}
 
 	/* 00b: Click Background Apply (must hit-test after preview insert).
 	 * Content scrollable is on the right; Apply sits under the preview. */
@@ -53,9 +72,9 @@ int main(void)
 		click.type = EV_KEY;
 		click.code = BTN_LEFT;
 		click.value = 1;
-		/* Apply under preview; layout shifted by intro line + panel rule. */
+		/* Apply sits under the aspect-correct preview (fills leftover). */
 		click.x = 192;
-		click.y = 255;
+		click.y = 400;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		if (!bgtk_inject_event(ctx, click)) {

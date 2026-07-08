@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <linux/input.h>
@@ -36,6 +37,9 @@ static struct config cfg;
 
 static int app_w = 700;
 static int app_h = 480;
+/* Desktop aspect for wallpaper preview (from BGCE server or 16:9). */
+static int screen_aspect_w = 16;
+static int screen_aspect_h = 9;
 
 static struct BGTK_Widget *sidebar_list; /* the list widget inside the scrollable */
 static struct BGTK_Widget *sidebar;
@@ -879,7 +883,6 @@ static char *build_background_html(void)
 	int pos = 0;
 	pos += snprintf(buf + pos, 4096 - pos,
 		"<html><body>"
-		"<p>Desktop (~/.config/bgce.conf [background])</p>"
 		"<table>"
 		"<tr><td>Type</td><td><button>[ %s ]</button></td></tr>",
 		cfg.type == BG_IMAGE ? "Image" : "Color");
@@ -896,10 +899,9 @@ static char *build_background_html(void)
 			cfg.mode == IMAGE_SCALED ? "Scaled" : "Tiled");
 	}
 
+	/* Preview inserted by add_bg_preview before Apply. */
 	pos += snprintf(buf + pos, 4096 - pos,
 		"</table>"
-		"<p>Preview:</p>"
-		"<div padding=\"2\"></div>"
 		"<div><button>Apply</button></div>"
 		"</body></html>");
 	return buf;
@@ -917,11 +919,10 @@ static char *build_cursor_html(void)
 
 	pos += snprintf(buf + pos, buflen - pos,
 		"<html><body>"
-		"<p>From ~/.config/bgce.conf [cursors]</p>"
 		"<table>"
-		"<tr><td>theme</td><td><input type=\"text\" value=\"%s\" width=\"260\" /></td></tr>"
+		"<tr><td>Theme</td><td><input type=\"text\" value=\"%s\" width=\"260\" /></td></tr>"
 		"</table>"
-		"<p>Installed themes (click to select):</p>"
+		"<p>Installed themes</p>"
 		"<ul>",
 		cur);
 
@@ -957,11 +958,8 @@ static char *build_shortcuts_html(void)
 	buf = malloc((size_t)buflen);
 	if (!buf)
 		return NULL;
-	/* Keep the intro short — long single-line <p> text is not wrapped and
-	 * draws as a garbled overflow across the content panel. */
 	pos += snprintf(buf + pos, (size_t)(buflen - pos),
 		"<html><body>"
-		"<p>Key bindings (~/.config/bgce.conf)</p>"
 		"<table>"
 		"<tr><th>Action</th><th>Key binding</th></tr>");
 	for (i = 0; i < shortcut_row_count; i++) {
@@ -1074,84 +1072,171 @@ static char *build_theme_html(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Background preview: draw a colored/image rect into the content      */
+/* Background preview: aspect-correct desktop wallpaper box            */
 /* ------------------------------------------------------------------ */
 
-static void add_bg_preview(struct BGTK_Widget *page, int panel_w)
+/* Fit preview inside max_w x max_h using screen_aspect_w:h. */
+static void preview_fit(int max_w, int max_h, int *out_w, int *out_h)
 {
-	/* Build a preview widget: a frame filled with the background color */
-	int pw = panel_w - 40;
-	if (pw < 60) pw = 60;
-	int ph = 60;
+	int aw = screen_aspect_w > 0 ? screen_aspect_w : 16;
+	int ah = screen_aspect_h > 0 ? screen_aspect_h : 9;
+	int pw, ph;
 
-	struct BGTK_Widget *preview;
+	if (max_w < 80)
+		max_w = 80;
+	if (max_h < 48)
+		max_h = 48;
+	/* Prefer using width, then clamp height. */
+	pw = max_w;
+	ph = (pw * ah) / aw;
+	if (ph > max_h) {
+		ph = max_h;
+		pw = (ph * aw) / ah;
+	}
+	if (pw < 1)
+		pw = 1;
+	if (ph < 1)
+		ph = 1;
+	*out_w = pw;
+	*out_h = ph;
+}
+
+/* Solid fill in framebuffer format 0xAARRGGBB (matches draw_rect / BGCE). */
+static struct BGTK_Widget *make_solid_preview(int pw, int ph, uint32_t color)
+{
+	struct BGTK_Widget *img;
+	uint32_t *pix;
+	int i;
+	uint8_t r = (uint8_t)((color >> 16) & 0xFF);
+	uint8_t g = (uint8_t)((color >> 8) & 0xFF);
+	uint8_t b = (uint8_t)(color & 0xFF);
+	/* Full alpha; channels in the same order as clear_buffer / draw_rect. */
+	uint32_t c = (0xFFu << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) |
+		     (uint32_t)b;
+
+	if (pw < 1)
+		pw = 1;
+	if (ph < 1)
+		ph = 1;
+	pix = malloc((size_t)pw * (size_t)ph * sizeof(uint32_t));
+	if (!pix)
+		return NULL;
+	for (i = 0; i < pw * ph; i++)
+		pix[i] = c;
+	img = bgtk_image(ctx, NULL, pw, ph, (BGTK_Options){.padding = 0, .margin = 4});
+	if (!img) {
+		free(pix);
+		return NULL;
+	}
+	img->data.image.pixels = pix;
+	img->data.image.img_w = pw;
+	img->data.image.img_h = ph;
+	img->w = pw + 8;
+	img->h = ph + 8;
+	return img;
+}
+
+static void add_bg_preview(struct BGTK_Widget *page, int panel_w, int panel_h)
+{
+	int pw, ph;
+	struct BGTK_Widget *preview = NULL;
+	struct BGTK_Widget *scroll;
+	struct BGTK_Widget *list;
+	int n, i, reserved, max_w, max_h, total_h, max_w_list;
+	struct BGTK_Widget **new_items;
+
+	if (!page)
+		return;
+	scroll = page->data.frame.child;
+	if (!scroll || scroll->type != BGTK_WIDGET_SCROLLABLE)
+		return;
+	if (scroll->data.scrollable.widget_count < 1)
+		return;
+	list = scroll->data.scrollable.items[0];
+	if (!list || list->type != BGTK_WIDGET_LIST)
+		return;
+
+	n = list->data.list_widget.widget_count;
+	if (n < 1)
+		return;
+
+	/* Height already used by form rows + Apply — preview fills the rest. */
+	reserved = 0;
+	for (i = 0; i < n; i++) {
+		struct BGTK_Widget *ch = list->data.list_widget.items[i];
+		if (!ch)
+			continue;
+		reserved += ch->h + 2 * list->margin;
+	}
+	/* Panel chrome: content frame padding, scroll padding, preview margin. */
+	max_h = panel_h - reserved - 28;
+	if (max_h < 80)
+		max_h = 80;
+	max_w = panel_w - 28;
+	if (max_w < 80)
+		max_w = 80;
+	preview_fit(max_w, max_h, &pw, &ph);
+
 	if (cfg.type == BG_IMAGE && cfg.path[0] && access(cfg.path, R_OK) == 0) {
-		preview = bgtk_image(ctx, cfg.path, pw, ph, (BGTK_Options){.padding = 0, .margin = 4});
+		preview = bgtk_image(ctx, cfg.path, pw, ph,
+				     (BGTK_Options){.padding = 0, .margin = 4});
+		if (preview) {
+			preview->w = pw + 8;
+			preview->h = ph + 8;
+		}
+	} else if (cfg.type == BG_IMAGE) {
+		/* Image selected but missing file — dark placeholder. */
+		preview = make_solid_preview(pw, ph, 0xFF333333);
 	} else {
-		/* Color preview: a frame filled with bg color */
-		struct BGTK_Widget *inner = bgtk_text(ctx, " ", (BGTK_Options){0});
-		preview = bgtk_frame(ctx, inner, pw, ph, (BGTK_Options){.padding = 0, .margin = 4});
-		preview->data.frame.border_w = 1;
-		preview->data.frame.border_color = BGTK_COLOR_BLACK;
-		/* We'll draw with the configured color by setting the frame bg
-		 * via a custom approach: use the frame, then on draw the bg rect
-		 * will use theme.background. We'll fake it by temporarily overriding.
-		 * Simpler: just draw a colored rect via an image widget with solid pixels. */
-		uint32_t *pix = malloc(pw * ph * sizeof(uint32_t));
-		uint32_t c = cfg.color | 0xFF000000;
-		for (int i = 0; i < pw * ph; i++) pix[i] = c;
-		inner->type = BGTK_WIDGET_IMAGE;
-		inner->data.image.pixels = pix;
-		inner->data.image.img_w = pw;
-		inner->data.image.img_h = ph;
-		inner->w = pw;
-		inner->h = ph;
+		preview = make_solid_preview(pw, ph, cfg.color);
+	}
+	if (!preview)
+		return;
+
+	/* Thin border frame around the aspect box. */
+	{
+		struct BGTK_Widget *framed =
+			bgtk_frame(ctx, preview, pw + 12, ph + 12,
+				   (BGTK_Options){.padding = 2, .margin = 4});
+		if (framed) {
+			framed->data.frame.border_w = 1;
+			framed->data.frame.border_color =
+				ctx->theme.frame_border_color
+					? ctx->theme.frame_border_color
+					: 0xFF888888;
+			preview = framed;
+		}
 	}
 
-	/* Find the scrollable and insert preview into its items before the Apply button */
-	/* The page is a frame->scrollable->list. We append preview to the list. */
-	if (!page) return;
-	struct BGTK_Widget *scroll = page->data.frame.child;
-	if (!scroll || scroll->type != BGTK_WIDGET_SCROLLABLE) return;
-	if (scroll->data.scrollable.widget_count < 1) return;
-	struct BGTK_Widget *list = scroll->data.scrollable.items[0];
-	if (!list || list->type != BGTK_WIDGET_LIST) return;
-
 	/* Insert preview before the last item (Apply button). */
-	int n = list->data.list_widget.widget_count;
-	struct BGTK_Widget **new_items =
-		malloc((n + 1) * sizeof(struct BGTK_Widget *));
-	int total_h = 0;
-	int max_w = 0;
-	int i;
-
+	new_items = malloc((n + 1) * sizeof(struct BGTK_Widget *));
 	if (!new_items)
 		return;
 	for (i = 0; i < n - 1; i++)
 		new_items[i] = list->data.list_widget.items[i];
 	new_items[n - 1] = preview;
-	new_items[n] = list->data.list_widget.items[n - 1]; /* Apply button */
+	new_items[n] = list->data.list_widget.items[n - 1]; /* Apply */
 	free(list->data.list_widget.items);
 	list->data.list_widget.items = new_items;
 	list->data.list_widget.widget_count = n + 1;
 
-	/* Grow the list to fit the inserted preview. Without this, Apply is
-	 * drawn below list->h and hit-testing rejects clicks on it. */
+	total_h = 0;
+	max_w_list = 0;
 	for (i = 0; i < list->data.list_widget.widget_count; i++) {
 		struct BGTK_Widget *ch = list->data.list_widget.items[i];
 		if (!ch)
 			continue;
-		if (ch->w > max_w)
-			max_w = ch->w;
+		if (ch->w > max_w_list)
+			max_w_list = ch->w;
 		total_h += ch->h + 2 * list->margin;
 	}
 	if (list->data.list_widget.widget_count > 0)
 		total_h -= 2 * list->margin;
 	list->data.list_widget.content_height = total_h;
-	list->data.list_widget.content_width = max_w;
+	list->data.list_widget.content_width = max_w_list;
 	list->h = total_h + 2 * (list->margin + list->padding);
-	if (list->w < max_w + 2 * (list->margin + list->padding))
-		list->w = max_w + 2 * (list->margin + list->padding);
+	if (list->w < max_w_list + 2 * (list->margin + list->padding))
+		list->w = max_w_list + 2 * (list->margin + list->padding);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1241,7 +1326,7 @@ static void rebuild_content(void)
 			b = get_button(page, 2);
 			if (b) b->data.button.callback = apply_background;
 		}
-		add_bg_preview(page, panel_w);
+		add_bg_preview(page, panel_w, panel_h);
 		break;
 	}
 	case 1: { /* Cursor: input(0)=theme, buttons=themes..., last=Apply */
@@ -1552,19 +1637,22 @@ static void load_bgce_config(struct config *c)
 
 		if (strcmp(section, "background") == 0) {
 			if (strcmp(key, "type") == 0) {
-				if (strcmp(valp, "image") == 0)
+				if (strcasecmp(valp, "image") == 0)
 					c->type = BG_IMAGE;
-				else if (strcmp(valp, "color") == 0)
+				else if (strcasecmp(valp, "color") == 0)
 					c->type = BG_COLOR;
 			} else if (strcmp(key, "color") == 0) {
 				c->color = parse_color_input(valp);
 			} else if (strcmp(key, "path") == 0) {
 				strncpy(c->path, valp, MAX_PATH_LEN - 1);
 				c->path[MAX_PATH_LEN - 1] = '\0';
+				/* Non-empty path implies image wallpaper. */
+				if (c->path[0])
+					c->type = BG_IMAGE;
 			} else if (strcmp(key, "mode") == 0) {
-				if (strcmp(valp, "scaled") == 0)
+				if (strcasecmp(valp, "scaled") == 0)
 					c->mode = IMAGE_SCALED;
-				else
+				else if (strcasecmp(valp, "tiled") == 0)
 					c->mode = IMAGE_TILED;
 			}
 		} else if (strcmp(section, "cursors") == 0) {
@@ -1589,10 +1677,8 @@ static void load_bgce_config(struct config *c)
 
 	if (!shortcuts_loaded)
 		load_shortcuts_defaults();
-	if (c->type == BG_IMAGE && !c->path[0]) {
-		bgtk_log("bgce type=image but empty path; showing as color");
-		c->type = BG_COLOR;
-	}
+	if (c->type == BG_IMAGE && !c->path[0])
+		bgtk_log("bgce type=image but path empty (keep Image UI)");
 	bgtk_log("bgce conf: bg=%s path='%s' mode=%s cursor='%s' shortcuts=%d",
 		 c->type == BG_IMAGE ? "image" : "color",
 		 c->path[0] ? c->path : "(none)",
@@ -1615,10 +1701,15 @@ int main(void)
 	bgtk_log("bgce_connect ok fd=%d", conn);
 
 	struct ServerInfo info;
-	if (bgce_get_server_info(conn, &info) != 0)
+	if (bgce_get_server_info(conn, &info) != 0) {
 		bgtk_log("bgce_get_server_info failed (continuing)");
-	else
+	} else {
 		bgtk_log("server display %ux%u", info.width, info.height);
+		if (info.width > 0 && info.height > 0) {
+			screen_aspect_w = (int)info.width;
+			screen_aspect_h = (int)info.height;
+		}
+	}
 
 	struct BufferRequest req = { .width = 700, .height = 480 };
 	void *buf = bgce_get_buffer(conn, req);

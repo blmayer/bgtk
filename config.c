@@ -223,8 +223,19 @@ static void pick_default_font_family(char *out, size_t outlen, int family)
 		"/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
 		"/usr/share/fonts/truetype/freefont/FreeMono.ttf",
 		"/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+		"/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
+		"/usr/share/fonts/truetype/droid/DroidSansMono.ttf",
+		"/usr/share/fonts/truetype/terminus/TerminusTTF-4.49.1.ttf",
+		"/usr/share/fonts/truetype/terminus/TerminusTTF.ttf",
+		"/usr/share/fonts/X11/misc/ter-u14n.pcf.gz",
 		"/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
 		"/share/fonts/TTF/DejaVuSansMono.ttf",
+		"/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+		"/share/fonts/truetype/freefont/FreeMono.ttf",
+		/* lin0 / embedded flat roots */
+		"/fonts/DejaVuSansMono.ttf",
+		"/fonts/LiberationMono-Regular.ttf",
+		"/fonts/FreeMono.ttf",
 #endif
 #ifdef __APPLE__
 		"/System/Library/Fonts/SFNSMono.ttf",

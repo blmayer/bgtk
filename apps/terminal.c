@@ -235,9 +235,16 @@ int main(void)
 		cols = 1;
 	if (rows < 1)
 		rows = 1;
-	bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d font='%s'",
-		 tmp_ts.cell_w, tmp_ts.cell_h, cols, rows, inner_w, inner_h,
-		 ctx->font_sans_path[0] ? ctx->font_sans_path : "(none)");
+	{
+		FT_Face mono = bgtk_font_face(ctx, BGTK_FONT_MONO);
+		bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d mono='%s' fixed=%d family='%s'",
+			 tmp_ts.cell_w, tmp_ts.cell_h, cols, rows, inner_w,
+			 inner_h,
+			 ctx->font_mono_path[0] ? ctx->font_mono_path
+						: "(none)",
+			 mono && FT_IS_FIXED_WIDTH(mono) ? 1 : 0,
+			 mono && mono->family_name ? mono->family_name : "?");
+	}
 
 	struct Term_State *ts = term_create(cols, rows);
 	if (!ts) {

@@ -15,18 +15,40 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-// Loads an image file into a pixel buffer (RGBA format).
+/* Pack 8-bit channels into framebuffer pixel format 0xAARRGGBB (BGCE/XRGB). */
+static uint32_t pack_argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b)
+{
+	return ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) |
+	       (uint32_t)b;
+}
+
+// Loads an image file into a pixel buffer as 0xAARRGGBB uint32 pixels.
+// stbi gives RGBA bytes; casting those to uint32 is wrong (R/B swap on LE).
 // Returns 0 on success, -1 on failure.
 int load_image(const char *path, uint32_t **out_pixels, int *out_w, int *out_h)
 {
-	int w, h, channels;
-	unsigned char *pixels = stbi_load(path, &w, &h, &channels, 4);
-	if (!pixels) {
+	int w, h, channels, n, i;
+	unsigned char *rgba;
+	uint32_t *out;
+
+	rgba = stbi_load(path, &w, &h, &channels, 4);
+	if (!rgba) {
 		fprintf(stderr, "Failed to load image: %s\n", path);
 		return -1;
 	}
-	// Convert to uint32_t (RGBA)
-	*out_pixels = (uint32_t *) pixels;
+	n = w * h;
+	out = malloc((size_t)n * sizeof(uint32_t));
+	if (!out) {
+		stbi_image_free(rgba);
+		return -1;
+	}
+	for (i = 0; i < n; i++) {
+		unsigned char *p = rgba + (size_t)i * 4;
+		/* p[0]=R p[1]=G p[2]=B p[3]=A → same packing as BGCE rgba_to_u32 */
+		out[i] = pack_argb(p[3], p[0], p[1], p[2]);
+	}
+	stbi_image_free(rgba);
+	*out_pixels = out;
 	*out_w = w;
 	*out_h = h;
 	return 0;

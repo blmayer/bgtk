@@ -512,30 +512,65 @@ static struct BGTK_Widget *convert_list(struct BGTK_Context *ctx, xmlNode *node,
 /* Table converter                                                     */
 /* ------------------------------------------------------------------ */
 
-// Convert a single <td>/<th> cell. Borderless by default (settings-friendly).
-// For <th>, content gets bold styling. Text is vertically centered in the cell.
-static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
-					xmlNode *node, int avail_w, int is_header)
+// True if the cell has element children (button/input/...), not pure text.
+static int cell_has_element_child(xmlNode *node)
 {
-	struct BGTK_Widget *content = convert_container(ctx, node, avail_w);
-	if (!content) {
+	for (xmlNode *c = node->children; c; c = c->next)
+		if (c->type == XML_ELEMENT_NODE)
+			return 1;
+	return 0;
+}
+
+// Convert a single <td>/<th> cell. Borderless by default (settings-friendly).
+// Cells are left-aligned; content is vertically centered in the row.
+// Pure-text cells must be BGTK_TEXT (not a nested list) so text_align works
+// when draw_frame expands the child to the equalized column width.
+static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
+					xmlNode *node, int avail_w,
+					int is_header, int col)
+{
+	struct BGTK_Widget *content = NULL;
+	(void)col;
+
+	if (!cell_has_element_child(node)) {
 		char *txt = collect_text(node);
 		if (!txt || !*txt) {
 			free(txt);
 			txt = strdup(" ");
 		}
 		content = bgtk_text(ctx, txt,
-			(BGTK_Options){.text_v_align = BGTK_VALIGN_CENTER});
+			(BGTK_Options){.text_v_align = BGTK_VALIGN_CENTER,
+				       .text_align = BGTK_ALIGN_LEFT});
 		free(txt);
-		if (!content)
-			return NULL;
+	} else {
+		content = convert_container(ctx, node, avail_w);
 	}
+	if (!content)
+		return NULL;
 	if (is_header && content->type == BGTK_WIDGET_TEXT)
 		content->data.text.style |= BGTK_TEXT_BOLD;
-	if (content->type == BGTK_WIDGET_TEXT)
+	if (content->type == BGTK_WIDGET_TEXT) {
 		content->text_v_align = BGTK_VALIGN_CENTER;
+		content->text_align = BGTK_ALIGN_LEFT;
+	}
+	/* Drop widget margin inside cells so controls share the page left edge
+	 * with Apply / <p> siblings (those keep their own margin). */
+	if (content->type == BGTK_WIDGET_BUTTON ||
+	    content->type == BGTK_WIDGET_TEXT_INPUT) {
+		content->margin = 0;
+	} else if (content->type == BGTK_WIDGET_LIST) {
+		for (int i = 0; i < content->data.list_widget.widget_count; i++) {
+			struct BGTK_Widget *ch = content->data.list_widget.items[i];
+			if (ch && (ch->type == BGTK_WIDGET_BUTTON ||
+				   ch->type == BGTK_WIDGET_TEXT_INPUT ||
+				   ch->type == BGTK_WIDGET_TEXT))
+				ch->margin = 0;
+		}
+	}
 
-	int cell_pad = 4;
+	/* Keep cell chrome minimal so labels/controls share the same left edge
+	 * as block widgets below the table (<p>, Apply buttons, etc.). */
+	int cell_pad = 2;
 	struct BGTK_Widget *frame = bgtk_frame(ctx, content,
 		content->w + 2 * cell_pad, content->h + 2 * cell_pad,
 		(BGTK_Options){.padding = cell_pad, .margin = 0});
@@ -616,7 +651,7 @@ static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
 			if (col >= max_cols)
 				break;
 			cells[r][col] = convert_cell(ctx, c, avail_w / max_cols,
-						     strcmp(tn, "th") == 0);
+						     strcmp(tn, "th") == 0, col);
 			col++;
 		}
 		row_cols[r] = col;
@@ -635,6 +670,12 @@ static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
 				row_heights[r] = cells[r][c]->h;
 		}
 	}
+
+	/* Gap between columns (extra width on all but last). Left-aligned
+	 * labels keep their left edge; space appears before the next col. */
+	const int col_gap = 16;
+	for (int c = 0; c < max_cols - 1; c++)
+		col_widths[c] += col_gap;
 
 	// Equalize: every cell in a column gets the same width,
 	// every cell in a row gets the same height.
@@ -666,14 +707,20 @@ static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
 		BGTK_Options inner = {.orientation = BGTK_LIST_VERTICAL, .margin = 0};
 		struct BGTK_Widget *grid = bgtk_list(ctx, rows, valid_rows, inner);
 		if (grid) {
-			// Wrap in a frame for outer margin (like block-level HTML).
-			int tm = attr_int(node, "margin", 8);
-			table = bgtk_frame(ctx, grid,
-				grid->w + 2 * tm, grid->h + 2 * tm,
-				(BGTK_Options){.padding = 0, .margin = tm});
-			if (table) {
-				table->data.frame.border_w = 0;
-				table->data.frame.border_color = 0;
+			/* Default margin 0 so table content lines up with sibling
+			 * block widgets (paragraphs, Apply row). Override via
+			 * margin="N" on <table> when inset is wanted. */
+			int tm = attr_int(node, "margin", 0);
+			if (tm > 0) {
+				table = bgtk_frame(ctx, grid,
+					grid->w + 2 * tm, grid->h + 2 * tm,
+					(BGTK_Options){.padding = 0, .margin = tm});
+				if (table) {
+					table->data.frame.border_w = 0;
+					table->data.frame.border_color = 0;
+				}
+			} else {
+				table = grid;
 			}
 		}
 	}
