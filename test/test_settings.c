@@ -102,7 +102,7 @@ int main(void)
 		click.value = 1;
 		/* Apply sits under the aspect-correct preview (fills leftover). */
 		click.x = 220;
-		click.y = 430;
+		click.y = 400;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		if (!bgtk_inject_event(ctx, click)) {
@@ -319,8 +319,8 @@ int main(void)
 		click.code = BTN_LEFT;
 		click.value = 1;
 		/* First theme color field (Background) under Goldie chrome. */
-		click.x = 360;
-		click.y = 42;
+		click.x = 420;
+		click.y = 48;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		bgtk_inject_event(ctx, click);

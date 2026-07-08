@@ -74,20 +74,10 @@ void bgtk_set_focus(struct BGTK_Context *ctx, struct BGTK_Widget *widget)
 	bgtk_draw_widgets(ctx);
 }
 
-// Returns pixel width of text[0..len-1]
+/* Pixel width of text[0..len-1] (byte length; UTF-8 aware). */
 static int measure_prefix_width(FT_Face face, const char *text, int len)
 {
-	if (!face || !text || len <= 0) {
-		return len > 0 ? len * 7 : 0;  /* crude fallback */
-	}
-	int width = 0;
-	for (int i = 0; i < len && text[i]; i++) {
-		if (FT_Load_Char(face, (unsigned char)text[i], FT_LOAD_DEFAULT)) {
-			continue;
-		}
-		width += face->glyph->advance.x;
-	}
-	return width >> 6;
+	return measure_text_prefix(face, text, len);
 }
 
 static void
@@ -728,9 +718,12 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
 	widget->data.list_widget.widget_count = widget_count;
 	widget->data.list_widget.orientation = options.orientation;
 
-	// Calculate content dimensions based on orientation
+	/* Content size matches draw_list:
+	 * first child at (margin+padding), gaps of 2*margin, outer inset
+	 * margin+padding on the far side. */
 	int max_width = 0;
 	int max_height = 0;
+	int inset = 2 * (widget->margin + widget->padding);
 	for (int i = 0; i < widget_count; i++) {
 		widget->data.list_widget.items[i] = items[i];
 		if (options.orientation == BGTK_LIST_VERTICAL) {
@@ -746,7 +739,7 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
 		}
 	}
 
-	// Remove the last margin (no margin after the last widget)
+	// Remove the last inter-item margin (no gap after the last widget)
 	if (widget_count > 0) {
 		if (options.orientation == BGTK_LIST_VERTICAL) {
 			widget->h -= 2 * widget->margin;
@@ -754,11 +747,13 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
 			widget->w -= 2 * widget->margin;
 		}
 	}
-	// Use max dimensions for the other axis
+	// Outer pad+margin on both sides + max child on the cross axis
 	if (options.orientation == BGTK_LIST_VERTICAL) {
-		widget->w = max_width;
+		widget->w = max_width + inset;
+		widget->h += inset;
 	} else {
-		widget->h = max_height;
+		widget->h = max_height + inset;
+		widget->w += inset;
 	}
 
 	// Override the default event handler with list-specific one

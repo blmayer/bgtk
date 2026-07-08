@@ -49,6 +49,7 @@ static struct BGTK_Widget *root_frame;
 
 static int current_page = 0;
 #define NUM_PAGES 5
+#define SIDEBAR_W 140
 
 static const char *page_names[NUM_PAGES] = {
 	"Background", "Cursor", "Shortcuts", "Font", "Theme"
@@ -1354,9 +1355,18 @@ static void rebuild_content(void)
 	if (current_page == 3 && !font_list_cache)
 		font_list_count = scan_fonts(&font_list_cache);
 
-	int rule_w = panel_rule ? panel_rule->w : 0;
-	int panel_w = app_w - (sidebar ? sidebar->w : 140) - rule_w - 16;
-	int panel_h = app_h - 16;
+	int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
+	int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 4;
+	int fbw = (int)ctx->theme.frame_border_size;
+	int chrome, rule_w, panel_w, panel_h;
+
+	if (fbw < 0)
+		fbw = 0;
+	chrome = 2 * (fbw + pad);
+	rule_w = panel_rule ? panel_rule->w : (1 + mar);
+	panel_w = app_w - (sidebar ? sidebar->w : SIDEBAR_W) - rule_w - chrome -
+		  mar;
+	panel_h = app_h - chrome;
 	if (panel_w < 80)
 		panel_w = 80;
 	if (panel_h < 40)
@@ -1515,21 +1525,48 @@ static void rebuild_content(void)
 /* Sidebar: rebuild with highlight on selected page                    */
 /* ------------------------------------------------------------------ */
 
+/* Scroll/list chrome eats width; buttons must fit inside the offscreen
+ * scroll buffer or the right border is clipped under the panel rule. */
+static void sidebar_spacing(int *pad, int *mar, int *scroll_pad, int *btn_w)
+{
+	int p = (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 6;
+	int m = (ctx && ctx->theme.margin > 0) ? ctx->theme.margin / 2 : 2;
+	int sp = p > 1 ? p / 2 : 1;
+	/* child.x = scroll.mar+scroll.pad; button.x = list.mar+list.pad */
+	int left = m + sp + m; /* scroll mar + pad + list mar (list pad 0) */
+	int bw = SIDEBAR_W - 2 * left;
+
+	if (bw < 40)
+		bw = 40;
+	if (pad)
+		*pad = p;
+	if (mar)
+		*mar = m;
+	if (scroll_pad)
+		*scroll_pad = sp;
+	if (btn_w)
+		*btn_w = bw;
+}
+
 /* Selected nav: highlight fill only (no "> " prefix). */
-static struct BGTK_Widget *make_nav_button(int i, int sidebar_w)
+static struct BGTK_Widget *make_nav_button(int i, int btn_w)
 {
 	int selected = (i == current_page);
-	int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
-	int mar = ctx->theme.margin > 0 ? ctx->theme.margin / 2 : 2;
+	int pad, mar, bw;
 	BGTK_Options to = {.padding = 2};
+	struct BGTK_Widget *lbl;
+	struct BGTK_Widget *btn;
+
+	sidebar_spacing(&pad, &mar, NULL, &bw);
+	if (btn_w > 0)
+		bw = btn_w;
 	if (selected)
 		to.text_style = BGTK_TEXT_BOLD;
-	struct BGTK_Widget *lbl =
-		bgtk_text(ctx, (char *)page_names[i], to);
-	struct BGTK_Widget *btn = bgtk_button(ctx, lbl, page_cb,
-		(void *)(intptr_t)i,
-		(BGTK_Options){.padding = pad / 2 + 2, .margin = mar});
-	btn->w = sidebar_w - 2 * mar;
+	lbl = bgtk_text(ctx, (char *)page_names[i], to);
+	/* margin 0: width is the full hit/draw box; spacing is list/scroll. */
+	btn = bgtk_button(ctx, lbl, page_cb, (void *)(intptr_t)i,
+			  (BGTK_Options){.padding = pad / 2 + 2, .margin = 0});
+	btn->w = bw;
 	if (selected) {
 		uint32_t hi = ctx->theme.highlight ? ctx->theme.highlight
 						   : 0xFF505060;
@@ -1540,15 +1577,20 @@ static struct BGTK_Widget *make_nav_button(int i, int sidebar_w)
 
 static void rebuild_sidebar(void)
 {
-	int sidebar_w = 140;
-	int mar = ctx->theme.margin > 0 ? ctx->theme.margin / 2 : 2;
-	struct BGTK_Widget **btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
+	int mar, btn_w;
+	struct BGTK_Widget **btns;
+	int i;
 
-	for (int i = 0; i < NUM_PAGES; i++)
-		btns[i] = make_nav_button(i, sidebar_w);
+	sidebar_spacing(NULL, &mar, NULL, &btn_w);
+	btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
+	if (!btns)
+		return;
+	for (i = 0; i < NUM_PAGES; i++)
+		btns[i] = make_nav_button(i, btn_w);
 
 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
-		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = mar});
+		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+			       .margin = mar, .padding = 0});
 	free(btns);
 
 	/* Replace the scrollable's content */
@@ -1558,24 +1600,29 @@ static void rebuild_sidebar(void)
 
 static struct BGTK_Widget *build_sidebar(void)
 {
-	int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
-	int mar = ctx->theme.margin > 0 ? ctx->theme.margin / 2 : 2;
-	int bw = (int)ctx->theme.frame_border_size;
-	int sidebar_w = 140;
-	struct BGTK_Widget **btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
+	int pad, mar, scroll_pad, btn_w;
+	int bw = ctx ? (int)ctx->theme.frame_border_size : 1;
+	struct BGTK_Widget **btns;
+	struct BGTK_Widget *scroll;
+	int i;
 
+	sidebar_spacing(&pad, &mar, &scroll_pad, &btn_w);
 	if (bw < 0)
 		bw = 0;
-	for (int i = 0; i < NUM_PAGES; i++)
-		btns[i] = make_nav_button(i, sidebar_w);
+	btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
+	if (!btns)
+		return NULL;
+	for (i = 0; i < NUM_PAGES; i++)
+		btns[i] = make_nav_button(i, btn_w);
 
 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
-		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = mar});
+		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+			       .margin = mar, .padding = 0});
 	free(btns);
 
-	struct BGTK_Widget *scroll = bgtk_scrollable(ctx, &sidebar_list, 1,
-		(BGTK_Options){.padding = pad / 2, .margin = mar});
-	scroll->w = sidebar_w;
+	scroll = bgtk_scrollable(ctx, &sidebar_list, 1,
+		(BGTK_Options){.padding = scroll_pad, .margin = mar});
+	scroll->w = SIDEBAR_W;
 	scroll->h = app_h - 2 * (bw + pad);
 
 	return scroll;
@@ -1607,8 +1654,16 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
 		chrome = 2 * (bw + pad);
 
 		sidebar = build_sidebar();
+		/* Thin divider: margin only on the content side so it does
+		 * not sit on top of sidebar button borders. */
 		panel_rule = bgtk_rule(ctx, BGTK_LIST_VERTICAL, 1,
-				       (BGTK_Options){.margin = mar, .padding = 0});
+				       (BGTK_Options){.margin = 0, .padding = 0});
+		/* Extra left gap via rule outer width (visual gutter). */
+		{
+			int gutter = mar > 0 ? mar : 4;
+			panel_rule->w = 1 + gutter; /* 1px line + space after sidebar */
+			panel_rule->data.rule.thickness = 1;
+		}
 		panel_rule->h = app_h - chrome;
 
 		int panel_w = app_w - sidebar->w - panel_rule->w - chrome - mar;
@@ -1624,9 +1679,10 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
 		content_panel->data.frame.border_w = 0;
 
 		struct BGTK_Widget *cols[3] = { sidebar, panel_rule, content_panel };
+		/* Zero list margin so column gap comes from rule gutter only. */
 		struct BGTK_Widget *row = bgtk_list(ctx, cols, 3,
 			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
-				       .margin = mar});
+				       .margin = 0, .padding = 0});
 
 		/* Outer frame: thick gold border + even theme padding inset. */
 		root_frame = bgtk_frame(ctx, row, app_w, app_h,

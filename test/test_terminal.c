@@ -134,49 +134,75 @@ int main(void)
 		return 1;
 	}
 
-	/* Measure cell size so we know terminal dimensions */
+	/* Measure cell size; content area is inside frame border + theme pad/mar. */
 	struct Term_State tmp = {0};
+	int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
+	int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 4;
+	int bw = (int)ctx->theme.frame_border_size;
+	int inner_w, inner_h, cols, rows;
+	struct BGTK_Widget *img, *frame;
+
+	if (bw < 0)
+		bw = 0;
 	tmp.cols = tmp.rows = 1;
 	term_measure_cell(&tmp, ctx);
 
-	int cols = width / tmp.cell_w;
-	int rows = height / tmp.cell_h;
-	if (cols < 1) cols = 1;
-	if (rows < 1) rows = 1;
+	inner_w = width - 2 * (mar + bw + pad);
+	inner_h = height - 2 * (mar + bw + pad);
+	if (inner_w < 1)
+		inner_w = 1;
+	if (inner_h < 1)
+		inner_h = 1;
+	cols = inner_w / tmp.cell_w;
+	rows = inner_h / tmp.cell_h;
+	if (cols < 1)
+		cols = 1;
+	if (rows < 1)
+		rows = 1;
 
-	printf("Cell: %dx%d  Grid: %dx%d\n", tmp.cell_w, tmp.cell_h, cols, rows);
+	printf("Cell: %dx%d  Grid: %dx%d  chrome pad=%d mar=%d bw=%d inner=%dx%d\n",
+	       tmp.cell_w, tmp.cell_h, cols, rows, pad, mar, bw, inner_w,
+	       inner_h);
 
 	struct Term_State *ts = term_create(cols, rows);
-	if (!ts) return 1;
+	if (!ts)
+		return 1;
 	ts->cell_w = tmp.cell_w;
 	ts->cell_h = tmp.cell_h;
 
-	/* Image widget as drawing surface */
-	struct BGTK_Widget *img = bgtk_image(ctx, NULL, width, height,
-					     (BGTK_Options){0});
-	img->data.image.pixels = calloc((size_t)width * height, sizeof(uint32_t));
-	img->data.image.img_w = width;
-	img->data.image.img_h = height;
-	ctx->root_widget = img;
+	/* Image is the cell surface; frame applies theme margin/padding/border. */
+	img = bgtk_image(ctx, NULL, inner_w, inner_h,
+			 (BGTK_Options){.padding = 0, .margin = 0});
+	img->data.image.pixels =
+		calloc((size_t)inner_w * (size_t)inner_h, sizeof(uint32_t));
+	if (!img->data.image.pixels) {
+		bgtk_log_errno("test_terminal calloc");
+		return 1;
+	}
+	img->data.image.img_w = inner_w;
+	img->data.image.img_h = inner_h;
+	frame = bgtk_frame(ctx, img, width, height,
+			   (BGTK_Options){.padding = pad, .margin = mar});
+	ctx->root_widget = frame;
 
 	/* --- Test 1: plain text ---------------------------------------- */
 	term_feed(ts, "Hello, BGTK Terminal!\r\n", -1);
-	snap(ctx, img, ts, width, height, "term_00_text.png");
+	snap(ctx, img, ts, inner_w, inner_h, "term_00_text.png");
 
 	/* --- Test 2: ANSI colours -------------------------------------- */
 	term_feed(ts, "\033[31mred \033[32mgreen \033[34mblue \033[0mnormal\r\n", -1);
 	term_feed(ts, "\033[1;33mbold yellow \033[0m\r\n", -1);
-	snap(ctx, img, ts, width, height, "term_01_colors.png");
+	snap(ctx, img, ts, inner_w, inner_h, "term_01_colors.png");
 
 	/* --- Test 3: cursor movement ----------------------------------- */
 	term_feed(ts, "\033[10;5HPositioned here\r\n", -1);
-	snap(ctx, img, ts, width, height, "term_02_cursor.png");
+	snap(ctx, img, ts, inner_w, inner_h, "term_02_cursor.png");
 
 	/* --- Test 4: erase --------------------------------------------- */
 	term_feed(ts, "\033[2J\033[H", -1);  /* clear screen, home */
 	term_feed(ts, "Screen cleared!\r\n", -1);
 	term_feed(ts, "\033[44m\033[37m Blue background white text \033[0m\r\n", -1);
-	snap(ctx, img, ts, width, height, "term_03_erase.png");
+	snap(ctx, img, ts, inner_w, inner_h, "term_03_erase.png");
 
 	/* --- Test 5: scroll -------------------------------------------- */
 	term_feed(ts, "\033[2J\033[H", -1);
@@ -185,7 +211,7 @@ int main(void)
 		int n = snprintf(line, sizeof(line), "Line %d\r\n", i + 1);
 		term_feed(ts, line, n);
 	}
-	snap(ctx, img, ts, width, height, "term_04_scroll.png");
+	snap(ctx, img, ts, inner_w, inner_h, "term_04_scroll.png");
 
 	/* --- Test 5b: scrollback view (mouse-wheel / PageUp equivalent) */
 	{
@@ -206,14 +232,14 @@ int main(void)
 				before_off, ts->view_off, ts->sb_len);
 			return 1;
 		}
-		snap(ctx, img, ts, width, height, "term_04b_scrollback.png");
+		snap(ctx, img, ts, inner_w, inner_h, "term_04b_scrollback.png");
 		if (!term_view_to_bottom(ts) || ts->view_off != 0) {
 			fprintf(stderr,
 				"test_terminal: view_to_bottom failed off=%d\n",
 				ts->view_off);
 			return 1;
 		}
-		snap(ctx, img, ts, width, height, "term_04c_scrollback_bottom.png");
+		snap(ctx, img, ts, inner_w, inner_h, "term_04c_scrollback_bottom.png");
 	}
 
 	/* --- Test 6: colour matrix ------------------------------------- */
@@ -226,14 +252,14 @@ int main(void)
 		}
 		term_feed(ts, "\033[0m\r\n", -1);
 	}
-	snap(ctx, img, ts, width, height, "term_05_matrix.png");
+	snap(ctx, img, ts, inner_w, inner_h, "term_05_matrix.png");
 
 	/* --- Test 7: erase in line ------------------------------------- */
 	term_feed(ts, "\033[2J\033[H", -1);
 	term_feed(ts, "AAAAAAAAAA\r\n", -1);
 	term_feed(ts, "BBBBBBBBBB\033[5D\033[K\r\n", -1); /* erase last 5 */
 	term_feed(ts, "CCCCCCCCCC\r\n", -1);
-	snap(ctx, img, ts, width, height, "term_06_erase_line.png");
+	snap(ctx, img, ts, inner_w, inner_h, "term_06_erase_line.png");
 
 	/* --- Test 8: bold/bright colors -------------------------------- */
 	term_feed(ts, "\033[2J\033[H", -1);
@@ -244,7 +270,7 @@ int main(void)
 		snprintf(seq, sizeof(seq), "\033[1;%dm Bold%d \033[0m\r\n", 30 + i, i);
 		term_feed(ts, seq, -1);
 	}
-	snap(ctx, img, ts, width, height, "term_07_bold.png");
+	snap(ctx, img, ts, inner_w, inner_h, "term_07_bold.png");
 
 	/* --- Test 8b: resize grid (window resize path) ----------------- */
 	term_feed(ts, "\033[2J\033[Hresized ok\r\n", -1);
@@ -253,7 +279,7 @@ int main(void)
 		bgtk_log("test_terminal: term_resize failed");
 		return 1;
 	}
-	snap(ctx, img, ts, width, height, "term_07b_resized.png");
+	snap(ctx, img, ts, inner_w, inner_h, "term_07b_resized.png");
 	/* restore full grid for the PTY test */
 	if (term_resize(ts, cols, rows) != 0) {
 		bgtk_log("test_terminal: term_resize restore failed");
@@ -283,7 +309,7 @@ int main(void)
 				ssize_t n = read(master_fd, buf, sizeof(buf));
 				if (n > 0) term_feed(ts, buf, (int)n);
 			}
-			snap(ctx, img, ts, width, height, "term_08_shell_prompt.png");
+			snap(ctx, img, ts, inner_w, inner_h, "term_08_shell_prompt.png");
 
 			/* Send a real command (as if the user typed it and pressed enter) */
 			const char *cmd = "echo '=== REAL SHELL OUTPUT ==='\n";
@@ -304,7 +330,7 @@ int main(void)
 				}
 			}
 
-			snap(ctx, img, ts, width, height, "term_09_real_command.png");
+			snap(ctx, img, ts, inner_w, inner_h, "term_09_real_command.png");
 
 			/* Verify the result text is present in the cell grid */
 			int found = 0;

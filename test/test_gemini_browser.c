@@ -24,6 +24,7 @@
 #include <tls.h>
 
 #include "bgtk.h"
+#include "internal.h"
 
 static struct BGTK_Context *ctx = NULL;
 static struct BGTK_Widget *content_scroll = NULL;
@@ -42,25 +43,29 @@ static BGTK_Options line_opts(void)
 	return (BGTK_Options){.padding = 1, .margin = 1};
 }
 
-static int theme_pad(void)
+/* Theme chrome — same geometry as terminal:
+ * frame draws [margin][border][padding][content]… */
+static void gemini_chrome(int *pad, int *mar, int *bw)
 {
-	return (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 6;
+	int p = (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 6;
+	int m = (ctx && ctx->theme.margin > 0) ? ctx->theme.margin : 4;
+	int b = ctx ? (int)ctx->theme.frame_border_size : 1;
+
+	if (b < 1)
+		b = 1;
+	if (pad)
+		*pad = p;
+	if (mar)
+		*mar = m;
+	if (bw)
+		*bw = b;
 }
 
-static int theme_mar(void)
+static int list_v_overhead(int n, int list_m, int list_p)
 {
-	return (ctx && ctx->theme.margin > 0) ? ctx->theme.margin : 4;
-}
-
-static int chrome_inset(void)
-{
-	int pad = theme_pad();
-	int mar = theme_mar();
-	int half = mar > 1 ? mar / 2 : 1;
-	int bw = ctx ? (int)ctx->theme.frame_border_size : 1;
-	if (bw < 1)
-		bw = 1;
-	return 2 * (pad + bw + half);
+	if (n < 1)
+		return 2 * (list_m + list_p);
+	return 2 * list_m * (n - 1) + 2 * (list_m + list_p);
 }
 
 static void content_scroll_invalidate_tmp(void)
@@ -78,33 +83,51 @@ static void rebuild_content_from_gemtext(const char *body);
 
 static void gemini_layout_chrome(void)
 {
-	int inset, usable_w, ah, scroll_h, half;
+	int pad, mar, bw, box_w, box_h, list_m, list_p, field_pad;
+	int usable_w, ah, scroll_h, over;
 
 	if (!ctx || !content_scroll || !addr_input)
 		return;
-	half = theme_mar() > 1 ? theme_mar() / 2 : 1;
-	inset = chrome_inset();
-	usable_w = ctx->width - inset;
-	if (usable_w < 80)
-		usable_w = 80;
-	addr_input->padding = theme_pad() > 2 ? theme_pad() / 2 : 2;
-	addr_input->margin = half;
-	content_scroll->padding = half;
-	content_scroll->margin = half;
+	gemini_chrome(&pad, &mar, &bw);
+	box_w = ctx->width - 2 * (mar + bw + pad);
+	box_h = ctx->height - 2 * (mar + bw + pad);
+	if (box_w < 80)
+		box_w = 80;
+	if (box_h < 80)
+		box_h = 80;
+	list_m = 0;
+	list_p = 0;
+	field_pad = pad > 2 ? pad / 2 : 2;
+	addr_input->padding = field_pad;
+	addr_input->margin = 0;
+	content_scroll->padding = pad > 2 ? pad / 2 : 2;
+	content_scroll->margin = 0;
 	if (main_list) {
-		main_list->padding = half;
-		main_list->margin = half;
+		main_list->padding = list_p;
+		main_list->margin = list_m;
+		main_list->w = box_w;
+		main_list->h = box_h;
 	}
 	if (root_frame) {
-		root_frame->padding = theme_pad();
-		root_frame->margin = 0;
+		root_frame->padding = pad;
+		root_frame->margin = mar;
 		root_frame->w = ctx->width;
 		root_frame->h = ctx->height;
 	}
-	ah = addr_input->h > 0 ? addr_input->h : 28;
-	scroll_h = ctx->height - ah - inset;
-	if (scroll_h < 80)
-		scroll_h = 80;
+	usable_w = box_w - 2 * (list_m + list_p);
+	if (usable_w < 40)
+		usable_w = 40;
+	{
+		int text_h = ctx->font_size > 0 ? ctx->font_size + 4 : 18;
+		addr_input->h = text_h + 2 * (addr_input->padding + addr_input->margin);
+		if (addr_input->h < 28)
+			addr_input->h = 28;
+	}
+	ah = addr_input->h;
+	over = list_v_overhead(2, list_m, list_p);
+	scroll_h = box_h - ah - over;
+	if (scroll_h < 40)
+		scroll_h = 40;
 	content_scroll->w = usable_w;
 	content_scroll->h = scroll_h;
 	addr_input->w = usable_w;
@@ -371,39 +394,63 @@ static void resolve_url(const char *base, const char *rel, char *out, size_t out
 	snprintf(out, outlen, "gemini://%s%s%s", bhost, portpart, norm);
 }
 
-/* Simple word-wrap for long paragraphs and link labels. Returns malloc'ed array of lines (caller frees). */
+/* Simple word-wrap (UTF-8 aware). Returns malloc'ed array of lines. */
 static char **wrap_text(FT_Face face, const char *text, int max_width, int *nlines)
 {
-	*nlines = 0;
-	if (!face || !text || !*text || max_width < 20) return NULL;
 	char **lines = NULL;
 	int n = 0, cap = 0;
-	int len = strlen(text);
+	int len;
 	int i = 0;
+
+	*nlines = 0;
+	if (!face || !text || !*text || max_width < 20)
+		return NULL;
+	len = (int)strlen(text);
 	while (i < len) {
 		int j = i;
 		int last_space = -1;
 		int w = 0;
-		for (; j < len; j++) {
-			unsigned char ch = (unsigned char)text[j];
-			if (FT_Load_Char(face, ch, FT_LOAD_DEFAULT) == 0)
+
+		while (j < len) {
+			const char *cp = text + j;
+			size_t left = (size_t)(len - j);
+			const char *start = cp;
+			uint32_t ch = bgtk_utf8_next_n(&cp, &left);
+			int nbytes = (int)(cp - start);
+
+			if (nbytes < 1)
+				break;
+			if (FT_Load_Char(face, (FT_ULong)ch, FT_LOAD_DEFAULT) == 0)
 				w += face->glyph->advance.x >> 6;
-			if (w > max_width && j > i) break;
-			if (isspace(ch)) last_space = j;
+			if (w > max_width && j > i)
+				break;
+			if (ch < 128 && isspace((unsigned char)ch))
+				last_space = j;
+			j += nbytes;
 		}
-		int end = (j >= len) ? len : (last_space > i ? last_space : j);
-		int lnlen = end - i;
-		char *ln = malloc(lnlen + 1);
-		memcpy(ln, text + i, lnlen);
-		ln[lnlen] = 0;
-		while (lnlen > 0 && isspace((unsigned char)ln[lnlen-1])) ln[--lnlen] = 0;
-		if (n >= cap) {
-			cap = cap ? cap * 2 : 8;
-			lines = realloc(lines, cap * sizeof(char *));
+		{
+			int end = (j >= len) ? len : (last_space > i ? last_space : j);
+			int lnlen = end - i;
+			char *ln = malloc((size_t)lnlen + 1);
+
+			if (!ln)
+				break;
+			memcpy(ln, text + i, (size_t)lnlen);
+			ln[lnlen] = 0;
+			while (lnlen > 0 &&
+			       isspace((unsigned char)ln[lnlen - 1]))
+				ln[--lnlen] = 0;
+			if (n >= cap) {
+				cap = cap ? cap * 2 : 8;
+				lines = realloc(lines, (size_t)cap * sizeof(char *));
+				if (!lines)
+					break;
+			}
+			lines[n++] = ln;
+			i = end;
+			while (i < len && isspace((unsigned char)text[i]))
+				i++;
 		}
-		lines[n++] = ln;
-		i = end;
-		while (i < len && isspace((unsigned char)text[i])) i++;
 	}
 	*nlines = n;
 	return lines;
@@ -497,11 +544,12 @@ static void rebuild_content_from_gemtext(const char *body)
 		} else if (!strncmp(line, "### ", 4)) {
 			snprintf(vis, sizeof(vis), "%s", line + 4);
 			header_level = 3;
-		} else if (!strncmp(line, "> ", 2) || !strncmp(line, "* ", 2)) {
-			snprintf(vis, sizeof(vis), "%s", line[0]=='*' ? "\xe2\x80\xa2 " : "");
-			if (line[0]=='*') strncat(vis, line+2, sizeof(vis)-strlen(vis)-1);
-			else strncat(vis, line, sizeof(vis)-strlen(vis)-1);
-			if (line[0]=='*') item_color = 10;
+		} else if (!strncmp(line, "* ", 2)) {
+			/* U+2022 bullet (UTF-8). */
+			snprintf(vis, sizeof(vis), "\xe2\x80\xa2 %s", line + 2);
+			item_color = 10;
+		} else if (!strncmp(line, "> ", 2)) {
+			snprintf(vis, sizeof(vis), "%s", line);
 		} else {
 			snprintf(vis, sizeof(vis), "%s", line);
 		}
@@ -683,7 +731,7 @@ int main(void)
 
 	int width = 640;
 	int height = 500;
-	int pad, mar, half, usable_w, reserved, scroll_h;
+	int pad, mar, bw;
 	struct BGTK_Widget *main_items[2];
 	struct BGTK_Widget *frame;
 
@@ -693,41 +741,28 @@ int main(void)
 		return 1;
 	}
 
-	pad = theme_pad();
-	mar = theme_mar();
-	half = mar > 1 ? mar / 2 : 1;
-	usable_w = width - chrome_inset();
-	if (usable_w < 80)
-		usable_w = 80;
-
-	/* Full-width URL bar; Enter navigates. */
-	addr_input = bgtk_text_input(ctx, "gemini://geminiprotocol.net/",
-				     usable_w, 0,
-				     (BGTK_Options){
-					     .padding = pad > 2 ? pad / 2 : 2,
-					     .margin = half});
+	gemini_chrome(&pad, &mar, &bw);
+	addr_input = bgtk_text_input(
+		ctx, "gemini://geminiprotocol.net/", 200, 0,
+		(BGTK_Options){.padding = pad > 2 ? pad / 2 : 2, .margin = 0});
 	addr_input->data.text_input.on_enter = demo_addr_on_enter;
 
 	content_scroll = bgtk_scrollable(
-		ctx, NULL, 0, (BGTK_Options){.padding = half, .margin = half});
-	reserved = (addr_input->h > 0 ? addr_input->h : 28) + chrome_inset();
-	scroll_h = height - reserved;
-	if (scroll_h < 80)
-		scroll_h = 80;
-	content_scroll->w = usable_w;
-	content_scroll->h = scroll_h;
+		ctx, NULL, 0,
+		(BGTK_Options){.padding = pad > 2 ? pad / 2 : 2, .margin = 0});
 
 	main_items[0] = content_scroll;
 	main_items[1] = addr_input;
 	main_list = bgtk_list(ctx, main_items, 2,
 			      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
-					     .padding = half,
-					     .margin = half});
+					     .padding = 0,
+					     .margin = 0});
 
 	frame = bgtk_frame(ctx, main_list, width, height,
-			   (BGTK_Options){.padding = pad, .margin = 0});
+			   (BGTK_Options){.padding = pad, .margin = mar});
 	root_frame = frame;
 	ctx->root_widget = frame;
+	gemini_layout_chrome();
 
 	/* === Real capsule load === */
 	load_real_url("gemini://geminiprotocol.net/");
@@ -779,9 +814,10 @@ int main(void)
 
 	/* Wheel scroll: force a short viewport so content is taller. */
 	{
-		int before, after;
+		int before, after, full_h;
 		struct InputEvent w = {0};
 
+		full_h = content_scroll->h;
 		content_scroll->h = 180;
 		if (content_scroll->data.scrollable.tmp) {
 			free(content_scroll->data.scrollable.tmp);
@@ -835,7 +871,7 @@ int main(void)
 		}
 		take_screenshot(ctx, "gemini_browser_00b_scrolled.png");
 		/* Restore full height for the rest of the suite. */
-		content_scroll->h = scroll_h;
+		content_scroll->h = full_h > 0 ? full_h : content_scroll->h;
 		if (content_scroll->data.scrollable.tmp) {
 			free(content_scroll->data.scrollable.tmp);
 			content_scroll->data.scrollable.tmp = NULL;

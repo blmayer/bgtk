@@ -22,6 +22,98 @@ static uint32_t pack_argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b)
 	       (uint32_t)b;
 }
 
+/* ------------------------------------------------------------------ */
+/* UTF-8 decode (no allocation; FreeType wants Unicode codepoints)    */
+/* ------------------------------------------------------------------ */
+
+uint32_t bgtk_utf8_next_n(const char **s, size_t *nleft)
+{
+	const unsigned char *p;
+	size_t n;
+	uint32_t c;
+
+	if (!s || !*s || !nleft || *nleft == 0)
+		return 0;
+	p = (const unsigned char *)*s;
+	n = *nleft;
+	c = p[0];
+
+	/* ASCII */
+	if (c < 0x80) {
+		*s = (const char *)(p + 1);
+		*nleft = n - 1;
+		return c;
+	}
+
+	/* 2-byte: 110xxxxx 10xxxxxx */
+	if ((c & 0xE0) == 0xC0) {
+		if (n < 2 || (p[1] & 0xC0) != 0x80)
+			goto bad;
+		c = ((c & 0x1Fu) << 6) | (p[1] & 0x3Fu);
+		if (c < 0x80)
+			goto bad; /* overlong */
+		*s = (const char *)(p + 2);
+		*nleft = n - 2;
+		return c;
+	}
+
+	/* 3-byte: 1110xxxx 10xxxxxx 10xxxxxx */
+	if ((c & 0xF0) == 0xE0) {
+		if (n < 3 || (p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80)
+			goto bad;
+		c = ((c & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+		if (c < 0x800 || (c >= 0xD800 && c <= 0xDFFF))
+			goto bad; /* overlong / surrogate */
+		*s = (const char *)(p + 3);
+		*nleft = n - 3;
+		return c;
+	}
+
+	/* 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx */
+	if ((c & 0xF8) == 0xF0) {
+		if (n < 4 || (p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80 ||
+		    (p[3] & 0xC0) != 0x80)
+			goto bad;
+		c = ((c & 0x07u) << 18) | ((p[1] & 0x3Fu) << 12) |
+		    ((p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu);
+		if (c < 0x10000 || c > 0x10FFFF)
+			goto bad;
+		*s = (const char *)(p + 4);
+		*nleft = n - 4;
+		return c;
+	}
+
+bad:
+	/* Skip one byte; render replacement if caller cares. */
+	*s = (const char *)(p + 1);
+	*nleft = n - 1;
+	return 0xFFFD;
+}
+
+uint32_t bgtk_utf8_next(const char **s)
+{
+	size_t n;
+
+	if (!s || !*s || !**s)
+		return 0;
+	/* Bound by remaining string length (safe for untrusted input). */
+	n = strlen(*s);
+	return bgtk_utf8_next_n(s, &n);
+}
+
+static int load_cp(FT_Face face, uint32_t cp, int style)
+{
+	if (!face)
+		return -1;
+	if (FT_Load_Char(face, (FT_ULong)cp,
+			 FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP))
+		return -1;
+	if ((style & BGTK_TEXT_BOLD) &&
+	    face->glyph->format == FT_GLYPH_FORMAT_OUTLINE)
+		FT_GlyphSlot_Embolden(face->glyph);
+	return 0;
+}
+
 // Loads an image file into a pixel buffer as 0xAARRGGBB uint32 pixels.
 // stbi gives RGBA bytes; casting those to uint32 is wrong (R/B swap on LE).
 // Returns 0 on success, -1 on failure.
@@ -106,34 +198,83 @@ void measure_text(FT_Face face, const char *text, int *out_width,
 void measure_text_style(FT_Face face, const char *text, int style,
 			int *out_width, int *out_height)
 {
-	if (!face || !text) {
-		int n = text ? (int)strlen(text) : 0;
-		*out_width = n * 7;
-		*out_height = 12;
-		if (style & BGTK_TEXT_BOLD)
-			*out_width += n;
+	int width = 0;
+	int ncp = 0;
+	const char *p;
+
+	if (!text) {
+		if (out_width)
+			*out_width = 0;
+		if (out_height)
+			*out_height = 12;
 		return;
 	}
+	{
+		size_t left = strlen(text);
 
-	int width = 0;
-	for (const char *p = text; *p; p++) {
-		if (FT_Load_Char(face, (unsigned char)*p,
-				 FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP))
-			continue;
-		if ((style & BGTK_TEXT_BOLD) &&
-		    face->glyph->format == FT_GLYPH_FORMAT_OUTLINE)
-			FT_GlyphSlot_Embolden(face->glyph);
-		width += face->glyph->advance.x;
+		if (!face) {
+			/* Crude: count codepoints for fallback width. */
+			p = text;
+			while (left > 0) {
+				if (!bgtk_utf8_next_n(&p, &left))
+					break;
+				ncp++;
+			}
+			if (out_width)
+				*out_width = ncp * 7 +
+					     ((style & BGTK_TEXT_BOLD) ? ncp : 0);
+			if (out_height)
+				*out_height = 12;
+			return;
+		}
+
+		p = text;
+		while (left > 0) {
+			uint32_t cp = bgtk_utf8_next_n(&p, &left);
+
+			if (!cp)
+				break;
+			if (load_cp(face, cp, style) == 0)
+				width += face->glyph->advance.x;
+			ncp++;
+		}
 	}
 	width >>= 6;
 	/* Synthetic italic shear needs a little end padding. */
 	if (style & BGTK_TEXT_ITALIC)
 		width += (face->size->metrics.height >> 6) / 4;
 
-	int ascent = face->size->metrics.ascender >> 6;
-	int descent = -face->size->metrics.descender >> 6;
-	*out_width = width;
-	*out_height = ascent + descent;
+	if (out_width)
+		*out_width = width;
+	if (out_height) {
+		int ascent = face->size->metrics.ascender >> 6;
+		int descent = -face->size->metrics.descender >> 6;
+		*out_height = ascent + descent;
+	}
+}
+
+int measure_text_prefix(FT_Face face, const char *text, int nbytes)
+{
+	int width = 0;
+	const char *p;
+	size_t left;
+
+	if (!text || nbytes <= 0)
+		return 0;
+	if (!face)
+		return nbytes * 7;
+
+	p = text;
+	left = (size_t)nbytes;
+	while (left > 0 && *p) {
+		uint32_t cp = bgtk_utf8_next_n(&p, &left);
+		if (!cp)
+			break;
+		if (FT_Load_Char(face, (FT_ULong)cp,
+				 FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP) == 0)
+			width += face->glyph->advance.x;
+	}
+	return width >> 6;
 }
 
 void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
@@ -230,12 +371,15 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 		w->data.scrollable.content_height = cy;
 		break;
 	}
-	case BGTK_WIDGET_LIST:
-		w->data.list_widget.content_width = 0;
-		w->data.list_widget.content_height = 0;
+	case BGTK_WIDGET_LIST: {
 		int max_width = 0;
 		int max_height = 0;
-		for (int i = 0; i < w->data.list_widget.widget_count; i++) {
+		int inset = 2 * (w->margin + w->padding);
+		int n = w->data.list_widget.widget_count;
+
+		w->data.list_widget.content_width = 0;
+		w->data.list_widget.content_height = 0;
+		for (int i = 0; i < n; i++) {
 			struct BGTK_Widget *child =
 			    w->data.list_widget.items[i];
 			calculate_widget_size(ctx, child);
@@ -243,36 +387,36 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 			    BGTK_LIST_VERTICAL) {
 				w->data.list_widget.content_height +=
 				    child->h + 2 * w->margin;
-				if (child->w > max_width) {
+				if (child->w > max_width)
 					max_width = child->w;
-				}
-			} else {	// BGTK_LIST_HORIZONTAL
+			} else {
 				w->data.list_widget.content_width +=
 				    child->w + 2 * w->margin;
-				if (child->h > max_height) {
+				if (child->h > max_height)
 					max_height = child->h;
-				}
 			}
 		}
-
-		// Subtract the last margin
-		if (w->data.list_widget.widget_count > 0) {
+		if (n > 0) {
 			if (w->data.list_widget.orientation ==
-			    BGTK_LIST_VERTICAL) {
+			    BGTK_LIST_VERTICAL)
 				w->data.list_widget.content_height -=
 				    2 * w->margin;
-			} else {
+			else
 				w->data.list_widget.content_width -=
 				    2 * w->margin;
-			}
 		}
-		// Use max dimensions for the other axis
+		/* Intrinsic outer size: content + outer pad/margin inset. */
 		if (w->data.list_widget.orientation == BGTK_LIST_VERTICAL) {
 			w->data.list_widget.content_width = max_width;
+			w->w = max_width + inset;
+			w->h = w->data.list_widget.content_height + inset;
 		} else {
 			w->data.list_widget.content_height = max_height;
+			w->h = max_height + inset;
+			w->w = w->data.list_widget.content_width + inset;
 		}
 		break;
+	}
 	case BGTK_WIDGET_IMAGE:
 	case BGTK_WIDGET_TEXT_INPUT:
 		// Text input is a fixed-size widget; its size is set by
@@ -307,6 +451,13 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
 			const char *text, int x, int y, uint32_t color,
 			int style, int baseline_offset)
 {
+	int pen_x, pen_y, stride;
+	FT_Matrix italic;
+	size_t left;
+	const char *p;
+
+	if (!text || !*text)
+		return;
 	if (!ctx->ft_face) {
 		draw_rect(ctx, pixels, x, y, 5, 5, color);
 		return;
@@ -314,19 +465,30 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
 	FT_Set_Pixel_Sizes(ctx->ft_face, 0,
 			   ctx->font_size > 0 ? ctx->font_size : 14);
 
-	int pen_x = x;
+	pen_x = x;
 	/* y is top of the text box; FreeType pen is baseline. */
-	int pen_y = y + (ctx->ft_face->size->metrics.ascender >> 6) +
-		    baseline_offset;
+	pen_y = y + (ctx->ft_face->size->metrics.ascender >> 6) +
+		baseline_offset;
 	if (ctx->theme.text_baseline_offset)
 		pen_y += ctx->theme.text_baseline_offset;
-	int stride = ctx->width;
+	stride = ctx->width;
 	/* ~12° synthetic italic shear (16.16 fixed). */
-	FT_Matrix italic = { .xx = 0x10000, .xy = 0x5000, .yx = 0, .yy = 0x10000 };
+	italic = (FT_Matrix){ .xx = 0x10000, .xy = 0x5000, .yx = 0, .yy = 0x10000 };
 
-	for (const char *p = text; *p; p++) {
-		FT_UInt index =
-			FT_Get_Char_Index(ctx->ft_face, (unsigned char)*p);
+	left = strlen(text);
+	p = text;
+
+	while (left > 0) {
+		uint32_t cp = bgtk_utf8_next_n(&p, &left);
+		FT_UInt index;
+		FT_GlyphSlot slot;
+		FT_Bitmap *bitmap;
+		int gx, gy;
+		unsigned int row, col;
+
+		if (!cp)
+			break;
+		index = FT_Get_Char_Index(ctx->ft_face, (FT_ULong)cp);
 		if (FT_Load_Glyph(ctx->ft_face, index,
 				  FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP |
 					  FT_LOAD_TARGET_LIGHT))
@@ -343,33 +505,38 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
 		if (FT_Render_Glyph(ctx->ft_face->glyph, FT_RENDER_MODE_NORMAL))
 			continue;
 
-		FT_GlyphSlot slot = ctx->ft_face->glyph;
-		FT_Bitmap *bitmap = &slot->bitmap;
-		int gx = pen_x + slot->bitmap_left;
-		int gy = pen_y - slot->bitmap_top;
+		slot = ctx->ft_face->glyph;
+		bitmap = &slot->bitmap;
+		gx = pen_x + slot->bitmap_left;
+		gy = pen_y - slot->bitmap_top;
 
-		for (unsigned int row = 0; row < bitmap->rows; row++) {
-			for (unsigned int col = 0; col < bitmap->width; col++) {
+		for (row = 0; row < bitmap->rows; row++) {
+			for (col = 0; col < bitmap->width; col++) {
 				uint8_t a =
 				    bitmap->buffer[row * bitmap->pitch + col];
+				int32_t dx, dy;
+				uint32_t dst;
+				uint8_t inv, r_dst, g_dst, b_dst;
+				uint8_t r_src, g_src, b_src, r, g, b;
+
 				if (a == 0)
 					continue;
-				int32_t dx = gx + (int)col;
-				int32_t dy = gy + (int)row;
+				dx = gx + (int)col;
+				dy = gy + (int)row;
 				if (dx < 0 || dy < 0 || dx >= ctx->width ||
 				    dy >= ctx->height)
 					continue;
-				uint32_t dst = pixels[dy * stride + dx];
-				uint8_t inv = 255 - a;
-				uint8_t r_dst = (dst >> 16) & 0xFF;
-				uint8_t g_dst = (dst >> 8) & 0xFF;
-				uint8_t b_dst = (dst) & 0xFF;
-				uint8_t r_src = (color >> 16) & 0xFF;
-				uint8_t g_src = (color >> 8) & 0xFF;
-				uint8_t b_src = (color) & 0xFF;
-				uint8_t r = (r_src * a + r_dst * inv) / 255;
-				uint8_t g = (g_src * a + g_dst * inv) / 255;
-				uint8_t b = (b_src * a + b_dst * inv) / 255;
+				dst = pixels[dy * stride + dx];
+				inv = 255 - a;
+				r_dst = (dst >> 16) & 0xFF;
+				g_dst = (dst >> 8) & 0xFF;
+				b_dst = (dst) & 0xFF;
+				r_src = (color >> 16) & 0xFF;
+				g_src = (color >> 8) & 0xFF;
+				b_src = (color) & 0xFF;
+				r = (r_src * a + r_dst * inv) / 255;
+				g = (g_src * a + g_dst * inv) / 255;
+				b = (b_src * a + b_dst * inv) / 255;
 				pixels[dy * stride + dx] =
 				    (0xFFu << 24) | (r << 16) | (g << 8) | b;
 			}
@@ -909,17 +1076,29 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		uint8_t g_src = (text_color >> 8) & 0xFF;
 		uint8_t b_src = text_color & 0xFF;
 
-		for (const char *p = full; *p; p++) {
-			FT_UInt index = FT_Get_Char_Index(ctx->ft_face, (unsigned char)*p);
+		{
+		size_t left = strlen(full);
+		const char *p = full;
+
+		while (left > 0) {
+			uint32_t cp = bgtk_utf8_next_n(&p, &left);
+			FT_UInt index;
+			FT_GlyphSlot slot;
+			FT_Bitmap *bitmap;
+			int gx, gy;
+
+			if (!cp)
+				break;
+			index = FT_Get_Char_Index(ctx->ft_face, (FT_ULong)cp);
 			if (FT_Load_Glyph(ctx->ft_face, index,
 					  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT))
 				continue;
 			FT_Render_Glyph(ctx->ft_face->glyph, FT_RENDER_MODE_NORMAL);
 
-			FT_GlyphSlot slot = ctx->ft_face->glyph;
-			FT_Bitmap *bitmap = &slot->bitmap;
-			int gx = pen_x + slot->bitmap_left;
-			int gy = pen_y - slot->bitmap_top;
+			slot = ctx->ft_face->glyph;
+			bitmap = &slot->bitmap;
+			gx = pen_x + slot->bitmap_left;
+			gy = pen_y - slot->bitmap_top;
 
 			if (gx + (int)bitmap->width <= inner_x0) {
 				pen_x += slot->advance.x >> 6;
@@ -934,41 +1113,37 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 					continue;
 				for (unsigned int col = 0; col < bitmap->width; col++) {
 					int32_t dx = gx + (int)col;
+					uint8_t a, inv, r_dst, g_dst, b_dst, r, g, b;
+					uint32_t dst;
+
 					if (dx < inner_x0 || dx >= inner_x0 + inner_w)
 						continue;
-
-					uint8_t a =
-					    bitmap->buffer[row * bitmap->pitch + col];
+					a = bitmap->buffer[row * bitmap->pitch + col];
 					if (a == 0)
 						continue;
-
-					uint32_t dst = pixels[dy * stride + dx];
-					uint8_t inv = 255 - a;
-					uint8_t r_dst = (dst >> 16) & 0xFF;
-					uint8_t g_dst = (dst >> 8) & 0xFF;
-					uint8_t b_dst = dst & 0xFF;
-					uint8_t r = (r_src * a + r_dst * inv) / 255;
-					uint8_t g = (g_src * a + g_dst * inv) / 255;
-					uint8_t b = (b_src * a + b_dst * inv) / 255;
+					dst = pixels[dy * stride + dx];
+					inv = 255 - a;
+					r_dst = (dst >> 16) & 0xFF;
+					g_dst = (dst >> 8) & 0xFF;
+					b_dst = dst & 0xFF;
+					r = (r_src * a + r_dst * inv) / 255;
+					g = (g_src * a + g_dst * inv) / 255;
+					b = (b_src * a + b_dst * inv) / 255;
 					pixels[dy * stride + dx] =
 					    (0xFFu << 24) | (r << 16) | (g << 8) | b;
 				}
 			}
 			pen_x += slot->advance.x >> 6;
 		}
+		} /* UTF-8 walk */
 	}
 
 	if (focused) {
 		int cursor_x = text_x - scroll_x + align_off;
 		if (ctx->ft_face && w->data.text_input.text) {
-			for (uint32_t i = 0; i < w->data.text_input.cursor_pos; i++) {
-				FT_UInt index = FT_Get_Char_Index(
-					ctx->ft_face,
-					(unsigned char)w->data.text_input.text[i]);
-				if (FT_Load_Glyph(ctx->ft_face, index, FT_LOAD_DEFAULT))
-					continue;
-				cursor_x += ctx->ft_face->glyph->advance.x >> 6;
-			}
+			cursor_x += measure_text_prefix(
+				ctx->ft_face, w->data.text_input.text,
+				(int)w->data.text_input.cursor_pos);
 		} else {
 			cursor_x += (int)w->data.text_input.cursor_pos * 7;
 		}

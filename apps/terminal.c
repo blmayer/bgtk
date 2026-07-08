@@ -130,9 +130,40 @@ static void pty_set_winsize(int master_fd, int cols, int rows)
 		bgtk_log_errno("TIOCSWINSZ master %dx%d", cols, rows);
 }
 
-static int term_chrome_pad(struct BGTK_Context *ctx)
+/* Theme spacing: frame draws [margin][border][padding][child]… */
+static void term_chrome(struct BGTK_Context *ctx, int *pad, int *mar, int *bw)
 {
-	return (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 0;
+	int p = (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 6;
+	int m = (ctx && ctx->theme.margin > 0) ? ctx->theme.margin : 4;
+	int b = ctx ? (int)ctx->theme.frame_border_size : 1;
+
+	if (b < 0)
+		b = 0;
+	if (pad)
+		*pad = p;
+	if (mar)
+		*mar = m;
+	if (bw)
+		*bw = b;
+}
+
+static int term_inner_size(struct BGTK_Context *ctx, int win_w, int win_h,
+			   int *out_w, int *out_h)
+{
+	int pad, mar, bw, iw, ih;
+
+	term_chrome(ctx, &pad, &mar, &bw);
+	iw = win_w - 2 * (mar + bw + pad);
+	ih = win_h - 2 * (mar + bw + pad);
+	if (iw < 1)
+		iw = 1;
+	if (ih < 1)
+		ih = 1;
+	if (out_w)
+		*out_w = iw;
+	if (out_h)
+		*out_h = ih;
+	return 0;
 }
 
 /* Rebuild image surface + cell grid for a new window size. */
@@ -140,14 +171,10 @@ static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
 			       struct BGTK_Widget *img, struct BGTK_Widget *frame,
 			       int master_fd, int *inner_w, int *inner_h)
 {
-	int bw = ctx->theme.frame_border_size;
-	int pad = term_chrome_pad(ctx);
-	int iw = ctx->width - 2 * (bw + pad);
-	int ih = ctx->height - 2 * (bw + pad);
-	if (iw < 1)
-		iw = 1;
-	if (ih < 1)
-		ih = 1;
+	int pad, mar, bw, iw, ih;
+
+	term_chrome(ctx, &pad, &mar, &bw);
+	term_inner_size(ctx, ctx->width, ctx->height, &iw, &ih);
 
 	term_measure_cell(ts, ctx);
 	int cols = iw / ts->cell_w;
@@ -173,12 +200,14 @@ static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
 	img->data.image.img_h = ih;
 	img->w = iw;
 	img->h = ih;
+	img->padding = 0;
+	img->margin = 0;
 
 	if (frame) {
 		frame->w = ctx->width;
 		frame->h = ctx->height;
 		frame->padding = pad;
-		frame->margin = 0;
+		frame->margin = mar;
 	}
 
 	*inner_w = iw;
@@ -187,8 +216,9 @@ static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
 	if (master_fd >= 0)
 		pty_set_winsize(master_fd, cols, rows);
 
-	bgtk_log("terminal size window=%dx%d inner=%dx%d grid=%dx%d cell=%dx%d",
-		 ctx->width, ctx->height, iw, ih, cols, rows,
+	bgtk_log("terminal size window=%dx%d inner=%dx%d grid=%dx%d "
+		 "pad=%d mar=%d bw=%d cell=%dx%d",
+		 ctx->width, ctx->height, iw, ih, cols, rows, pad, mar, bw,
 		 ts->cell_w, ts->cell_h);
 	return 0;
 }
@@ -227,28 +257,25 @@ int main(void)
 	}
 
 	struct Term_State tmp_ts = {0};
+	int pad, mar, bw, inner_w, inner_h, cols, rows;
+
 	tmp_ts.cols = tmp_ts.rows = 1;
 	term_measure_cell(&tmp_ts, ctx);
 
-	int bw = ctx->theme.frame_border_size;
-	int pad = term_chrome_pad(ctx);
-	int inner_w = width - 2 * (bw + pad);
-	int inner_h = height - 2 * (bw + pad);
-	if (inner_w < 1)
-		inner_w = 1;
-	if (inner_h < 1)
-		inner_h = 1;
-	int cols = inner_w / tmp_ts.cell_w;
-	int rows = inner_h / tmp_ts.cell_h;
+	term_chrome(ctx, &pad, &mar, &bw);
+	term_inner_size(ctx, width, height, &inner_w, &inner_h);
+	cols = inner_w / tmp_ts.cell_w;
+	rows = inner_h / tmp_ts.cell_h;
 	if (cols < 1)
 		cols = 1;
 	if (rows < 1)
 		rows = 1;
 	{
 		FT_Face mono = bgtk_font_face(ctx, BGTK_FONT_MONO);
-		bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d pad=%d mono='%s' fixed=%d family='%s'",
+		bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d pad=%d mar=%d bw=%d "
+			 "mono='%s' fixed=%d family='%s'",
 			 tmp_ts.cell_w, tmp_ts.cell_h, cols, rows, inner_w,
-			 inner_h, pad,
+			 inner_h, pad, mar, bw,
 			 ctx->font_mono_path[0] ? ctx->font_mono_path
 						: "(none)",
 			 mono && FT_IS_FIXED_WIDTH(mono) ? 1 : 0,
@@ -264,7 +291,8 @@ int main(void)
 	ts->cell_h = tmp_ts.cell_h;
 
 	struct BGTK_Widget *img = bgtk_image(ctx, NULL, inner_w, inner_h,
-					     (BGTK_Options){0});
+					     (BGTK_Options){.padding = 0,
+							    .margin = 0});
 	img->data.image.pixels = calloc((size_t)inner_w * inner_h,
 					sizeof(uint32_t));
 	if (!img->data.image.pixels) {
@@ -273,9 +301,10 @@ int main(void)
 	}
 	img->data.image.img_w = inner_w;
 	img->data.image.img_h = inner_h;
+	/* Root frame: margin outside border, padding between border and cells. */
 	struct BGTK_Widget *frame = bgtk_frame(ctx, img, width, height,
 					       (BGTK_Options){.padding = pad,
-							      .margin = 0});
+							      .margin = mar});
 	ctx->root_widget = frame;
 
 	int master_fd;
