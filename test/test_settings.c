@@ -101,8 +101,8 @@ int main(void)
 		click.code = BTN_LEFT;
 		click.value = 1;
 		/* Apply sits under the aspect-correct preview (fills leftover). */
-		click.x = 192;
-		click.y = 400;
+		click.x = 220;
+		click.y = 430;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		if (!bgtk_inject_event(ctx, click)) {
@@ -318,9 +318,9 @@ int main(void)
 		click.type = EV_KEY;
 		click.code = BTN_LEFT;
 		click.value = 1;
-		/* Content scroll ~161,17; first input ~151,14 (see probe). */
-		click.x = 161 + 151 + 20;
-		click.y = 17 + 14 + 12;
+		/* First theme color field (Background) under Goldie chrome. */
+		click.x = 360;
+		click.y = 42;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		bgtk_inject_event(ctx, click);

@@ -74,6 +74,14 @@ static char *collect_text(xmlNode *node)
 	return out ? out : strdup("");
 }
 
+/* Theme spacing when ctx is available; fall back to hard defaults. */
+static int theme_pad(struct BGTK_Context *ctx, int fallback)
+{
+	if (ctx && ctx->theme.padding > 0)
+		return ctx->theme.padding;
+	return fallback;
+}
+
 // Build an BGTK_Options from common HTML attributes on a node.
 static BGTK_Options opts_from_node(xmlNode *node, int def_pad, int def_margin)
 {
@@ -568,9 +576,13 @@ static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
 		}
 	}
 
-	/* Keep cell chrome minimal so labels/controls share the same left edge
-	 * as block widgets below the table (<p>, Apply buttons, etc.). */
-	int cell_pad = 2;
+	/* Cell pad from theme (half of padding, min 2) so forms breathe
+	 * without huge empty bands between rows. */
+	int cell_pad = theme_pad(ctx, 4) / 2;
+	if (cell_pad < 2)
+		cell_pad = 2;
+	if (cell_pad > 8)
+		cell_pad = 8;
 	struct BGTK_Widget *frame = bgtk_frame(ctx, content,
 		content->w + 2 * cell_pad, content->h + 2 * cell_pad,
 		(BGTK_Options){.padding = cell_pad, .margin = 0});
@@ -671,11 +683,16 @@ static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
 		}
 	}
 
-	/* Gap between columns (extra width on all but last). Left-aligned
-	 * labels keep their left edge; space appears before the next col. */
-	const int col_gap = 16;
-	for (int c = 0; c < max_cols - 1; c++)
-		col_widths[c] += col_gap;
+	/* Gap between columns from theme padding (min 8, max 24). */
+	{
+		int col_gap = theme_pad(ctx, 8);
+		if (col_gap < 8)
+			col_gap = 8;
+		if (col_gap > 24)
+			col_gap = 24;
+		for (int c = 0; c < max_cols - 1; c++)
+			col_widths[c] += col_gap;
+	}
 
 	// Equalize: every cell in a column gets the same width,
 	// every cell in a row gets the same height.
@@ -814,25 +831,29 @@ static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
 	}
 
 	// Scrollable page; outer frame is borderless (host UI supplies chrome).
-	struct BGTK_Widget **items = malloc(sizeof(struct BGTK_Widget *));
-	items[0] = content;
-	struct BGTK_Widget *scroll = bgtk_scrollable(ctx, items, 1,
-		(BGTK_Options){.padding = 4, .margin = 0});
-	free(items);
-	if (!scroll) {
+	{
+		int pp = theme_pad(ctx, 4);
+		if (pp > 8)
+			pp = 8; /* page inset only — host frame has its own pad */
+		struct BGTK_Widget **items = malloc(sizeof(struct BGTK_Widget *));
+		items[0] = content;
+		struct BGTK_Widget *scroll = bgtk_scrollable(ctx, items, 1,
+			(BGTK_Options){.padding = pp, .margin = 0});
+		free(items);
+		if (!scroll) {
+			xmlFreeDoc(doc);
+			return content; // fallback
+		}
+		scroll->w = width;
+		scroll->h = height;
+
+		struct BGTK_Widget *frame = bgtk_frame(ctx, scroll, width, height,
+			(BGTK_Options){.padding = 0, .margin = 0});
+		if (frame)
+			frame->data.frame.border_w = 0;
 		xmlFreeDoc(doc);
-		return content; // fallback
+		return frame ? frame : scroll;
 	}
-	scroll->w = width;
-	scroll->h = height;
-
-	struct BGTK_Widget *frame = bgtk_frame(ctx, scroll, width, height,
-		(BGTK_Options){.padding = 0, .margin = 0});
-	if (frame)
-		frame->data.frame.border_w = 0;
-
-	xmlFreeDoc(doc);
-	return frame ? frame : scroll;
 }
 
 struct BGTK_Widget *bgtk_html_parse(struct BGTK_Context *ctx,

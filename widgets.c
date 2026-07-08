@@ -173,7 +173,10 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 	if (ev.code == KEY_ENTER || ev.code == KEY_KPENTER) {
 		if (widget->data.text_input.on_enter)
 			widget->data.text_input.on_enter();
-		if (ctx)
+		/* Skip redraw if the app already closed its BGCE connection
+		 * (e.g. launcher after spawn) — draw would paint a black
+		 * frame into a dying shm and race the compositor erase. */
+		if (ctx && ctx->conn_fd >= 0)
 			bgtk_draw_widgets(ctx);
 		return 1;
 	}

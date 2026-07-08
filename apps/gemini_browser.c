@@ -14,12 +14,95 @@
 static struct BGTK_Context *ctx = NULL;
 static struct BGTK_Widget *content_scroll = NULL;
 static struct BGTK_Widget *addr_input = NULL;
+static struct BGTK_Widget *main_list = NULL;
+static struct BGTK_Widget *root_frame = NULL;
 
 static char current_url[512] = "gemini://geminiprotocol.net/";
+/* Retained gemtext body so resize can reflow wrap without re-fetch. */
+static char *last_body = NULL;
 
 static struct BGTK_Widget *link_target_widgets[128];
 static char link_targets[128][512];
 static int num_page_links = 0;
+
+static void content_scroll_invalidate_tmp(void);
+static void rebuild_content_from_gemtext(const char *body);
+
+/* Line chrome: keep body lines dense; theme spacing is for outer chrome. */
+static BGTK_Options line_opts(void)
+{
+	return (BGTK_Options){.padding = 1, .margin = 1};
+}
+
+static int theme_pad(void)
+{
+	return (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 6;
+}
+
+static int theme_mar(void)
+{
+	return (ctx && ctx->theme.margin > 0) ? ctx->theme.margin : 4;
+}
+
+/* Outer chrome inset: frame border+pad + list pad/margin. */
+static int chrome_inset(void)
+{
+	int pad = theme_pad();
+	int mar = theme_mar();
+	int half = mar > 1 ? mar / 2 : 1;
+	int bw = ctx ? (int)ctx->theme.frame_border_size : 1;
+	if (bw < 1)
+		bw = 1;
+	return 2 * (pad + bw + half);
+}
+
+/* Size scroll + URL bar to the current window using theme spacing. */
+static void gemini_layout_chrome(void)
+{
+	int inset, usable_w, ah, scroll_h, half;
+
+	if (!ctx || !content_scroll || !addr_input)
+		return;
+
+	half = theme_mar() > 1 ? theme_mar() / 2 : 1;
+	inset = chrome_inset();
+	usable_w = ctx->width - inset;
+	if (usable_w < 80)
+		usable_w = 80;
+
+	addr_input->padding = theme_pad() > 2 ? theme_pad() / 2 : 2;
+	addr_input->margin = half;
+	content_scroll->padding = half;
+	content_scroll->margin = half;
+	if (main_list) {
+		main_list->padding = half;
+		main_list->margin = half;
+	}
+	if (root_frame) {
+		root_frame->padding = theme_pad();
+		root_frame->margin = 0;
+		root_frame->w = ctx->width;
+		root_frame->h = ctx->height;
+	}
+
+	ah = addr_input->h > 0 ? addr_input->h : 28;
+	scroll_h = ctx->height - ah - inset;
+	if (scroll_h < 80)
+		scroll_h = 80;
+
+	content_scroll->w = usable_w;
+	content_scroll->h = scroll_h;
+	addr_input->w = usable_w;
+	content_scroll_invalidate_tmp();
+}
+
+/* Resize chrome and reflow wrapped gemtext to the new width. */
+static void gemini_on_resize(void)
+{
+	gemini_layout_chrome();
+	if (last_body)
+		rebuild_content_from_gemtext(last_body);
+}
 
 /* libtls returns these when the underlying socket would block; they are
  * negative, so a naive `n <= 0` treats them as EOF and aborts the transfer. */
@@ -439,9 +522,12 @@ static void content_scroll_invalidate_tmp(void)
 	content_scroll->data.scrollable.widget_capacity = 0;
 }
 
-/* replace page content from gemtext body */
+/* replace page content from gemtext body (uses current content_scroll->w for wrap) */
 static void rebuild_content_from_gemtext(const char *body)
 {
+	int max_text_w;
+	int line_inset;
+
 	/* free old line widgets (all plain text) */
 	if (content_scroll->data.scrollable.items) {
 		for (int i = 0; i < content_scroll->data.scrollable.widget_count; i++) {
@@ -461,9 +547,14 @@ static void rebuild_content_from_gemtext(const char *body)
 	if (!body)
 		return;
 
-	int max_text_w = 480;
-	if (content_scroll && content_scroll->w > 100)
-		max_text_w = content_scroll->w - 8;
+	line_inset = 2 * (1 + 1); /* line pad+margin */
+	max_text_w = 480;
+	if (content_scroll && content_scroll->w > 100) {
+		max_text_w = content_scroll->w - 2 * content_scroll->padding -
+			     line_inset - 4;
+		if (max_text_w < 40)
+			max_text_w = 40;
+	}
 
 	/* copy for strtok */
 	char *work = strdup(body);
@@ -560,9 +651,7 @@ static void rebuild_content_from_gemtext(const char *body)
 			/* No wrap (null face / empty): still show one line. */
 			if (!subs || nsubs < 1) {
 				struct BGTK_Widget *tw =
-					bgtk_text(ctx, vis,
-						  (BGTK_Options){.padding = 1,
-								 .margin = 1});
+					bgtk_text(ctx, vis, line_opts());
 				if (tw) {
 					if (header_level > 0)
 						tw->data.text.header_level =
@@ -603,7 +692,7 @@ static void rebuild_content_from_gemtext(const char *body)
 				continue;
 			}
 			for (int s = 0; s < nsubs; s++) {
-				struct BGTK_Widget *tw = bgtk_text(ctx, subs[s], (BGTK_Options){.padding = 1, .margin = 1});
+				struct BGTK_Widget *tw = bgtk_text(ctx, subs[s], line_opts());
 				if (!tw) continue;
 				if (header_level > 0) {
 					tw->data.text.header_level = header_level;
@@ -638,7 +727,7 @@ static void rebuild_content_from_gemtext(const char *body)
 			for (int s = 0; s < nsubs; s++) free(subs[s]);
 			free(subs);
 		} else {
-			struct BGTK_Widget *tw = bgtk_text(ctx, vis, (BGTK_Options){.padding = 1, .margin = 1});
+			struct BGTK_Widget *tw = bgtk_text(ctx, vis, line_opts());
 			if (tw) {
 				tw->h += 4;  /* space after pre block */
 				if (cnt >= cap) {
@@ -752,8 +841,7 @@ static void load_url(const char *url)
 			 feres, meta ? meta : "");
 		bgtk_log("load_url: showing error page: %s", errline);
 		struct BGTK_Widget *et =
-			bgtk_text(ctx, errline,
-				  (BGTK_Options){.padding = 2, .margin = 1});
+			bgtk_text(ctx, errline, line_opts());
 		struct BGTK_Widget **errs = calloc(1, sizeof(*errs));
 		if (errs)
 			errs[0] = et;
@@ -761,10 +849,21 @@ static void load_url(const char *url)
 		content_scroll->data.scrollable.widget_count = errs ? 1 : 0;
 		content_scroll->data.scrollable.scroll_y = 0;
 		content_scroll_invalidate_tmp();
+		/* Drop retained body so resize does not reflow a prior page. */
+		free(last_body);
+		last_body = NULL;
+		if (body) {
+			free(body);
+			body = NULL;
+		}
 	} else {
 		bgtk_log("load_url: rendering success body (%zu bytes)",
 			 body ? strlen(body) : 0);
-		rebuild_content_from_gemtext(body);
+		free(last_body);
+		/* Keep body for wrap reflow on MSG_BUFFER_CHANGE. */
+		last_body = body;
+		body = NULL;
+		rebuild_content_from_gemtext(last_body);
 	}
 
 	/* sync address bar (it serves as the URL display) */
@@ -804,7 +903,6 @@ int main(void)
 	int reserved;
 	int scroll_h;
 	struct BGTK_Widget *main_items[2];
-	struct BGTK_Widget *main_list;
 	struct BGTK_Widget *frame;
 	struct BGTK_Widget *loading;
 	struct BGTK_Widget **loading_items;
@@ -854,45 +952,54 @@ int main(void)
 		 (void *)ctx->ft_face, (void *)ctx->ft_face_mono,
 		 (void *)ctx->ft_face_serif);
 
-	/* Frame pad 4×2; keep chrome tight so the URL bar sits near the bottom. */
-	usable_w = width - 16;
+	{
+		int pad = theme_pad();
+		int mar = theme_mar();
+		int half = mar > 1 ? mar / 2 : 1;
+		int addr_pad = pad > 2 ? pad / 2 : 2;
 
-	/* Full-width URL bar; Enter navigates (no Go button). */
-	addr_input = bgtk_text_input(ctx, current_url, usable_w, 0,
-				     (BGTK_Options){.padding = 4, .margin = 2});
-	addr_input->data.text_input.on_enter = addr_on_enter;
+		usable_w = width - chrome_inset();
+		if (usable_w < 80)
+			usable_w = 80;
 
-	content_scroll =
-		bgtk_scrollable(ctx, NULL, 0,
-				(BGTK_Options){.padding = 2, .margin = 2});
+		/* Full-width URL bar; Enter navigates (no Go button). */
+		addr_input = bgtk_text_input(ctx, current_url, usable_w, 0,
+					     (BGTK_Options){.padding = addr_pad,
+							    .margin = half});
+		addr_input->data.text_input.on_enter = addr_on_enter;
 
-	/* Fill remaining height: frame pad + list chrome + address bar. */
-	reserved = (addr_input ? addr_input->h : 28) + 16;
-	scroll_h = height - reserved;
-	if (scroll_h < 80)
-		scroll_h = 80;
-	content_scroll->w = usable_w;
-	content_scroll->h = scroll_h;
+		content_scroll = bgtk_scrollable(
+			ctx, NULL, 0,
+			(BGTK_Options){.padding = half, .margin = half});
 
-	/* Placeholder so the window is visible before the network fetch. */
-	loading = bgtk_text(ctx, "Loading…",
-			    (BGTK_Options){.padding = 4, .margin = 2});
-	loading_items = calloc(1, sizeof(*loading_items));
-	if (loading_items) {
-		loading_items[0] = loading;
-		content_scroll->data.scrollable.items = loading_items;
-		content_scroll->data.scrollable.widget_count = 1;
+		reserved = (addr_input ? addr_input->h : 28) + chrome_inset();
+		scroll_h = height - reserved;
+		if (scroll_h < 80)
+			scroll_h = 80;
+		content_scroll->w = usable_w;
+		content_scroll->h = scroll_h;
+
+		/* Placeholder so the window is visible before the network fetch. */
+		loading = bgtk_text(ctx, "Loading…", line_opts());
+		loading_items = calloc(1, sizeof(*loading_items));
+		if (loading_items) {
+			loading_items[0] = loading;
+			content_scroll->data.scrollable.items = loading_items;
+			content_scroll->data.scrollable.widget_count = 1;
+		}
+
+		main_items[0] = content_scroll;
+		main_items[1] = addr_input;
+		main_list = bgtk_list(ctx, main_items, 2,
+				      (BGTK_Options){
+					      .orientation = BGTK_LIST_VERTICAL,
+					      .padding = half,
+					      .margin = half});
+
+		frame = bgtk_frame(ctx, main_list, width, height,
+				   (BGTK_Options){.padding = pad, .margin = 0});
+		root_frame = frame;
 	}
-
-	main_items[0] = content_scroll;
-	main_items[1] = addr_input;
-	main_list = bgtk_list(ctx, main_items, 2,
-			      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
-					     .padding = 2,
-					     .margin = 2});
-
-	frame = bgtk_frame(ctx, main_list, width, height,
-			   (BGTK_Options){.padding = 4, .margin = 0});
 
 	ctx->root_widget = frame;
 	bgtk_set_focus(ctx, addr_input);
@@ -1001,29 +1108,8 @@ int main(void)
 				 msg.data.buffer_reply.height);
 			if (bgtk_handle_buffer_change(
 				    ctx, &msg.data.buffer_reply) == 0) {
-				if (ctx->root_widget) {
-					ctx->root_widget->w = ctx->width;
-					ctx->root_widget->h = ctx->height;
-				}
-				/* Refit content + URL bar after resize. */
-				if (content_scroll && addr_input) {
-					int ah = addr_input->h > 0 ? addr_input->h
-								  : 28;
-					int sh = ctx->height - ah - 16;
-					if (sh < 80)
-						sh = 80;
-					content_scroll->w = ctx->width - 16;
-					content_scroll->h = sh;
-					addr_input->w = ctx->width - 16;
-					if (content_scroll->data.scrollable.tmp) {
-						free(content_scroll->data
-							     .scrollable.tmp);
-						content_scroll->data.scrollable
-							.tmp = NULL;
-						content_scroll->data.scrollable
-							.widget_capacity = 0;
-					}
-				}
+				/* Refit chrome and reflow gemtext wrap width. */
+				gemini_on_resize();
 				bgtk_draw_widgets(ctx);
 			}
 			break;

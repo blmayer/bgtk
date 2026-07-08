@@ -669,15 +669,31 @@ void sys_status_refresh(unsigned flags)
 /* UI                                                                  */
 /* ------------------------------------------------------------------ */
 
+static int ss_pad(struct BGTK_Context *c)
+{
+	return (c && c->theme.padding > 0) ? c->theme.padding : 6;
+}
+
+static int ss_mar(struct BGTK_Context *c)
+{
+	return (c && c->theme.margin > 0) ? c->theme.margin : 4;
+}
+
 /* Size root frame from label text (call after metrics are filled). */
 static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *frame)
 {
 	int i, tw, th;
 	int name_w = 0, val_w = 0, text_h = 0;
-	int row_m = 1, row_p = 2;
-	int list_m = 4, list_p = 4;
-	int frame_p = 4, bw;
+	int pad = ss_pad(c);
+	int mar = ss_mar(c);
+	int half = mar > 1 ? mar / 2 : 1;
+	int text_p = pad > 2 ? pad / 2 : 2;
+	int text_m = half > 0 ? half : 1;
+	int row_m = half, row_p = half;
+	int list_m = mar, list_p = pad > 2 ? pad / 2 : 2;
+	int frame_p = pad, bw;
 	int row_w, row_h, list_w, list_h;
+	int text_chrome = 2 * (text_p + text_m);
 
 	if (!c || !frame || !root_list)
 		return;
@@ -692,16 +708,16 @@ static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *fram
 		int nh, vh;
 
 		measure_text(c->ft_face, ns, &tw, &th);
-		nh = th + 2 * (3 + 1); /* text padding=3 margin=1 */
-		tw += 2 * (3 + 1);
+		nh = th + text_chrome;
+		tw += text_chrome;
 		if (tw > name_w)
 			name_w = tw;
 		if (nh > text_h)
 			text_h = nh;
 
 		measure_text(c->ft_face, vs, &tw, &th);
-		vh = th + 2 * (3 + 1);
-		tw += 2 * (3 + 1);
+		vh = th + text_chrome;
+		tw += text_chrome;
 		if (tw > val_w)
 			val_w = tw;
 		if (vh > text_h)
@@ -752,6 +768,12 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
 	struct BGTK_Widget *rows[N_ROWS];
 	struct BGTK_Widget *list, *frame;
 	int i;
+	int pad = ss_pad(c);
+	int mar = ss_mar(c);
+	int half = mar > 1 ? mar / 2 : 1;
+	int text_p = pad > 2 ? pad / 2 : 2;
+	int text_m = half > 0 ? half : 1;
+	int list_p = pad > 2 ? pad / 2 : 2;
 
 	ctx = c;
 	for (i = 0; i < N_ROWS; i++) {
@@ -764,10 +786,12 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
 	for (i = 0; i < N_ROWS; i++) {
 		struct BGTK_Widget *name =
 			bgtk_text(c, (char *)row_names[i],
-				  (BGTK_Options){.padding = 3, .margin = 1});
+				  (BGTK_Options){.padding = text_p,
+						 .margin = text_m});
 		struct BGTK_Widget *val =
 			bgtk_text(c, "…",
-				  (BGTK_Options){.padding = 3, .margin = 1});
+				  (BGTK_Options){.padding = text_p,
+						 .margin = text_m});
 		struct BGTK_Widget *pair[2] = { name, val };
 		struct BGTK_Widget *row;
 
@@ -776,8 +800,8 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
 		row = bgtk_list(c, pair, 2,
 				(BGTK_Options){
 					.orientation = BGTK_LIST_HORIZONTAL,
-					.padding = 2,
-					.margin = 1,
+					.padding = half,
+					.margin = half,
 				});
 		row_widgets[i] = row;
 		rows[i] = row;
@@ -786,13 +810,13 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
 	list = bgtk_list(c, rows, N_ROWS,
 			 (BGTK_Options){
 				 .orientation = BGTK_LIST_VERTICAL,
-				 .padding = 4,
-				 .margin = 4,
+				 .padding = list_p,
+				 .margin = mar,
 			 });
 	root_list = list;
 	/* Temporary size; sys_status_fit_size sets the real one. */
 	frame = bgtk_frame(c, list, 1, 1,
-			   (BGTK_Options){.padding = 4, .margin = 0});
+			   (BGTK_Options){.padding = pad, .margin = 0});
 
 	/* Prime CPU sample, then full fill (weather may block once). */
 	sys_status_refresh(REFRESH_ALL & ~REFRESH_WEATHER);

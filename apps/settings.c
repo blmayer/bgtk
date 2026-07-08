@@ -1519,6 +1519,8 @@ static void rebuild_content(void)
 static struct BGTK_Widget *make_nav_button(int i, int sidebar_w)
 {
 	int selected = (i == current_page);
+	int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
+	int mar = ctx->theme.margin > 0 ? ctx->theme.margin / 2 : 2;
 	BGTK_Options to = {.padding = 2};
 	if (selected)
 		to.text_style = BGTK_TEXT_BOLD;
@@ -1526,8 +1528,8 @@ static struct BGTK_Widget *make_nav_button(int i, int sidebar_w)
 		bgtk_text(ctx, (char *)page_names[i], to);
 	struct BGTK_Widget *btn = bgtk_button(ctx, lbl, page_cb,
 		(void *)(intptr_t)i,
-		(BGTK_Options){.padding = 6, .margin = 2});
-	btn->w = sidebar_w - 8;
+		(BGTK_Options){.padding = pad / 2 + 2, .margin = mar});
+	btn->w = sidebar_w - 2 * mar;
 	if (selected) {
 		uint32_t hi = ctx->theme.highlight ? ctx->theme.highlight
 						   : 0xFF505060;
@@ -1539,13 +1541,14 @@ static struct BGTK_Widget *make_nav_button(int i, int sidebar_w)
 static void rebuild_sidebar(void)
 {
 	int sidebar_w = 140;
+	int mar = ctx->theme.margin > 0 ? ctx->theme.margin / 2 : 2;
 	struct BGTK_Widget **btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
 
 	for (int i = 0; i < NUM_PAGES; i++)
 		btns[i] = make_nav_button(i, sidebar_w);
 
 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
-		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = 2});
+		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = mar});
 	free(btns);
 
 	/* Replace the scrollable's content */
@@ -1555,20 +1558,25 @@ static void rebuild_sidebar(void)
 
 static struct BGTK_Widget *build_sidebar(void)
 {
+	int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
+	int mar = ctx->theme.margin > 0 ? ctx->theme.margin / 2 : 2;
+	int bw = (int)ctx->theme.frame_border_size;
 	int sidebar_w = 140;
 	struct BGTK_Widget **btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
 
+	if (bw < 0)
+		bw = 0;
 	for (int i = 0; i < NUM_PAGES; i++)
 		btns[i] = make_nav_button(i, sidebar_w);
 
 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
-		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = 2});
+		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = mar});
 	free(btns);
 
 	struct BGTK_Widget *scroll = bgtk_scrollable(ctx, &sidebar_list, 1,
-		(BGTK_Options){.padding = 2, .margin = 2});
+		(BGTK_Options){.padding = pad / 2, .margin = mar});
 	scroll->w = sidebar_w;
-	scroll->h = app_h - 16;
+	scroll->h = app_h - 2 * (bw + pad);
 
 	return scroll;
 }
@@ -1588,31 +1596,44 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
 	/* Keep drawing theme in sync with the config we are editing. */
 	ctx->theme = cfg.theme;
 
-	sidebar = build_sidebar();
-	panel_rule = bgtk_rule(ctx, BGTK_LIST_VERTICAL, 1,
-			       (BGTK_Options){.margin = 4, .padding = 0});
-	panel_rule->h = app_h - 16;
+	{
+		int pad = cfg.theme.padding > 0 ? cfg.theme.padding : 6;
+		int mar = cfg.theme.margin > 0 ? cfg.theme.margin : 4;
+		int bw = (int)cfg.theme.frame_border_size;
+		int chrome;
 
-	int panel_w = app_w - sidebar->w - panel_rule->w - 16;
-	int panel_h = app_h - 16;
-	if (panel_w < 80)
-		panel_w = 80;
+		if (bw < 0)
+			bw = 0;
+		chrome = 2 * (bw + pad);
 
-	struct BGTK_Widget *placeholder = bgtk_text(ctx, "Select a category",
-		(BGTK_Options){.padding = 8, .margin = 4});
-	/* Borderless content frame; vertical rule separates sidebar. */
-	content_panel = bgtk_frame(ctx, placeholder, panel_w, panel_h,
-		(BGTK_Options){.padding = 2, .margin = 2});
-	content_panel->data.frame.border_w = 0;
+		sidebar = build_sidebar();
+		panel_rule = bgtk_rule(ctx, BGTK_LIST_VERTICAL, 1,
+				       (BGTK_Options){.margin = mar, .padding = 0});
+		panel_rule->h = app_h - chrome;
 
-	struct BGTK_Widget *cols[3] = { sidebar, panel_rule, content_panel };
-	struct BGTK_Widget *row = bgtk_list(ctx, cols, 3,
-		(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .margin = 2});
+		int panel_w = app_w - sidebar->w - panel_rule->w - chrome - mar;
+		int panel_h = app_h - chrome;
+		if (panel_w < 80)
+			panel_w = 80;
 
-	root_frame = bgtk_frame(ctx, row, app_w, app_h,
-		(BGTK_Options){.padding = 2, .margin = 0});
+		struct BGTK_Widget *placeholder = bgtk_text(ctx, "Select a category",
+			(BGTK_Options){.padding = pad, .margin = mar});
+		/* Borderless content frame; vertical rule separates sidebar. */
+		content_panel = bgtk_frame(ctx, placeholder, panel_w, panel_h,
+			(BGTK_Options){.padding = pad / 2, .margin = mar});
+		content_panel->data.frame.border_w = 0;
 
-	ctx->root_widget = root_frame;
+		struct BGTK_Widget *cols[3] = { sidebar, panel_rule, content_panel };
+		struct BGTK_Widget *row = bgtk_list(ctx, cols, 3,
+			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+				       .margin = mar});
+
+		/* Outer frame: thick gold border + even theme padding inset. */
+		root_frame = bgtk_frame(ctx, row, app_w, app_h,
+			(BGTK_Options){.padding = pad, .margin = 0});
+
+		ctx->root_widget = root_frame;
+	}
 	current_page = 0;
 	rebuild_content();
 }

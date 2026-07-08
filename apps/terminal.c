@@ -130,14 +130,20 @@ static void pty_set_winsize(int master_fd, int cols, int rows)
 		bgtk_log_errno("TIOCSWINSZ master %dx%d", cols, rows);
 }
 
+static int term_chrome_pad(struct BGTK_Context *ctx)
+{
+	return (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 0;
+}
+
 /* Rebuild image surface + cell grid for a new window size. */
 static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
 			       struct BGTK_Widget *img, struct BGTK_Widget *frame,
 			       int master_fd, int *inner_w, int *inner_h)
 {
 	int bw = ctx->theme.frame_border_size;
-	int iw = ctx->width - 2 * bw;
-	int ih = ctx->height - 2 * bw;
+	int pad = term_chrome_pad(ctx);
+	int iw = ctx->width - 2 * (bw + pad);
+	int ih = ctx->height - 2 * (bw + pad);
 	if (iw < 1)
 		iw = 1;
 	if (ih < 1)
@@ -171,6 +177,8 @@ static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
 	if (frame) {
 		frame->w = ctx->width;
 		frame->h = ctx->height;
+		frame->padding = pad;
+		frame->margin = 0;
 	}
 
 	*inner_w = iw;
@@ -223,8 +231,9 @@ int main(void)
 	term_measure_cell(&tmp_ts, ctx);
 
 	int bw = ctx->theme.frame_border_size;
-	int inner_w = width - 2 * bw;
-	int inner_h = height - 2 * bw;
+	int pad = term_chrome_pad(ctx);
+	int inner_w = width - 2 * (bw + pad);
+	int inner_h = height - 2 * (bw + pad);
 	if (inner_w < 1)
 		inner_w = 1;
 	if (inner_h < 1)
@@ -237,9 +246,9 @@ int main(void)
 		rows = 1;
 	{
 		FT_Face mono = bgtk_font_face(ctx, BGTK_FONT_MONO);
-		bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d mono='%s' fixed=%d family='%s'",
+		bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d pad=%d mono='%s' fixed=%d family='%s'",
 			 tmp_ts.cell_w, tmp_ts.cell_h, cols, rows, inner_w,
-			 inner_h,
+			 inner_h, pad,
 			 ctx->font_mono_path[0] ? ctx->font_mono_path
 						: "(none)",
 			 mono && FT_IS_FIXED_WIDTH(mono) ? 1 : 0,
@@ -265,7 +274,8 @@ int main(void)
 	img->data.image.img_w = inner_w;
 	img->data.image.img_h = inner_h;
 	struct BGTK_Widget *frame = bgtk_frame(ctx, img, width, height,
-					       (BGTK_Options){0});
+					       (BGTK_Options){.padding = pad,
+							      .margin = 0});
 	ctx->root_widget = frame;
 
 	int master_fd;

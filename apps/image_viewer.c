@@ -10,7 +10,21 @@ static struct BGTK_Widget* text_input = NULL;
 static struct BGTK_Widget* image_widget = NULL;
 static struct BGTK_Widget* col = NULL;  // Parent list widget
 
+static int theme_pad(void)
+{
+	return (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 6;
+}
+
+static int theme_mar(void)
+{
+	return (ctx && ctx->theme.margin > 0) ? ctx->theme.margin : 4;
+}
+
 static void load_button_clicked(void *userdata) {
+	int pad = theme_pad();
+	int mar = theme_mar();
+	int half = mar > 1 ? mar / 2 : 1;
+
 	(void)userdata;
 	if (!ctx || !text_input || text_input->type != BGTK_WIDGET_TEXT_INPUT) {
 		return;
@@ -28,8 +42,8 @@ static void load_button_clicked(void *userdata) {
 					   520,
 					   (BGTK_Options){
 					       .flags = 0,
-					       .padding = 5,
-					       .margin = 2,
+					       .padding = pad > 2 ? pad / 2 : 2,
+					       .margin = half,
 					   });
 	if (new_image) {
 		// Replace pointer in parent list before freeing old widget
@@ -69,69 +83,82 @@ int main(void) {
 		return 1;
 	}
 
-	text_input = bgtk_text_input(ctx,
-				     "example.png",
-				     600,
-				     0,
-				     (BGTK_Options){
-					 .flags = 0,
-					 .padding = 6,
-					 .margin = 5,
-				     });
+	{
+		int pad = theme_pad();
+		int mar = theme_mar();
+		int half = mar > 1 ? mar / 2 : 1;
+		int mid = pad > 2 ? pad / 2 : 2;
 
-	struct BGTK_Widget* button_label = bgtk_text(ctx,
-						     "Load",
-						     (BGTK_Options){
-							 .flags = 0,
-							 .padding = 2,
-						     });
-	struct BGTK_Widget* button = bgtk_button(ctx,
-						 button_label,
-						 load_button_clicked, NULL,
+		text_input = bgtk_text_input(ctx,
+					     "example.png",
+					     600,
+					     0,
+					     (BGTK_Options){
+						 .flags = 0,
+						 .padding = mid,
+						 .margin = mar,
+					     });
+
+		struct BGTK_Widget* button_label = bgtk_text(ctx,
+							     "Load",
+							     (BGTK_Options){
+								 .flags = 0,
+								 .padding = half,
+							     });
+		struct BGTK_Widget* button = bgtk_button(ctx,
+							 button_label,
+							 load_button_clicked, NULL,
+							 (BGTK_Options){
+							     .flags = 0,
+							     .padding = mid,
+							     .margin = mar,
+							 });
+
+		image_widget = bgtk_image(ctx,
+					  "example.png",
+					  800,
+					  520,
+					  (BGTK_Options){
+					      .flags = 0,
+					      .padding = mid,
+					      .margin = half,
+					  });
+		if (!image_widget) {
+			image_widget = bgtk_text(ctx,
+						 "Failed to load example.png",
 						 (BGTK_Options){
 						     .flags = 0,
-						     .padding = 5,
-						     .margin = 5,
+						     .padding = mid,
+						     .margin = half,
 						 });
+		}
 
-	image_widget = bgtk_image(ctx,
-				  "example.png",
-				  800,
-				  520,
-				  (BGTK_Options){
-				      .flags = 0,
-				      .padding = 5,
-				      .margin = 2,
-				  });
-	if (!image_widget) {
-		image_widget = bgtk_text(ctx,
-					 "Failed to load example.png",
-					 (BGTK_Options){
-					     .flags = 0,
-					     .padding = 5,
-					     .margin = 2,
-					 });
+		struct BGTK_Widget* row_widgets[2] = {text_input, button};
+
+		struct BGTK_Widget* row =
+		    bgtk_list(ctx,
+			      row_widgets,
+			      2,
+			      (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+					     .margin = half,
+					     .padding = 0});
+
+		struct BGTK_Widget* col_widgets[2] = {row, image_widget};
+
+		col = bgtk_list(ctx,
+			      col_widgets,
+			      2,
+			      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+					     .margin = mar,
+					     .padding = mid});
+
+		struct BGTK_Widget* frame =
+		    bgtk_frame(ctx, col, 800, 600,
+			       (BGTK_Options){.padding = pad, .margin = 0});
+
+		ctx->root_widget = frame;
 	}
 
-	struct BGTK_Widget* row_widgets[2] = {text_input, button};
-
-	struct BGTK_Widget* row =
-	    bgtk_list(ctx,
-		      row_widgets,
-		      2,
-		      (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL});
-
-	struct BGTK_Widget* col_widgets[2] = {row, image_widget};
-
-	col = bgtk_list(ctx,
-		      col_widgets,
-		      2,
-		      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL});
-
-	struct BGTK_Widget* frame =
-	    bgtk_frame(ctx, col, 800, 600, (BGTK_Options){});
-
-	ctx->root_widget = frame;
 	bgtk_draw_widgets(ctx);
 
 	printf("Starting image viewer main loop (%dx%d)...\n",

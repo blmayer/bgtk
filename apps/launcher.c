@@ -99,7 +99,7 @@ static void match_row_cb(void *userdata)
 
 static void rebuild_matches_ui(void)
 {
-	int pad, mar, row_w, i, n;
+	int pad, row_w, i, n;
 	struct BGTK_Widget **items;
 
 	if (!matches_scroll || !ctx)
@@ -146,34 +146,45 @@ static void rebuild_matches_ui(void)
 	if (!items)
 		return;
 
-	pad = ctx->theme.padding > 0 ? ctx->theme.padding : 8;
-	mar = 0;
-	row_w = matches_scroll->w > 40 ? matches_scroll->w - 8 : 400;
+	/* Tight list: pad only inside rows; zero margin so rows pack flush. */
+	pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
+	if (pad > 8)
+		pad = 8;
+	/* Full width of the scrollable content box. */
+	row_w = matches_scroll->w - 2 * matches_scroll->padding;
+	if (row_w < 40)
+		row_w = 400;
 
 	/*
-	 * sowm-style file list: full-width borderless rows on the panel
-	 * background; selected row uses theme.highlight fill (soft sand).
+	 * sowm-style file list: full-width borderless rows, tight vertical
+	 * packing; selected row uses theme.highlight fill.
 	 */
 	for (i = 0; i < n; i++) {
 		struct BGTK_Widget *lab;
 		struct BGTK_Widget *row;
 		const char *name = match_ptrs[i];
 		int sel = (i == selected);
+		int vpad = 3; /* tight file-list rows */
+		char lined[160];
 
-		lab = bgtk_text(ctx, (char *)name,
-				(BGTK_Options){.padding = 2, .margin = 0});
+		/* Leading spaces = left indent inside the highlight bar. */
+		snprintf(lined, sizeof(lined), "  %s", name);
+		lab = bgtk_text(ctx, lined,
+				(BGTK_Options){.padding = 0, .margin = 0});
 		if (!lab)
 			continue;
 		row = bgtk_button(ctx, lab, match_row_cb,
 				  (void *)(intptr_t)i,
-				  (BGTK_Options){.padding = pad / 2 + 2,
-						 .margin = mar});
+				  (BGTK_Options){.padding = vpad,
+						 .margin = 0,
+						 .text_align = BGTK_ALIGN_LEFT});
 		if (!row) {
 			free(lab->data.text.text);
 			free(lab);
 			continue;
 		}
 		row->w = row_w;
+		row->h = lab->h + 2 * vpad;
 		row->data.button.border_w = 0;
 		if (sel)
 			row->data.button.bg_override = ctx->theme.highlight
@@ -208,12 +219,38 @@ static void on_tab_pressed(void)
 	rebuild_matches_ui();
 }
 
+/* Drop the compositor connection so BGCE can erase this window and
+ * restore the wallpaper. Must run before further draws/teardown. */
+static void launcher_detach(void)
+{
+	if (!ctx || ctx->conn_fd < 0)
+		return;
+	{
+		int c = ctx->conn_fd;
+		ctx->conn_fd = -1;
+		bgce_disconnect(c);
+		bgtk_log("detached from bgce (fd=%d)", c);
+	}
+}
+
 /* Spawn a program without inheriting the launcher's BGCE socket (or any
- * other fds). Closing those in the child is what prevents a session crash
- * when the launcher then exits. */
+ * other fds). CLOEXEC + close-all in the child prevent a half-open
+ * connection that would leave a black dead window on screen. */
 static int spawn_program(const char *prog)
 {
-	pid_t pid = fork();
+	pid_t pid;
+
+	if (!prog || !*prog)
+		return -1;
+
+	/* Belt-and-suspenders: never let the child inherit the BGCE fd. */
+	if (ctx && ctx->conn_fd >= 0) {
+		int fl = fcntl(ctx->conn_fd, F_GETFD);
+		if (fl >= 0)
+			(void)fcntl(ctx->conn_fd, F_SETFD, fl | FD_CLOEXEC);
+	}
+
+	pid = fork();
 	if (pid < 0) {
 		bgtk_log_errno("fork to launch '%s'", prog);
 		return -1;
@@ -222,21 +259,27 @@ static int spawn_program(const char *prog)
 		/* New session: not a child of the launcher process group. */
 		setsid();
 
-		/* Drop every fd the parent had open (BGCE socket, shm, …). */
-		int maxfd = (int)sysconf(_SC_OPEN_MAX);
-		if (maxfd < 0 || maxfd > 1024)
-			maxfd = 256;
-		for (int fd = 3; fd < maxfd; fd++)
-			(void)close(fd);
+		/* Drop every fd the parent had open (BGCE socket, log, …). */
+		{
+			int maxfd = (int)sysconf(_SC_OPEN_MAX);
+			int fd;
+
+			if (maxfd < 0 || maxfd > 4096)
+				maxfd = 1024;
+			for (fd = 3; fd < maxfd; fd++)
+				(void)close(fd);
+		}
 
 		/* Quiet stdio so GUI apps don't fight over the TTY. */
-		int devnull = open("/dev/null", O_RDWR);
-		if (devnull >= 0) {
-			dup2(devnull, STDIN_FILENO);
-			dup2(devnull, STDOUT_FILENO);
-			dup2(devnull, STDERR_FILENO);
-			if (devnull > 2)
-				close(devnull);
+		{
+			int devnull = open("/dev/null", O_RDWR);
+			if (devnull >= 0) {
+				dup2(devnull, STDIN_FILENO);
+				dup2(devnull, STDOUT_FILENO);
+				dup2(devnull, STDERR_FILENO);
+				if (devnull > 2)
+					close(devnull);
+			}
 		}
 
 		execlp(prog, prog, (char *)NULL);
@@ -251,38 +294,47 @@ static void on_enter_pressed(void)
 {
 	if (selected < 0 || selected >= num_matches)
 		return;
-	if (spawn_program(match_ptrs[selected]) == 0)
-		quit_after_launch = 1;
+	if (spawn_program(match_ptrs[selected]) != 0)
+		return;
+	quit_after_launch = 1;
+	/* Disconnect now so the server erases us before any post-enter
+	 * redraw (text_input always draws after on_enter) or free path. */
+	launcher_detach();
 }
 
 /* Size input + match list to fill the current window. */
 static void layout_launcher(void)
 {
-	int pad, mar, bw, inner_w, inner_h, input_h;
+	int pad, mar, bw, inner_w, inner_h, input_h, gap;
 
 	if (!ctx)
 		return;
-	pad = ctx->theme.padding > 0 ? ctx->theme.padding : 8;
-	mar = ctx->theme.margin > 0 ? ctx->theme.margin : 6;
+	pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
+	mar = ctx->theme.margin > 0 ? ctx->theme.margin : 4;
 	bw = (int)ctx->theme.frame_border_size;
 	if (bw < 0)
 		bw = 0;
-	inner_w = ctx->width - 2 * (pad + bw + mar);
-	inner_h = ctx->height - 2 * (pad + bw + mar);
+	/* Content lives inside frame border + frame padding only (no extra mar). */
+	inner_w = ctx->width - 2 * (bw + pad);
+	inner_h = ctx->height - 2 * (bw + pad);
 	if (inner_w < 40)
 		inner_w = 40;
 	if (inner_h < 40)
 		inner_h = 40;
+	gap = mar; /* space between search box and list */
 
 	if (text_input) {
 		text_input->w = inner_w;
+		text_input->margin = 0;
 		if (text_input->h < 28)
 			text_input->h = 28;
 	}
 	if (matches_scroll) {
-		input_h = text_input ? text_input->h + mar : 36;
+		input_h = text_input ? text_input->h + gap : 36;
 		matches_scroll->w = inner_w;
 		matches_scroll->h = inner_h - input_h;
+		matches_scroll->margin = 0;
+		matches_scroll->padding = 0;
 		if (matches_scroll->h < 40)
 			matches_scroll->h = 40;
 	}
@@ -310,6 +362,14 @@ int main(void)
 		bgtk_log_errno("bgce_connect (is bgce running?)");
 		return -1;
 	}
+	/* Children must not inherit the compositor socket — if they do,
+	 * parent close() is not a full disconnect and the window stays
+	 * black until the child exits. */
+	{
+		int fl = fcntl(conn_fd, F_GETFD);
+		if (fl >= 0)
+			(void)fcntl(conn_fd, F_SETFD, fl | FD_CLOEXEC);
+	}
 	bgtk_log("bgce_connect ok fd=%d", conn_fd);
 
 	int width = 480;
@@ -331,12 +391,12 @@ int main(void)
 	bgtk_log("building launcher UI (goldie file-list)");
 
 	{
-		int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 8;
-		int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 6;
+		int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
+		int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 4;
 
 		text_input = bgtk_text_input(
 			ctx, "", 440, 0,
-			(BGTK_Options){.padding = pad, .margin = mar / 2});
+			(BGTK_Options){.padding = pad, .margin = 0});
 		if (!text_input) {
 			bgtk_log("bgtk_text_input failed");
 			return 1;
@@ -345,9 +405,10 @@ int main(void)
 		text_input->data.text_input.on_tab = on_tab_pressed;
 		text_input->data.text_input.on_enter = on_enter_pressed;
 
+		/* Zero pad/margin so list rows can be edge-to-edge. */
 		matches_scroll = bgtk_scrollable(
 			ctx, NULL, 0,
-			(BGTK_Options){.padding = pad / 2, .margin = mar / 2});
+			(BGTK_Options){.padding = 0, .margin = 0});
 		if (!matches_scroll) {
 			bgtk_log("bgtk_scrollable failed");
 			return 1;
@@ -359,7 +420,7 @@ int main(void)
 			struct BGTK_Widget *layout = bgtk_list(
 				ctx, layout_items, 2,
 				(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
-					       .margin = mar / 2,
+					       .margin = mar,
 					       .padding = 0});
 			struct BGTK_Widget *frame;
 
@@ -367,7 +428,7 @@ int main(void)
 				bgtk_log("bgtk_list failed");
 				return 1;
 			}
-			/* Thick gold frame around the black list panel. */
+			/* Frame pad = theme.padding so thick border has even inset. */
 			frame = bgtk_frame(ctx, layout, width, height,
 					  (BGTK_Options){.padding = pad,
 							 .margin = 0});
@@ -457,14 +518,17 @@ int main(void)
 			break;
 		}
 
-		if (need_draw && !quit_after_launch)
+		if (need_draw && !quit_after_launch && ctx->conn_fd >= 0)
 			bgtk_draw_widgets(ctx);
 	}
 
-	/* Clean disconnect so BGCE does not see a half-dead client after spawn. */
-	int conn = ctx->conn_fd;
+	/* Disconnect first (if not already after launch), then free local
+	 * resources. Order matters: munmap-before-disconnect leaves the
+	 * server holding a dead client until close, and a late draw can
+	 * paint a black frame over the wallpaper. */
+	bgtk_log("launcher shutting down (launch=%d)", quit_after_launch);
+	launcher_detach();
 	bgtk_destroy(ctx);
-	if (conn >= 0)
-		bgce_disconnect(conn);
+	ctx = NULL;
 	return 0;
 }

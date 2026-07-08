@@ -194,12 +194,14 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 	}
 	case BGTK_WIDGET_BUTTON:
 		if (w->data.button.label) {
+			int border_w;
 			calculate_widget_size(ctx, w->data.button.label);
-			// Account for border drawn in draw_widget().
-			int border_w = ctx->theme.button_border_size;
-			if (border_w < 1) {
-				border_w = 1;
-			}
+			/* Per-button border_w (-1 = theme); 0 for list rows. */
+			border_w = w->data.button.border_w >= 0
+					   ? w->data.button.border_w
+					   : (int)ctx->theme.button_border_size;
+			if (border_w < 0)
+				border_w = 0;
 			int nw = w->data.button.label->w +
 			    2 * (w->margin + w->padding + border_w);
 			int nh = w->data.button.label->h +

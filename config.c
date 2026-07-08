@@ -340,8 +340,9 @@ void init_config_defaults(struct config *config)
 	config->theme.input_bg = 0xFF1C1814;
 	config->theme.highlight = 0xFFD4B8A0;
 	config->theme.text_baseline_offset = 0;
-	config->theme.margin = 6;
-	config->theme.padding = 8;
+	/* Keep modest: large values stack on every list/scroll child. */
+	config->theme.margin = 4;
+	config->theme.padding = 6;
 
 	/* Font defaults under [font]: sans, mono, serif, size. */
 	config->font_sans_path[0] = '\0';

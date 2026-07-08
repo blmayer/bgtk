@@ -28,11 +28,95 @@
 static struct BGTK_Context *ctx = NULL;
 static struct BGTK_Widget *content_scroll = NULL;
 static struct BGTK_Widget *addr_input = NULL;
+static struct BGTK_Widget *main_list = NULL;
+static struct BGTK_Widget *root_frame = NULL;
 
 static char current_url[512] = "gemini://geminiprotocol.net/";
+static char *last_body = NULL;
 static struct BGTK_Widget *link_target_widgets[128];
 static char link_targets[128][512];
 static int num_page_links = 0;
+
+static BGTK_Options line_opts(void)
+{
+	return (BGTK_Options){.padding = 1, .margin = 1};
+}
+
+static int theme_pad(void)
+{
+	return (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 6;
+}
+
+static int theme_mar(void)
+{
+	return (ctx && ctx->theme.margin > 0) ? ctx->theme.margin : 4;
+}
+
+static int chrome_inset(void)
+{
+	int pad = theme_pad();
+	int mar = theme_mar();
+	int half = mar > 1 ? mar / 2 : 1;
+	int bw = ctx ? (int)ctx->theme.frame_border_size : 1;
+	if (bw < 1)
+		bw = 1;
+	return 2 * (pad + bw + half);
+}
+
+static void content_scroll_invalidate_tmp(void)
+{
+	if (!content_scroll)
+		return;
+	if (content_scroll->data.scrollable.tmp) {
+		free(content_scroll->data.scrollable.tmp);
+		content_scroll->data.scrollable.tmp = NULL;
+	}
+	content_scroll->data.scrollable.widget_capacity = 0;
+}
+
+static void rebuild_content_from_gemtext(const char *body);
+
+static void gemini_layout_chrome(void)
+{
+	int inset, usable_w, ah, scroll_h, half;
+
+	if (!ctx || !content_scroll || !addr_input)
+		return;
+	half = theme_mar() > 1 ? theme_mar() / 2 : 1;
+	inset = chrome_inset();
+	usable_w = ctx->width - inset;
+	if (usable_w < 80)
+		usable_w = 80;
+	addr_input->padding = theme_pad() > 2 ? theme_pad() / 2 : 2;
+	addr_input->margin = half;
+	content_scroll->padding = half;
+	content_scroll->margin = half;
+	if (main_list) {
+		main_list->padding = half;
+		main_list->margin = half;
+	}
+	if (root_frame) {
+		root_frame->padding = theme_pad();
+		root_frame->margin = 0;
+		root_frame->w = ctx->width;
+		root_frame->h = ctx->height;
+	}
+	ah = addr_input->h > 0 ? addr_input->h : 28;
+	scroll_h = ctx->height - ah - inset;
+	if (scroll_h < 80)
+		scroll_h = 80;
+	content_scroll->w = usable_w;
+	content_scroll->h = scroll_h;
+	addr_input->w = usable_w;
+	content_scroll_invalidate_tmp();
+}
+
+static void gemini_on_resize(void)
+{
+	gemini_layout_chrome();
+	if (last_body)
+		rebuild_content_from_gemtext(last_body);
+}
 
 /* --- Real Gemini client (must retry TLS_WANT_POLLIN/POLLOUT; n<=0 is wrong) --- */
 
@@ -330,6 +414,9 @@ static int gemini_link_handler(struct BGTK_Widget *w, struct InputEvent ev);
 
 static void rebuild_content_from_gemtext(const char *body)
 {
+	int max_text_w;
+	int line_inset;
+
 	if (content_scroll->data.scrollable.items) {
 		for (int i = 0; i < content_scroll->data.scrollable.widget_count; i++) {
 			struct BGTK_Widget *tw = content_scroll->data.scrollable.items[i];
@@ -342,13 +429,19 @@ static void rebuild_content_from_gemtext(const char *body)
 	}
 	content_scroll->data.scrollable.items = NULL;
 	content_scroll->data.scrollable.widget_count = 0;
+	content_scroll_invalidate_tmp();
 	num_page_links = 0;
 
 	if (!body) return;
 
-	int max_text_w = 480;
-	if (content_scroll && content_scroll->w > 100)
-		max_text_w = content_scroll->w - 8;
+	line_inset = 2 * (1 + 1);
+	max_text_w = 480;
+	if (content_scroll && content_scroll->w > 100) {
+		max_text_w = content_scroll->w - 2 * content_scroll->padding -
+			     line_inset - 4;
+		if (max_text_w < 40)
+			max_text_w = 40;
+	}
 
 	char *work = strdup(body);
 	if (!work) return;
@@ -428,7 +521,7 @@ static void rebuild_content_from_gemtext(const char *body)
 			int nsubs = 0;
 			char **subs = wrap_text(ctx->ft_face, vis, max_text_w, &nsubs);
 			for (int s = 0; s < nsubs; s++) {
-				struct BGTK_Widget *tw = bgtk_text(ctx, subs[s], (BGTK_Options){.padding=1, .margin=1});
+				struct BGTK_Widget *tw = bgtk_text(ctx, subs[s], line_opts());
 				if (!tw) continue;
 				if (header_level > 0) {
 					tw->data.text.header_level = header_level;
@@ -459,7 +552,7 @@ static void rebuild_content_from_gemtext(const char *body)
 			for (int s = 0; s < nsubs; s++) free(subs[s]);
 			free(subs);
 		} else {
-			struct BGTK_Widget *tw = bgtk_text(ctx, vis, (BGTK_Options){.padding=1, .margin=1});
+			struct BGTK_Widget *tw = bgtk_text(ctx, vis, line_opts());
 			if (tw) {
 				tw->h += 4;  /* space after pre block */
 				if (cnt >= cap) {
@@ -548,11 +641,20 @@ static void load_real_url(const char *url)
 		char errline[256];
 		snprintf(errline, sizeof(errline), "Error %d %s", status, meta ? meta : "");
 		struct BGTK_Widget **errs = calloc(1, sizeof(*errs));
-		if (errs) errs[0] = bgtk_text(ctx, errline, (BGTK_Options){.padding=2, .margin=1});
+		if (errs) errs[0] = bgtk_text(ctx, errline, line_opts());
 		content_scroll->data.scrollable.items = errs;
 		content_scroll->data.scrollable.widget_count = errs ? 1 : 0;
+		free(last_body);
+		last_body = NULL;
+		if (body) {
+			free(body);
+			body = NULL;
+		}
 	} else {
-		rebuild_content_from_gemtext(body);
+		free(last_body);
+		last_body = body;
+		body = NULL;
+		rebuild_content_from_gemtext(last_body);
 	}
 
 	/* sync address bar (it serves as the URL display) */
@@ -581,6 +683,9 @@ int main(void)
 
 	int width = 640;
 	int height = 500;
+	int pad, mar, half, usable_w, reserved, scroll_h;
+	struct BGTK_Widget *main_items[2];
+	struct BGTK_Widget *frame;
 
 	ctx = bgtk_init_mock(width, height);
 	if (!ctx) {
@@ -588,34 +693,89 @@ int main(void)
 		return 1;
 	}
 
-	int usable_w = width - 16;
+	pad = theme_pad();
+	mar = theme_mar();
+	half = mar > 1 ? mar / 2 : 1;
+	usable_w = width - chrome_inset();
+	if (usable_w < 80)
+		usable_w = 80;
 
 	/* Full-width URL bar; Enter navigates. */
 	addr_input = bgtk_text_input(ctx, "gemini://geminiprotocol.net/",
 				     usable_w, 0,
-				     (BGTK_Options){.padding = 4, .margin = 2});
+				     (BGTK_Options){
+					     .padding = pad > 2 ? pad / 2 : 2,
+					     .margin = half});
 	addr_input->data.text_input.on_enter = demo_addr_on_enter;
 
-	content_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 2, .margin = 2});
-	int reserved = (addr_input->h > 0 ? addr_input->h : 28) + 16;
-	int scroll_h = height - reserved;
-	if (scroll_h < 80) scroll_h = 80;
+	content_scroll = bgtk_scrollable(
+		ctx, NULL, 0, (BGTK_Options){.padding = half, .margin = half});
+	reserved = (addr_input->h > 0 ? addr_input->h : 28) + chrome_inset();
+	scroll_h = height - reserved;
+	if (scroll_h < 80)
+		scroll_h = 80;
 	content_scroll->w = usable_w;
 	content_scroll->h = scroll_h;
 
-	struct BGTK_Widget *main_items[2] = {content_scroll, addr_input};
-	struct BGTK_Widget *main_list = bgtk_list(ctx, main_items, 2,
-						  (BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .padding = 2, .margin = 2});
+	main_items[0] = content_scroll;
+	main_items[1] = addr_input;
+	main_list = bgtk_list(ctx, main_items, 2,
+			      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+					     .padding = half,
+					     .margin = half});
 
-	struct BGTK_Widget *frame = bgtk_frame(ctx, main_list, width, height,
-					       (BGTK_Options){.padding = 4, .margin = 0});
-
+	frame = bgtk_frame(ctx, main_list, width, height,
+			   (BGTK_Options){.padding = pad, .margin = 0});
+	root_frame = frame;
 	ctx->root_widget = frame;
 
 	/* === Real capsule load === */
 	load_real_url("gemini://geminiprotocol.net/");
 	bgtk_draw_widgets(ctx);
 	take_screenshot(ctx, "gemini_browser_00_real_capsule.png");
+
+	/* Reflow on resize while retained gemtext is available. */
+	if (last_body && content_scroll) {
+		int lines_wide, lines_narrow, lines_rewide;
+
+		lines_wide = content_scroll->data.scrollable.widget_count;
+		if (bgtk_resize_mock(ctx, 360, 500) != 0) {
+			fprintf(stderr, "test_gemini_browser: resize narrow failed\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		gemini_on_resize();
+		bgtk_draw_widgets(ctx);
+		take_screenshot(ctx, "gemini_browser_05_reflow_narrow.png");
+		lines_narrow = content_scroll->data.scrollable.widget_count;
+		printf("reflow: %d line widgets @640 -> %d @360\n",
+		       lines_wide, lines_narrow);
+
+		if (bgtk_resize_mock(ctx, 800, 520) != 0) {
+			fprintf(stderr, "test_gemini_browser: resize wide failed\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		gemini_on_resize();
+		bgtk_draw_widgets(ctx);
+		take_screenshot(ctx, "gemini_browser_06_reflow_wide.png");
+		lines_rewide = content_scroll->data.scrollable.widget_count;
+		printf("reflow: %d line widgets @800\n", lines_rewide);
+
+		/* Restore original test window for the rest of the suite. */
+		if (bgtk_resize_mock(ctx, width, height) != 0) {
+			fprintf(stderr, "test_gemini_browser: resize restore failed\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		gemini_on_resize();
+		bgtk_draw_widgets(ctx);
+	} else {
+		fprintf(stderr,
+			"test_gemini_browser: no body retained for reflow test "
+			"(last_body=%p)\n",
+			(void *)last_body);
+	}
 
 	/* Wheel scroll: force a short viewport so content is taller. */
 	{
@@ -745,6 +905,8 @@ int main(void)
 	printf("test_gemini_browser complete. Real capsule used (geminiprotocol.net and links).\n");
 	printf("PNG files contain authentic rendered Gemini content.\n");
 
+	free(last_body);
+	last_body = NULL;
 	bgtk_destroy_mock(ctx);
 	return 0;
 }
