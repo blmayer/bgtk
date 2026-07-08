@@ -78,7 +78,7 @@ int main(void)
 	{
 		uint32_t *fb = (uint32_t *)ctx->shm_buffer;
 		/* Sample inside the preview box (content panel, mid). */
-		int sx = 400, sy = 250;
+		int sx = 350, sy = 250;
 		uint32_t p = fb[sy * width + sx];
 		unsigned r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
 		if (r < 0xC0 || g > 0x80 || b > 0x80) {
@@ -101,8 +101,8 @@ int main(void)
 		click.code = BTN_LEFT;
 		click.value = 1;
 		/* Apply sits under the aspect-correct preview (fills leftover). */
-		click.x = 220;
-		click.y = 400;
+		click.x = 200;
+		click.y = 418;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		if (!bgtk_inject_event(ctx, click)) {
@@ -125,8 +125,8 @@ int main(void)
 		struct config *sc;
 		uint32_t *fb = (uint32_t *)ctx->shm_buffer;
 		uint32_t p_tl, p_mid;
-		int sx_tl = 220, sy_tl = 160;
-		int sx_mid = 400, sy_mid = 280;
+		int sx_tl = 210, sy_tl = 195;
+		int sx_mid = 350, sy_mid = 250;
 
 		if (write_pattern_ppm(pat) != 0) {
 			fprintf(stderr, "test_settings: cannot write %s\n", pat);
@@ -217,7 +217,8 @@ int main(void)
 	 * Content-space centers: btn0=23, btn1=65, btn2=107, btn3=149, btn4=191.
 	 * Add scrollable screen-y offset (~8) for absolute coords. */
 	#define SIDEBAR_X 70
-	#define SIDEBAR_BTN_Y(n) (31 + (n) * 42)
+	/* Larger Goldie pad/mar: first row center ~40, step ~48. */
+	#define SIDEBAR_BTN_Y(n) (40 + (n) * 48)
 
 	/* 01: Click "Cursor" */
 	{
@@ -319,8 +320,8 @@ int main(void)
 		click.code = BTN_LEFT;
 		click.value = 1;
 		/* First theme color field (Background) under Goldie chrome. */
-		click.x = 420;
-		click.y = 48;
+		click.x = 360;
+		click.y = 55;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		bgtk_inject_event(ctx, click);

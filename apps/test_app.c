@@ -73,8 +73,8 @@ int main(void) {
 
 	// 4. Create Widgets
 	{
-		int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
-		int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 4;
+		int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 12;
+		int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 8;
 		int half = mar > 1 ? mar / 2 : 1;
 		int mid = pad > 2 ? pad / 2 : 2;
 		struct BGTK_Widget *scrollable_widgets[10];

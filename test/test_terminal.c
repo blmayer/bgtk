@@ -134,10 +134,10 @@ int main(void)
 		return 1;
 	}
 
-	/* Measure cell size; content area is inside frame border + theme pad/mar. */
+	/* Content inside frame_margin + border + padding (from theme). */
 	struct Term_State tmp = {0};
-	int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
-	int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 4;
+	int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 12;
+	int fmar = ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin : 0;
 	int bw = (int)ctx->theme.frame_border_size;
 	int inner_w, inner_h, cols, rows;
 	struct BGTK_Widget *img, *frame;
@@ -147,8 +147,8 @@ int main(void)
 	tmp.cols = tmp.rows = 1;
 	term_measure_cell(&tmp, ctx);
 
-	inner_w = width - 2 * (mar + bw + pad);
-	inner_h = height - 2 * (mar + bw + pad);
+	inner_w = width - 2 * (fmar + bw + pad);
+	inner_h = height - 2 * (fmar + bw + pad);
 	if (inner_w < 1)
 		inner_w = 1;
 	if (inner_h < 1)
@@ -160,8 +160,8 @@ int main(void)
 	if (rows < 1)
 		rows = 1;
 
-	printf("Cell: %dx%d  Grid: %dx%d  chrome pad=%d mar=%d bw=%d inner=%dx%d\n",
-	       tmp.cell_w, tmp.cell_h, cols, rows, pad, mar, bw, inner_w,
+	printf("Cell: %dx%d  Grid: %dx%d  chrome pad=%d fmar=%d bw=%d inner=%dx%d\n",
+	       tmp.cell_w, tmp.cell_h, cols, rows, pad, fmar, bw, inner_w,
 	       inner_h);
 
 	struct Term_State *ts = term_create(cols, rows);
@@ -169,8 +169,8 @@ int main(void)
 		return 1;
 	ts->cell_w = tmp.cell_w;
 	ts->cell_h = tmp.cell_h;
+	term_apply_theme(ts, ctx);
 
-	/* Image is the cell surface; frame applies theme margin/padding/border. */
 	img = bgtk_image(ctx, NULL, inner_w, inner_h,
 			 (BGTK_Options){.padding = 0, .margin = 0});
 	img->data.image.pixels =
@@ -182,7 +182,7 @@ int main(void)
 	img->data.image.img_w = inner_w;
 	img->data.image.img_h = inner_h;
 	frame = bgtk_frame(ctx, img, width, height,
-			   (BGTK_Options){.padding = pad, .margin = mar});
+			   (BGTK_Options){.padding = pad, .margin = fmar});
 	ctx->root_widget = frame;
 
 	/* --- Test 1: plain text ---------------------------------------- */

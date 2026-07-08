@@ -62,6 +62,9 @@ struct Term_State *term_create(int cols, int rows);
 void term_destroy(struct Term_State *t);
 /* Resize the cell grid (preserves overlapping content). Returns 0 on success. */
 int term_resize(struct Term_State *t, int cols, int rows);
+/* Sync default cell bg (palette[0]) with theme.background so the term
+ * matches other BGTK windows (not pure black). */
+void term_apply_theme(struct Term_State *t, struct BGTK_Context *ctx);
 
 /* Feed raw bytes (from PTY or test harness) through the ANSI parser */
 void term_feed(struct Term_State *t, const char *data, int len);

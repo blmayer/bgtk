@@ -35,20 +35,20 @@ static BGTK_Options line_opts(void)
 	return (BGTK_Options){.padding = 1, .margin = 1};
 }
 
-/* Theme chrome — same geometry as terminal:
- * frame draws [margin][border][padding][content]… */
-static void gemini_chrome(int *pad, int *mar, int *bw)
+/* Root chrome: [frame_margin][border][padding][content]… (from theme). */
+static void gemini_chrome(int *pad, int *fmar, int *bw)
 {
-	int p = (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 6;
-	int m = (ctx && ctx->theme.margin > 0) ? ctx->theme.margin : 4;
+	int p = (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 12;
+	int m = (ctx && ctx->theme.frame_margin >= 0) ? ctx->theme.frame_margin
+						      : 0;
 	int b = ctx ? (int)ctx->theme.frame_border_size : 1;
 
 	if (b < 1)
 		b = 1;
 	if (pad)
 		*pad = p;
-	if (mar)
-		*mar = m;
+	if (fmar)
+		*fmar = m;
 	if (bw)
 		*bw = b;
 }
@@ -56,7 +56,6 @@ static void gemini_chrome(int *pad, int *mar, int *bw)
 /*
  * Vertical list height overhead beyond sum of children (matches bgtk_list /
  * draw_list): inter-item 2*M*(n-1) + outer 2*(M+P).
- * With n=2: 2*M + 2*(M+P) = 4*M + 2*P.
  */
 static int list_v_overhead(int n, int list_m, int list_p)
 {
@@ -68,33 +67,29 @@ static int list_v_overhead(int n, int list_m, int list_p)
 /* Size scroll + URL bar so they fit inside the frame content box. */
 static void gemini_layout_chrome(void)
 {
-	int pad, mar, bw, box_w, box_h, list_m, list_p, field_pad;
+	int pad, fmar, bw, box_w, box_h, list_m, list_p, field_pad;
 	int usable_w, ah, scroll_h, over;
 
 	if (!ctx || !content_scroll || !addr_input)
 		return;
 
-	gemini_chrome(&pad, &mar, &bw);
+	gemini_chrome(&pad, &fmar, &bw);
 	/* Inner box the frame assigns to its child (main_list). */
-	box_w = ctx->width - 2 * (mar + bw + pad);
-	box_h = ctx->height - 2 * (mar + bw + pad);
+	box_w = ctx->width - 2 * (fmar + bw + pad);
+	box_h = ctx->height - 2 * (fmar + bw + pad);
 	if (box_w < 80)
 		box_w = 80;
 	if (box_h < 80)
 		box_h = 80;
 
-	/*
-	 * Zero list chrome: page + URL bar stack flush inside the frame box.
-	 * (Any list.margin is 4*M overhead for 2 children and was clipping
-	 * the URL bar when under-subtracted.)
-	 */
+	/* Page + URL bar fill the frame box; list chrome stays zero. */
 	list_m = 0;
 	list_p = 0;
-	field_pad = pad > 2 ? pad / 2 : 2;
+	field_pad = pad > 4 ? pad / 2 : 4;
 
 	addr_input->padding = field_pad;
 	addr_input->margin = 0;
-	content_scroll->padding = pad > 2 ? pad / 2 : 2;
+	content_scroll->padding = field_pad;
 	content_scroll->margin = 0;
 	if (main_list) {
 		main_list->padding = list_p;
@@ -104,17 +99,15 @@ static void gemini_layout_chrome(void)
 	}
 	if (root_frame) {
 		root_frame->padding = pad;
-		root_frame->margin = mar;
+		root_frame->margin = fmar;
 		root_frame->w = ctx->width;
 		root_frame->h = ctx->height;
 	}
 
-	/* Child width inside list = box − 2*(list_m+list_p). */
 	usable_w = box_w - 2 * (list_m + list_p);
 	if (usable_w < 40)
 		usable_w = 40;
 
-	/* Recompute addr height after padding change (outer size). */
 	{
 		int text_h = ctx->font_size > 0 ? ctx->font_size + 4 : 18;
 		addr_input->h = text_h + 2 * (addr_input->padding + addr_input->margin);
@@ -1013,20 +1006,20 @@ int main(void)
 		 (void *)ctx->ft_face_serif);
 
 	{
-		int pad, mar, bw;
+		int pad, fmar, bw;
 
-		gemini_chrome(&pad, &mar, &bw);
+		gemini_chrome(&pad, &fmar, &bw);
 
 		/* Build shell; gemini_layout_chrome sizes children to the frame box. */
 		addr_input = bgtk_text_input(ctx, current_url, 200, 0,
 					     (BGTK_Options){
-						     .padding = pad > 2 ? pad / 2 : 2,
+						     .padding = pad > 4 ? pad / 2 : 4,
 						     .margin = 0});
 		addr_input->data.text_input.on_enter = addr_on_enter;
 
 		content_scroll = bgtk_scrollable(
 			ctx, NULL, 0,
-			(BGTK_Options){.padding = pad > 2 ? pad / 2 : 2,
+			(BGTK_Options){.padding = pad > 4 ? pad / 2 : 4,
 				       .margin = 0});
 
 		loading = bgtk_text(ctx, "Loading…", line_opts());
@@ -1045,10 +1038,9 @@ int main(void)
 					      .padding = 0,
 					      .margin = 0});
 
-		/* Same as terminal: margin outside border, pad inside. */
 		frame = bgtk_frame(ctx, main_list, width, height,
 				   (BGTK_Options){.padding = pad,
-						  .margin = mar});
+						  .margin = fmar});
 		root_frame = frame;
 		gemini_layout_chrome();
 	}

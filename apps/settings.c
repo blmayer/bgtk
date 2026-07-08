@@ -82,6 +82,8 @@ static struct BGTK_Widget *theme_input_bg_input;
 static struct BGTK_Widget *theme_highlight_input;
 static struct BGTK_Widget *theme_margin_input;
 static struct BGTK_Widget *theme_padding_input;
+static struct BGTK_Widget *theme_frame_margin_input;
+static struct BGTK_Widget *theme_baseline_input;
 
 /* Font dropdown: open for one role (sans/mono/serif) at a time. */
 static int font_dropdown_open;
@@ -842,6 +844,13 @@ static void apply_theme(void *userdata)
 		cfg.theme.margin = atoi(theme_margin_input->data.text_input.text);
 	if (theme_padding_input && theme_padding_input->data.text_input.text)
 		cfg.theme.padding = atoi(theme_padding_input->data.text_input.text);
+	if (theme_frame_margin_input &&
+	    theme_frame_margin_input->data.text_input.text)
+		cfg.theme.frame_margin =
+			atoi(theme_frame_margin_input->data.text_input.text);
+	if (theme_baseline_input && theme_baseline_input->data.text_input.text)
+		cfg.theme.text_baseline_offset =
+			atoi(theme_baseline_input->data.text_input.text);
 	write_config(&cfg);
 	if (ctx)
 		ctx->theme = cfg.theme;
@@ -1045,6 +1054,11 @@ static char *build_font_html(void)
 	return buf;
 }
 
+/*
+ * Theme page: 4-column table (label|value|label|value).
+ * Left pair = surfaces/fills; right pair = borders + spacing + text.
+ * get_input() order is document order L→R, top→bottom.
+ */
 static char *build_theme_html(void)
 {
 	char bg[16], btn[16], btxt[16], fbc[16], foc[16], fbg[16], ibg[16],
@@ -1058,32 +1072,63 @@ static char *build_theme_html(void)
 	format_hex_color(cfg.theme.input_bg, ibg, sizeof(ibg));
 	format_hex_color(cfg.theme.highlight, hi, sizeof(hi));
 
-	char *buf = malloc(6144);
-	snprintf(buf, 6144,
+	char *buf = malloc(8192);
+	if (!buf)
+		return NULL;
+	/* iw = input width; shorter for numeric fields. */
+	snprintf(buf, 8192,
 		"<html><body>"
 		"<table>"
-		"<tr><td>Background</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
-		"<tr><td>Button</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
-		"<tr><td>Button text</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
-		"<tr><td>Frame border size</td><td><input type=\"text\" value=\"%u\" width=\"60\" /></td></tr>"
-		"<tr><td>Button border size</td><td><input type=\"text\" value=\"%u\" width=\"60\" /></td></tr>"
-		"<tr><td>Input border size</td><td><input type=\"text\" value=\"%u\" width=\"60\" /></td></tr>"
-		"<tr><td>Frame border color</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
-		"<tr><td>Focus</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
-		"<tr><td>Focus background</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
-		"<tr><td>Input background</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
-		"<tr><td>Highlight</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
-		"<tr><td>Margin</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td></tr>"
-		"<tr><td>Padding</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td></tr>"
+		/* Surfaces | Borders */
+		"<tr>"
+		"<td>Background</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
+		"<td>Frame border color</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
+		"</tr>"
+		"<tr>"
+		"<td>Button</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
+		"<td>Focus</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
+		"</tr>"
+		"<tr>"
+		"<td>Button text</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
+		"<td>Frame border size</td><td><input type=\"text\" value=\"%u\" width=\"60\" /></td>"
+		"</tr>"
+		"<tr>"
+		"<td>Input background</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
+		"<td>Button border size</td><td><input type=\"text\" value=\"%u\" width=\"60\" /></td>"
+		"</tr>"
+		"<tr>"
+		"<td>Focus background</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
+		"<td>Input border size</td><td><input type=\"text\" value=\"%u\" width=\"60\" /></td>"
+		"</tr>"
+		"<tr>"
+		"<td>Highlight</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
+		"<td>Widget margin</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td>"
+		"</tr>"
+		/* Spacing / text (right column only continues) */
+		"<tr>"
+		"<td></td><td></td>"
+		"<td>Frame padding</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td>"
+		"</tr>"
+		"<tr>"
+		"<td></td><td></td>"
+		"<td>Frame margin</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td>"
+		"</tr>"
+		"<tr>"
+		"<td></td><td></td>"
+		"<td>Text baseline</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td>"
+		"</tr>"
 		"</table>"
 		"<div><button>Apply</button></div>"
 		"</body></html>",
-		bg, btn, btxt,
-		cfg.theme.frame_border_size,
-		cfg.theme.button_border_size,
-		cfg.theme.input_border_size,
-		fbc, foc, fbg, ibg, hi,
-		cfg.theme.margin, cfg.theme.padding);
+		/* L0 */ bg, /* R0 */ fbc,
+		/* L1 */ btn, /* R1 */ foc,
+		/* L2 */ btxt, /* R2 */ cfg.theme.frame_border_size,
+		/* L3 */ ibg, /* R3 */ cfg.theme.button_border_size,
+		/* L4 */ fbg, /* R4 */ cfg.theme.input_border_size,
+		/* L5 */ hi, /* R5 */ cfg.theme.margin,
+		/* R6 */ cfg.theme.padding,
+		/* R7 */ cfg.theme.frame_margin,
+		/* R8 */ cfg.theme.text_baseline_offset);
 	return buf;
 }
 
@@ -1341,6 +1386,8 @@ static void rebuild_content(void)
 	theme_highlight_input = NULL;
 	theme_margin_input = NULL;
 	theme_padding_input = NULL;
+	theme_frame_margin_input = NULL;
+	theme_baseline_input = NULL;
 
 	/* Free old font cache only when leaving font page */
 	if (current_page != 3 && font_list_cache) {
@@ -1355,14 +1402,16 @@ static void rebuild_content(void)
 	if (current_page == 3 && !font_list_cache)
 		font_list_count = scan_fonts(&font_list_cache);
 
-	int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
-	int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 4;
+	int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 12;
+	int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 8;
+	int fmar = ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin : 0;
 	int fbw = (int)ctx->theme.frame_border_size;
 	int chrome, rule_w, panel_w, panel_h;
 
 	if (fbw < 0)
 		fbw = 0;
-	chrome = 2 * (fbw + pad);
+	/* Root: [frame_margin][border][padding][content]… */
+	chrome = 2 * (fmar + fbw + pad);
 	rule_w = panel_rule ? panel_rule->w : (1 + mar);
 	panel_w = app_w - (sidebar ? sidebar->w : SIDEBAR_W) - rule_w - chrome -
 		  mar;
@@ -1497,22 +1546,25 @@ static void rebuild_content(void)
 			b->data.button.callback = apply_font;
 		break;
 	}
-	case 4: { /* Theme */
+	case 4: { /* Theme — inputs in 4-col table order (see build_theme_html) */
 		theme_bg_input = get_input(page, 0);
-		theme_btn_input = get_input(page, 1);
-		theme_btn_text_input = get_input(page, 2);
-		theme_frame_border_input = get_input(page, 3);
-		theme_btn_border_input = get_input(page, 4);
-		theme_input_border_input = get_input(page, 5);
-		theme_frame_color_input = get_input(page, 6);
-		theme_focus_input = get_input(page, 7);
+		theme_frame_color_input = get_input(page, 1);
+		theme_btn_input = get_input(page, 2);
+		theme_focus_input = get_input(page, 3);
+		theme_btn_text_input = get_input(page, 4);
+		theme_frame_border_input = get_input(page, 5);
+		theme_input_bg_input = get_input(page, 6);
+		theme_btn_border_input = get_input(page, 7);
 		theme_focus_bg_input = get_input(page, 8);
-		theme_input_bg_input = get_input(page, 9);
+		theme_input_border_input = get_input(page, 9);
 		theme_highlight_input = get_input(page, 10);
 		theme_margin_input = get_input(page, 11);
 		theme_padding_input = get_input(page, 12);
+		theme_frame_margin_input = get_input(page, 13);
+		theme_baseline_input = get_input(page, 14);
 		struct BGTK_Widget *b = get_button(page, 0);
-		if (b) b->data.button.callback = apply_theme;
+		if (b)
+			b->data.button.callback = apply_theme;
 		break;
 	}
 	}
@@ -1529,8 +1581,8 @@ static void rebuild_content(void)
  * scroll buffer or the right border is clipped under the panel rule. */
 static void sidebar_spacing(int *pad, int *mar, int *scroll_pad, int *btn_w)
 {
-	int p = (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 6;
-	int m = (ctx && ctx->theme.margin > 0) ? ctx->theme.margin / 2 : 2;
+	int p = (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 12;
+	int m = (ctx && ctx->theme.margin > 0) ? ctx->theme.margin / 2 : 4;
 	int sp = p > 1 ? p / 2 : 1;
 	/* child.x = scroll.mar+scroll.pad; button.x = list.mar+list.pad */
 	int left = m + sp + m; /* scroll mar + pad + list mar (list pad 0) */
@@ -1644,24 +1696,24 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
 	ctx->theme = cfg.theme;
 
 	{
-		int pad = cfg.theme.padding > 0 ? cfg.theme.padding : 6;
-		int mar = cfg.theme.margin > 0 ? cfg.theme.margin : 4;
+		int pad = cfg.theme.padding > 0 ? cfg.theme.padding : 12;
+		int mar = cfg.theme.margin > 0 ? cfg.theme.margin : 8;
+		int fmar = cfg.theme.frame_margin >= 0 ? cfg.theme.frame_margin
+							: 0;
 		int bw = (int)cfg.theme.frame_border_size;
 		int chrome;
 
 		if (bw < 0)
 			bw = 0;
-		chrome = 2 * (bw + pad);
+		chrome = 2 * (fmar + bw + pad);
 
 		sidebar = build_sidebar();
-		/* Thin divider: margin only on the content side so it does
-		 * not sit on top of sidebar button borders. */
+		/* Thin divider: gutter from widget margin. */
 		panel_rule = bgtk_rule(ctx, BGTK_LIST_VERTICAL, 1,
 				       (BGTK_Options){.margin = 0, .padding = 0});
-		/* Extra left gap via rule outer width (visual gutter). */
 		{
 			int gutter = mar > 0 ? mar : 4;
-			panel_rule->w = 1 + gutter; /* 1px line + space after sidebar */
+			panel_rule->w = 1 + gutter;
 			panel_rule->data.rule.thickness = 1;
 		}
 		panel_rule->h = app_h - chrome;
@@ -1672,21 +1724,23 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
 			panel_w = 80;
 
 		struct BGTK_Widget *placeholder = bgtk_text(ctx, "Select a category",
-			(BGTK_Options){.padding = pad, .margin = mar});
-		/* Borderless content frame; vertical rule separates sidebar. */
+			(BGTK_Options){.padding = pad, .margin = 0});
+		/*
+		 * Borderless content frame; margin 0 so the page top lines up
+		 * with the sidebar (sidebar already has its own scroll pad).
+		 */
 		content_panel = bgtk_frame(ctx, placeholder, panel_w, panel_h,
-			(BGTK_Options){.padding = pad / 2, .margin = mar});
+			(BGTK_Options){.padding = 0, .margin = 0});
 		content_panel->data.frame.border_w = 0;
 
 		struct BGTK_Widget *cols[3] = { sidebar, panel_rule, content_panel };
-		/* Zero list margin so column gap comes from rule gutter only. */
 		struct BGTK_Widget *row = bgtk_list(ctx, cols, 3,
 			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
 				       .margin = 0, .padding = 0});
 
-		/* Outer frame: thick gold border + even theme padding inset. */
+		/* Root: frame_margin outside border, padding inside. */
 		root_frame = bgtk_frame(ctx, row, app_w, app_h,
-			(BGTK_Options){.padding = pad, .margin = 0});
+			(BGTK_Options){.padding = pad, .margin = fmar});
 
 		ctx->root_widget = root_frame;
 	}

@@ -671,12 +671,12 @@ void sys_status_refresh(unsigned flags)
 
 static int ss_pad(struct BGTK_Context *c)
 {
-	return (c && c->theme.padding > 0) ? c->theme.padding : 6;
+	return (c && c->theme.padding > 0) ? c->theme.padding : 12;
 }
 
 static int ss_mar(struct BGTK_Context *c)
 {
-	return (c && c->theme.margin > 0) ? c->theme.margin : 4;
+	return (c && c->theme.margin > 0) ? c->theme.margin : 8;
 }
 
 /* Size root frame from label text (call after metrics are filled). */

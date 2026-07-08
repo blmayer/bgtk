@@ -340,9 +340,15 @@ void init_config_defaults(struct config *config)
 	config->theme.input_bg = 0xFF1C1814;
 	config->theme.highlight = 0xFFD4B8A0;
 	config->theme.text_baseline_offset = 0;
-	/* Keep modest: large values stack on every list/scroll child. */
-	config->theme.margin = 4;
-	config->theme.padding = 6;
+	/*
+	 * Sowm-style floating cards:
+	 *   frame_margin = 0  → border is the window edge
+	 *   padding           → air inside the border
+	 *   margin            → gap between sibling widgets
+	 */
+	config->theme.margin = 8;
+	config->theme.padding = 12;
+	config->theme.frame_margin = 0;
 
 	/* Font defaults under [font]: sans, mono, serif, size. */
 	config->font_sans_path[0] = '\0';
@@ -435,6 +441,7 @@ int write_config(const struct config *config)
 		config->theme.text_baseline_offset);
 	fprintf(f, "margin = %d\n", config->theme.margin);
 	fprintf(f, "padding = %d\n", config->theme.padding);
+	fprintf(f, "frame_margin = %d\n", config->theme.frame_margin);
 
 	fprintf(f, "\n[font]\n");
 	if (config->font_sans_path[0])
@@ -550,6 +557,8 @@ int parse_config(struct config *config)
 				config->theme.margin = atoi(value);
 			} else if (strcmp(key, "padding") == 0) {
 				config->theme.padding = atoi(value);
+			} else if (strcmp(key, "frame_margin") == 0) {
+				config->theme.frame_margin = atoi(value);
 			}
 		} else if (strcmp(current_section, "font") == 0) {
 			if (strcmp(key, "sans") == 0) {

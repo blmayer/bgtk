@@ -43,20 +43,20 @@ static BGTK_Options line_opts(void)
 	return (BGTK_Options){.padding = 1, .margin = 1};
 }
 
-/* Theme chrome — same geometry as terminal:
- * frame draws [margin][border][padding][content]… */
-static void gemini_chrome(int *pad, int *mar, int *bw)
+/* Root chrome: [frame_margin][border][padding][content]… */
+static void gemini_chrome(int *pad, int *fmar, int *bw)
 {
-	int p = (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 6;
-	int m = (ctx && ctx->theme.margin > 0) ? ctx->theme.margin : 4;
+	int p = (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 12;
+	int m = (ctx && ctx->theme.frame_margin >= 0) ? ctx->theme.frame_margin
+						      : 0;
 	int b = ctx ? (int)ctx->theme.frame_border_size : 1;
 
 	if (b < 1)
 		b = 1;
 	if (pad)
 		*pad = p;
-	if (mar)
-		*mar = m;
+	if (fmar)
+		*fmar = m;
 	if (bw)
 		*bw = b;
 }
@@ -83,24 +83,24 @@ static void rebuild_content_from_gemtext(const char *body);
 
 static void gemini_layout_chrome(void)
 {
-	int pad, mar, bw, box_w, box_h, list_m, list_p, field_pad;
+	int pad, fmar, bw, box_w, box_h, list_m, list_p, field_pad;
 	int usable_w, ah, scroll_h, over;
 
 	if (!ctx || !content_scroll || !addr_input)
 		return;
-	gemini_chrome(&pad, &mar, &bw);
-	box_w = ctx->width - 2 * (mar + bw + pad);
-	box_h = ctx->height - 2 * (mar + bw + pad);
+	gemini_chrome(&pad, &fmar, &bw);
+	box_w = ctx->width - 2 * (fmar + bw + pad);
+	box_h = ctx->height - 2 * (fmar + bw + pad);
 	if (box_w < 80)
 		box_w = 80;
 	if (box_h < 80)
 		box_h = 80;
 	list_m = 0;
 	list_p = 0;
-	field_pad = pad > 2 ? pad / 2 : 2;
+	field_pad = pad > 4 ? pad / 2 : 4;
 	addr_input->padding = field_pad;
 	addr_input->margin = 0;
-	content_scroll->padding = pad > 2 ? pad / 2 : 2;
+	content_scroll->padding = field_pad;
 	content_scroll->margin = 0;
 	if (main_list) {
 		main_list->padding = list_p;
@@ -110,7 +110,7 @@ static void gemini_layout_chrome(void)
 	}
 	if (root_frame) {
 		root_frame->padding = pad;
-		root_frame->margin = mar;
+		root_frame->margin = fmar;
 		root_frame->w = ctx->width;
 		root_frame->h = ctx->height;
 	}
@@ -731,7 +731,7 @@ int main(void)
 
 	int width = 640;
 	int height = 500;
-	int pad, mar, bw;
+	int pad, fmar, bw;
 	struct BGTK_Widget *main_items[2];
 	struct BGTK_Widget *frame;
 
@@ -741,15 +741,15 @@ int main(void)
 		return 1;
 	}
 
-	gemini_chrome(&pad, &mar, &bw);
+	gemini_chrome(&pad, &fmar, &bw);
 	addr_input = bgtk_text_input(
 		ctx, "gemini://geminiprotocol.net/", 200, 0,
-		(BGTK_Options){.padding = pad > 2 ? pad / 2 : 2, .margin = 0});
+		(BGTK_Options){.padding = pad > 4 ? pad / 2 : 4, .margin = 0});
 	addr_input->data.text_input.on_enter = demo_addr_on_enter;
 
 	content_scroll = bgtk_scrollable(
 		ctx, NULL, 0,
-		(BGTK_Options){.padding = pad > 2 ? pad / 2 : 2, .margin = 0});
+		(BGTK_Options){.padding = pad > 4 ? pad / 2 : 4, .margin = 0});
 
 	main_items[0] = content_scroll;
 	main_items[1] = addr_input;
@@ -759,7 +759,7 @@ int main(void)
 					     .margin = 0});
 
 	frame = bgtk_frame(ctx, main_list, width, height,
-			   (BGTK_Options){.padding = pad, .margin = mar});
+			   (BGTK_Options){.padding = pad, .margin = fmar});
 	root_frame = frame;
 	ctx->root_widget = frame;
 	gemini_layout_chrome();

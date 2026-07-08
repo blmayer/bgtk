@@ -75,6 +75,20 @@ struct Term_State *term_create(int cols, int rows)
 	return t;
 }
 
+void term_apply_theme(struct Term_State *t, struct BGTK_Context *ctx)
+{
+	uint32_t bg;
+
+	if (!t || !ctx)
+		return;
+	/* ANSI default background (SGR 49 / palette index 0). */
+	bg = ctx->theme.background ? ctx->theme.background : 0xFF0A0A0A;
+	t->palette[0] = bg | 0xFF000000u;
+	/* Default foreground: theme text if set, else keep xterm gray. */
+	if (ctx->theme.button_text)
+		t->palette[7] = ctx->theme.button_text | 0xFF000000u;
+}
+
 void term_destroy(struct Term_State *t)
 {
 	if (!t)
@@ -620,7 +634,7 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 					pixels[(y0 + dy) * px_w + (x0 + dx)] = bg;
 		}
 	}
-	/* fill remainder with black */
+	/* fill remainder with default bg (theme-synced palette[0]) */
 	used_w = t->cols * cw;
 	used_h = t->rows * ch;
 	if (used_w < px_w) {

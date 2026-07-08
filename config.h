@@ -40,9 +40,15 @@ typedef struct {
 	uint32_t highlight;
 	/* Global FreeType baseline tweak (px; added after per-widget baseline_offset). */
 	int text_baseline_offset;
-	/* Default external / internal spacing apps should use for chrome. */
+	/*
+	 * Spacing (px). Apps should prefer these over magic constants:
+	 *   margin       — gap between sibling widgets (lists, rows)
+	 *   padding      — air inside the frame border (content inset)
+	 *   frame_margin — air outside the frame border (sowm cards: 0)
+	 */
 	int margin;
 	int padding;
+	int frame_margin;
 } BGTK_Theme;
 
 // Config structure

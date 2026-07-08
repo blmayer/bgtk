@@ -147,7 +147,7 @@ static void rebuild_matches_ui(void)
 		return;
 
 	/* Tight list: pad only inside rows; zero margin so rows pack flush. */
-	pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
+	pad = ctx->theme.padding > 0 ? ctx->theme.padding : 12;
 	if (pad > 8)
 		pad = 8;
 	/* Full width of the scrollable content box. */
@@ -309,14 +309,18 @@ static void layout_launcher(void)
 
 	if (!ctx)
 		return;
-	pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
-	mar = ctx->theme.margin > 0 ? ctx->theme.margin : 4;
+	pad = ctx->theme.padding > 0 ? ctx->theme.padding : 12;
+	mar = ctx->theme.margin > 0 ? ctx->theme.margin : 8;
 	bw = (int)ctx->theme.frame_border_size;
-	if (bw < 0)
-		bw = 0;
-	/* Content lives inside frame border + frame padding only (no extra mar). */
-	inner_w = ctx->width - 2 * (bw + pad);
-	inner_h = ctx->height - 2 * (bw + pad);
+	{
+		int fmar = ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin
+							: 0;
+		if (bw < 0)
+			bw = 0;
+		/* Content: [frame_margin][border][padding][…] */
+		inner_w = ctx->width - 2 * (fmar + bw + pad);
+		inner_h = ctx->height - 2 * (fmar + bw + pad);
+	}
 	if (inner_w < 40)
 		inner_w = 40;
 	if (inner_h < 40)
@@ -339,8 +343,12 @@ static void layout_launcher(void)
 			matches_scroll->h = 40;
 	}
 	if (ctx->root_widget) {
+		int fmar = ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin
+							: 0;
 		ctx->root_widget->w = ctx->width;
 		ctx->root_widget->h = ctx->height;
+		ctx->root_widget->padding = pad;
+		ctx->root_widget->margin = fmar;
 	}
 }
 
@@ -391,8 +399,8 @@ int main(void)
 	bgtk_log("building launcher UI (goldie file-list)");
 
 	{
-		int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 6;
-		int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 4;
+		int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 12;
+		int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 8;
 
 		text_input = bgtk_text_input(
 			ctx, "", 440, 0,
@@ -428,10 +436,14 @@ int main(void)
 				bgtk_log("bgtk_list failed");
 				return 1;
 			}
-			/* Frame pad = theme.padding so thick border has even inset. */
-			frame = bgtk_frame(ctx, layout, width, height,
-					  (BGTK_Options){.padding = pad,
-							 .margin = 0});
+			/* Root chrome from theme (frame_margin + padding). */
+			frame = bgtk_frame(
+				ctx, layout, width, height,
+				(BGTK_Options){
+					.padding = pad,
+					.margin = ctx->theme.frame_margin >= 0
+							  ? ctx->theme.frame_margin
+							  : 0});
 			if (!frame) {
 				bgtk_log("bgtk_frame failed");
 				return 1;

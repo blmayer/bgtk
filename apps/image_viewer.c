@@ -12,12 +12,12 @@ static struct BGTK_Widget* col = NULL;  // Parent list widget
 
 static int theme_pad(void)
 {
-	return (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 6;
+	return (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 12;
 }
 
 static int theme_mar(void)
 {
-	return (ctx && ctx->theme.margin > 0) ? ctx->theme.margin : 4;
+	return (ctx && ctx->theme.margin > 0) ? ctx->theme.margin : 8;
 }
 
 static void load_button_clicked(void *userdata) {
