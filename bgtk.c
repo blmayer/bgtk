@@ -18,9 +18,18 @@
 #include <time.h>
 #include <unistd.h>
 
-#if defined(__linux__) || defined(__APPLE__)
+/* backtrace(3) is glibc/BSD; musl and many embedded toolchains lack it. */
+#if defined(__has_include)
+#if __has_include(<execinfo.h>)
 #include <execinfo.h>
 #define BGTK_HAVE_BACKTRACE 1
+#endif
+#elif defined(__GLIBC__) || defined(__APPLE__)
+#include <execinfo.h>
+#define BGTK_HAVE_BACKTRACE 1
+#endif
+#ifndef BGTK_HAVE_BACKTRACE
+#define BGTK_HAVE_BACKTRACE 0
 #endif
 
 #include "config.h"
