@@ -86,21 +86,25 @@ BGTK is configured via `~/.config/bgtk.conf`. Example with all options and their
 # Background settings
 [background]
 type = color
-color = #E8E8E8
+color = #F4F1EA
 # Or use an image:
 # type = image
 # path = /path/to/wallpaper.png
 # mode = tiled
 
-# Theme colors and border sizes
+# Theme colors and border sizes (default: Paper)
 [theme]
-background = #E8E8E8
-button = #D0D0D0
-button_text = #111111
+background = #F4F1EA
+button = #E8E2D6
+button_text = #1C1917
 button_border_size = 1
-input_border_size = 2
-frame_border_size = 4
-frame_border_color = #333333
+input_border_size = 1
+frame_border_size = 2
+frame_border_color = #C4B8A8
+focus = #B45309
+focus_bg = #FFF7ED
+highlight = #78716C
+# text_baseline_offset = 0   # global FreeType baseline tweak (px; can be negative)
 
 # Font settings (sans = UI; mono = terminal; serif = documents)
 [font]

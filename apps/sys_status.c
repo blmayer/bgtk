@@ -366,63 +366,115 @@ static void metric_disk(char *out, size_t n)
 	snprintf(out, n, "%s / %s (%d%%) %s", ubuf, tbuf, pct, bar);
 }
 
-/* Non-blocking-ish TCP connect with short timeout to a public DNS. */
-static void metric_internet(char *out, size_t n)
+/*
+ * Internet / weather need only libc networking (no curl/libtls):
+ *   - Internet: dual-stack TCP :80 via getaddrinfo (IPv4 + IPv6)
+ *   - Weather: DNS + HTTP/1.0 :80 to wttr.in (AF_UNSPEC)
+ * No package deps. IPv6-only boards must not hardcode 1.1.1.1.
+ */
+/* 0 ok, -1 fail, -2 timeout */
+static int tcp_probe_ai(const struct addrinfo *rp, long *out_ms)
 {
-	int fd;
-	struct sockaddr_in addr;
-	struct timeval tv0, tv1;
-	int flags, err = 0;
+	int fd, flags, err = 0;
+	struct timeval tv0, tv1, tv;
 	socklen_t elen = sizeof(err);
 	fd_set wfds;
-	struct timeval tv;
-	long ms;
 
-	fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (fd < 0) {
-		snprintf(out, n, "offline (socket)");
-		return;
-	}
+	fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+	if (fd < 0)
+		return -1;
 	flags = fcntl(fd, F_GETFL, 0);
 	if (flags >= 0)
 		fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-
-	memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(53);
-	inet_pton(AF_INET, "1.1.1.1", &addr.sin_addr);
-
 	gettimeofday(&tv0, NULL);
-	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 &&
+	if (connect(fd, rp->ai_addr, rp->ai_addrlen) < 0 &&
 	    errno != EINPROGRESS) {
-		snprintf(out, n, "offline");
 		close(fd);
-		return;
+		return -1;
 	}
 	FD_ZERO(&wfds);
 	FD_SET(fd, &wfds);
-	tv.tv_sec = 1;
-	tv.tv_usec = 500000;
+	tv.tv_sec = 2;
+	tv.tv_usec = 0;
 	if (select(fd + 1, NULL, &wfds, NULL, &tv) <= 0) {
-		snprintf(out, n, "offline (timeout)");
 		close(fd);
-		return;
+		return -2;
 	}
 	if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) < 0 || err != 0) {
-		snprintf(out, n, "offline");
 		close(fd);
-		return;
+		return -1;
 	}
 	gettimeofday(&tv1, NULL);
-	ms = (tv1.tv_sec - tv0.tv_sec) * 1000L +
-	     (tv1.tv_usec - tv0.tv_usec) / 1000L;
+	if (out_ms)
+		*out_ms = (tv1.tv_sec - tv0.tv_sec) * 1000L +
+			  (tv1.tv_usec - tv0.tv_usec) / 1000L;
 	close(fd);
-	snprintf(out, n, "online  (~%ld ms to 1.1.1.1)", ms);
+	return 0;
 }
 
-/* Minimal HTTP/1.0 GET (no TLS) — wttr.in format string. */
+/* Resolve host:port (AF_UNSPEC) and try each address. */
+static int tcp_probe_host(const char *host, const char *port, long *out_ms)
+{
+	struct addrinfo hints, *res = NULL, *rp;
+	int saw_timeout = 0, r;
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_family = AF_UNSPEC;
+	if (getaddrinfo(host, port, &hints, &res) != 0)
+		return -1;
+	for (rp = res; rp; rp = rp->ai_next) {
+		r = tcp_probe_ai(rp, out_ms);
+		if (r == 0) {
+			freeaddrinfo(res);
+			return 0;
+		}
+		if (r == -2)
+			saw_timeout = 1;
+	}
+	freeaddrinfo(res);
+	return saw_timeout ? -2 : -1;
+}
+
+static void metric_internet(char *out, size_t n)
+{
+	long ms = 0;
+	int r;
+	static const char *hosts[] = {
+		"one.one.one.one", /* Cloudflare A+AAAA */
+		"dns.google",
+		"cloudflare.com",
+		NULL
+	};
+	int i;
+
+	for (i = 0; hosts[i]; i++) {
+		r = tcp_probe_host(hosts[i], "80", &ms);
+		if (r == 0) {
+			snprintf(out, n, "online (~%ld ms %s)", ms, hosts[i]);
+			return;
+		}
+	}
+	/* Literal v6 in case DNS itself is broken but connectivity works. */
+	r = tcp_probe_host("2606:4700:4700::1111", "80", &ms);
+	if (r == 0) {
+		snprintf(out, n, "online (~%ld ms cf6)", ms);
+		return;
+	}
+	r = tcp_probe_host("1.1.1.1", "80", &ms);
+	if (r == 0) {
+		snprintf(out, n, "online (~%ld ms 1.1.1.1)", ms);
+		return;
+	}
+	if (r == -2)
+		snprintf(out, n, "offline (timeout)");
+	else
+		snprintf(out, n, "offline (no route/DNS?)");
+}
+
+/* Minimal HTTP/1.0 GET (no TLS). err: 0 ok, -1 DNS, -2 connect, -3 HTTP. */
 static int http_get_plain(const char *host, const char *path, char *body,
-			  size_t body_len)
+			  size_t body_len, int *err_kind)
 {
 	struct addrinfo hints, *res = NULL, *rp;
 	int fd = -1, n;
@@ -430,17 +482,22 @@ static int http_get_plain(const char *host, const char *path, char *body,
 	size_t blen = 0;
 	char *hdr_end;
 
+	if (err_kind)
+		*err_kind = -1;
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_family = AF_UNSPEC;
-	if (getaddrinfo(host, "80", &hints, &res) != 0)
+	if (getaddrinfo(host, "80", &hints, &res) != 0) {
+		if (err_kind)
+			*err_kind = -1;
 		return -1;
+	}
 	for (rp = res; rp; rp = rp->ai_next) {
 		fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
 		if (fd < 0)
 			continue;
 		{
-			struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+			struct timeval tv = { .tv_sec = 4, .tv_usec = 0 };
 			setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 			setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 		}
@@ -450,8 +507,11 @@ static int http_get_plain(const char *host, const char *path, char *body,
 		fd = -1;
 	}
 	freeaddrinfo(res);
-	if (fd < 0)
+	if (fd < 0) {
+		if (err_kind)
+			*err_kind = -2;
 		return -1;
+	}
 
 	n = snprintf(req, sizeof(req),
 		     "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: bgtk-sys_status\r\n"
@@ -459,6 +519,8 @@ static int http_get_plain(const char *host, const char *path, char *body,
 		     path, host);
 	if (write(fd, req, (size_t)n) < 0) {
 		close(fd);
+		if (err_kind)
+			*err_kind = -2;
 		return -1;
 	}
 	while (blen + 1 < sizeof(buf)) {
@@ -469,11 +531,23 @@ static int http_get_plain(const char *host, const char *path, char *body,
 	}
 	close(fd);
 	buf[blen] = '\0';
+	/* Redirects to HTTPS look like "HTTP/1.1 301" with empty useful body. */
+	if (strncmp(buf, "HTTP/", 5) == 0) {
+		int code = 0;
+		sscanf(buf, "HTTP/%*s %d", &code);
+		if (code >= 300 && code < 400) {
+			if (err_kind)
+				*err_kind = -3;
+			return -1;
+		}
+	}
 	hdr_end = strstr(buf, "\r\n\r\n");
-	if (!hdr_end)
+	if (!hdr_end) {
+		if (err_kind)
+			*err_kind = -3;
 		return -1;
+	}
 	hdr_end += 4;
-	/* trim whitespace / newlines from weather line */
 	while (*hdr_end && isspace((unsigned char)*hdr_end))
 		hdr_end++;
 	{
@@ -481,9 +555,14 @@ static int http_get_plain(const char *host, const char *path, char *body,
 		while (e > hdr_end && isspace((unsigned char)e[-1]))
 			*--e = '\0';
 	}
-	if (!*hdr_end)
+	if (!*hdr_end) {
+		if (err_kind)
+			*err_kind = -3;
 		return -1;
+	}
 	snprintf(body, body_len, "%s", hdr_end);
+	if (err_kind)
+		*err_kind = 0;
 	return 0;
 }
 
@@ -493,11 +572,19 @@ static void metric_weather(char *out, size_t n)
 	char clean[256];
 	char *p, *q;
 	int sp = 0;
+	int err = 0;
 
 	/* Location + temp only (ASCII). Avoid emoji — BGTK draws one byte per
-	 * FreeType index, so multi-byte UTF-8 looks like garbage. */
-	if (http_get_plain("wttr.in", "/?format=%l:+%t", body, sizeof(body)) != 0) {
-		snprintf(out, n, "n/a (network)");
+	 * FreeType index, so multi-byte UTF-8 looks like garbage.
+	 * Needs DNS + HTTP:80 to wttr.in (no libcurl / no TLS). */
+	if (http_get_plain("wttr.in", "/?format=%l:+%t", body, sizeof(body),
+			   &err) != 0) {
+		if (err == -1)
+			snprintf(out, n, "n/a (DNS)");
+		else if (err == -2)
+			snprintf(out, n, "n/a (connect)");
+		else
+			snprintf(out, n, "n/a (HTTP)");
 		return;
 	}
 	/* Keep printable ASCII; map other bytes to nothing (strip UTF-8). */

@@ -39,6 +39,7 @@ static int app_h = 480;
 
 static struct BGTK_Widget *sidebar_list; /* the list widget inside the scrollable */
 static struct BGTK_Widget *sidebar;
+static struct BGTK_Widget *panel_rule; /* vertical divider between sidebar + content */
 static struct BGTK_Widget *content_panel;
 static struct BGTK_Widget *root_frame;
 
@@ -54,6 +55,8 @@ static struct BGTK_Widget *bg_color_input;
 static struct BGTK_Widget *bg_path_input;
 
 static struct BGTK_Widget *cursor_path_input;
+/* [cursors] theme = from ~/.config/bgce.conf (name or path). */
+static char cursor_theme[MAX_PATH_LEN];
 
 #define MAX_SHORTCUT_ROWS 24
 static struct BGTK_Widget *shortcut_inputs[MAX_SHORTCUT_ROWS];
@@ -68,6 +71,9 @@ static struct BGTK_Widget *theme_frame_border_input;
 static struct BGTK_Widget *theme_btn_border_input;
 static struct BGTK_Widget *theme_input_border_input;
 static struct BGTK_Widget *theme_frame_color_input;
+static struct BGTK_Widget *theme_focus_input;
+static struct BGTK_Widget *theme_focus_bg_input;
+static struct BGTK_Widget *theme_highlight_input;
 
 /* Font dropdown: open for one role (sans/mono/serif) at a time. */
 static int font_dropdown_open;
@@ -575,11 +581,104 @@ static void toggle_bg_type(void *userdata)
 	rebuild_content();
 }
 
+/* Write [cursors] theme into bgce.conf (merge, keep other sections). */
+static void write_bgce_cursors(void)
+{
+	const char *home = getenv("HOME");
+	char path[512], tmp[512], dir[512];
+	FILE *in, *out;
+	char line[512];
+	char section[64] = "";
+	int wrote = 0;
+
+	if (!home || !home[0])
+		return;
+	if (cursor_path_input && cursor_path_input->data.text_input.text) {
+		strncpy(cursor_theme, cursor_path_input->data.text_input.text,
+			MAX_PATH_LEN - 1);
+		cursor_theme[MAX_PATH_LEN - 1] = '\0';
+	}
+	snprintf(dir, sizeof(dir), "%s/.config", home);
+	(void)mkdir(dir, 0755);
+	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
+	snprintf(tmp, sizeof(tmp), "%s/.config/bgce.conf.bgtk-tmp", home);
+	in = fopen(path, "r");
+	out = fopen(tmp, "w");
+	if (!out) {
+		if (in)
+			fclose(in);
+		return;
+	}
+	if (in) {
+		int skip = 0;
+		while (fgets(line, sizeof(line), in)) {
+			char *p = line;
+			while (*p == ' ' || *p == '\t')
+				p++;
+			if (*p == '[') {
+				char *end = strchr(p, ']');
+				section[0] = '\0';
+				if (end &&
+				    (size_t)(end - p - 1) < sizeof(section)) {
+					memcpy(section, p + 1,
+					       (size_t)(end - p - 1));
+					section[end - p - 1] = '\0';
+				}
+				if (strcmp(section, "cursors") == 0) {
+					skip = 1;
+					continue;
+				}
+				if (skip) {
+					fprintf(out, "[cursors]\n");
+					if (cursor_theme[0])
+						fprintf(out, "theme = %s\n",
+							cursor_theme);
+					fprintf(out, "\n");
+					wrote = 1;
+					skip = 0;
+				}
+				fputs(line, out);
+				continue;
+			}
+			if (skip)
+				continue;
+			fputs(line, out);
+		}
+		if (skip) {
+			fprintf(out, "[cursors]\n");
+			if (cursor_theme[0])
+				fprintf(out, "theme = %s\n", cursor_theme);
+			wrote = 1;
+		}
+		fclose(in);
+	}
+	if (!wrote) {
+		fprintf(out, "[cursors]\n");
+		if (cursor_theme[0])
+			fprintf(out, "theme = %s\n", cursor_theme);
+	}
+	fclose(out);
+	if (rename(tmp, path) != 0)
+		bgtk_log_errno("write_bgce_cursors rename");
+	else
+		bgtk_log("wrote cursors theme='%s' to %s",
+			 cursor_theme[0] ? cursor_theme : "(empty)", path);
+}
+
 static void apply_cursor(void *userdata)
 {
 	(void)userdata;
-	/* Cursor path saved for future BGCE integration */
-	write_config(&cfg);
+	write_bgce_cursors();
+	rebuild_content();
+}
+
+static void pick_cursor_theme(void *userdata)
+{
+	const char *name = (const char *)userdata;
+	if (name && name[0]) {
+		strncpy(cursor_theme, name, MAX_PATH_LEN - 1);
+		cursor_theme[MAX_PATH_LEN - 1] = '\0';
+	}
 	rebuild_content();
 }
 
@@ -723,7 +822,16 @@ static void apply_theme(void *userdata)
 		cfg.theme.input_border_size = atoi(theme_input_border_input->data.text_input.text);
 	if (theme_frame_color_input)
 		cfg.theme.frame_border_color = parse_color_input(theme_frame_color_input->data.text_input.text);
+	if (theme_focus_input)
+		cfg.theme.focus = parse_color_input(theme_focus_input->data.text_input.text);
+	if (theme_focus_bg_input)
+		cfg.theme.focus_bg = parse_color_input(theme_focus_bg_input->data.text_input.text);
+	if (theme_highlight_input)
+		cfg.theme.highlight = parse_color_input(theme_highlight_input->data.text_input.text);
 	write_config(&cfg);
+	if (ctx)
+		ctx->theme = cfg.theme;
+	rebuild_sidebar();
 	rebuild_content();
 }
 
@@ -763,6 +871,7 @@ static void toggle_font_dropdown(void *userdata)
 
 static char *build_background_html(void)
 {
+	/* Values come from load_bgce_config / cfg (desktop = bgce.conf). */
 	char color_hex[16];
 	format_hex_color(cfg.color, color_hex, sizeof(color_hex));
 
@@ -770,6 +879,7 @@ static char *build_background_html(void)
 	int pos = 0;
 	pos += snprintf(buf + pos, 4096 - pos,
 		"<html><body>"
+		"<p>Desktop (~/.config/bgce.conf [background])</p>"
 		"<table>"
 		"<tr><td>Type</td><td><button>[ %s ]</button></td></tr>",
 		cfg.type == BG_IMAGE ? "Image" : "Color");
@@ -799,6 +909,7 @@ static char *build_cursor_html(void)
 {
 	char **cursors = NULL;
 	int ncursors = scan_cursors(&cursors);
+	const char *cur = cursor_theme[0] ? cursor_theme : "";
 
 	int buflen = 4096 + ncursors * 256;
 	char *buf = malloc(buflen);
@@ -806,11 +917,13 @@ static char *build_cursor_html(void)
 
 	pos += snprintf(buf + pos, buflen - pos,
 		"<html><body>"
+		"<p>From ~/.config/bgce.conf [cursors]</p>"
 		"<table>"
-		"<tr><td>Custom path</td><td><input type=\"text\" value=\"\" width=\"260\" /></td></tr>"
+		"<tr><td>theme</td><td><input type=\"text\" value=\"%s\" width=\"260\" /></td></tr>"
 		"</table>"
-		"<p>Available themes:</p>"
-		"<ul>");
+		"<p>Installed themes (click to select):</p>"
+		"<ul>",
+		cur);
 
 	if (ncursors == 0) {
 		pos += snprintf(buf + pos, buflen - pos,
@@ -926,14 +1039,17 @@ static char *build_font_html(void)
 
 static char *build_theme_html(void)
 {
-	char bg[16], btn[16], btxt[16], fbc[16];
+	char bg[16], btn[16], btxt[16], fbc[16], foc[16], fbg[16], hi[16];
 	format_hex_color(cfg.theme.background, bg, sizeof(bg));
 	format_hex_color(cfg.theme.button, btn, sizeof(btn));
 	format_hex_color(cfg.theme.button_text, btxt, sizeof(btxt));
 	format_hex_color(cfg.theme.frame_border_color, fbc, sizeof(fbc));
+	format_hex_color(cfg.theme.focus, foc, sizeof(foc));
+	format_hex_color(cfg.theme.focus_bg, fbg, sizeof(fbg));
+	format_hex_color(cfg.theme.highlight, hi, sizeof(hi));
 
-	char *buf = malloc(4096);
-	snprintf(buf, 4096,
+	char *buf = malloc(6144);
+	snprintf(buf, 6144,
 		"<html><body>"
 		"<table>"
 		"<tr><td>Background</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
@@ -943,6 +1059,9 @@ static char *build_theme_html(void)
 		"<tr><td>Button border size</td><td><input type=\"text\" value=\"%u\" width=\"60\" /></td></tr>"
 		"<tr><td>Input border size</td><td><input type=\"text\" value=\"%u\" width=\"60\" /></td></tr>"
 		"<tr><td>Frame border color</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
+		"<tr><td>Focus</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
+		"<tr><td>Focus background</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
+		"<tr><td>Highlight</td><td><input type=\"text\" value=\"%s\" width=\"100\" /></td></tr>"
 		"</table>"
 		"<div><button>Apply</button></div>"
 		"</body></html>",
@@ -950,7 +1069,7 @@ static char *build_theme_html(void)
 		cfg.theme.frame_border_size,
 		cfg.theme.button_border_size,
 		cfg.theme.input_border_size,
-		fbc);
+		fbc, foc, fbg, hi);
 	return buf;
 }
 
@@ -1051,6 +1170,7 @@ static void rebuild_content(void)
 	theme_bg_input = theme_btn_input = theme_btn_text_input = NULL;
 	theme_frame_border_input = theme_btn_border_input = NULL;
 	theme_input_border_input = theme_frame_color_input = NULL;
+	theme_focus_input = theme_focus_bg_input = theme_highlight_input = NULL;
 
 	/* Free old font cache only when leaving font page */
 	if (current_page != 3 && font_list_cache) {
@@ -1065,8 +1185,27 @@ static void rebuild_content(void)
 	if (current_page == 3 && !font_list_cache)
 		font_list_count = scan_fonts(&font_list_cache);
 
-	int panel_w = app_w - sidebar->w - 20;
+	int rule_w = panel_rule ? panel_rule->w : 0;
+	int panel_w = app_w - (sidebar ? sidebar->w : 140) - rule_w - 16;
 	int panel_h = app_h - 16;
+	if (panel_w < 80)
+		panel_w = 80;
+	if (panel_h < 40)
+		panel_h = 40;
+	if (content_panel) {
+		content_panel->w = panel_w;
+		content_panel->h = panel_h;
+	}
+	if (sidebar) {
+		sidebar->h = panel_h;
+		if (sidebar->h < 40)
+			sidebar->h = 40;
+	}
+	if (panel_rule) {
+		panel_rule->h = panel_h;
+		if (panel_rule->h < 40)
+			panel_rule->h = 40;
+	}
 
 	char *html = NULL;
 	switch (current_page) {
@@ -1105,14 +1244,28 @@ static void rebuild_content(void)
 		add_bg_preview(page, panel_w);
 		break;
 	}
-	case 1: { /* Cursor: input(0)=custom path, buttons=cursor themes..., last=Apply */
+	case 1: { /* Cursor: input(0)=theme, buttons=themes..., last=Apply */
 		cursor_path_input = get_input(page, 0);
-		/* Find total button count; last is Apply */
 		int bi = 0;
-		while (get_button(page, bi)) bi++;
+		while (get_button(page, bi))
+			bi++;
+		/* Theme buttons (all but last) select; last is Apply. */
+		for (int i = 0; i + 1 < bi; i++) {
+			struct BGTK_Widget *tb = get_button(page, i);
+			struct BGTK_Widget *lab;
+			if (!tb)
+				continue;
+			lab = tb->data.button.label;
+			if (lab && lab->type == BGTK_WIDGET_TEXT &&
+			    lab->data.text.text) {
+				tb->data.button.callback = pick_cursor_theme;
+				tb->data.button.cb_data = lab->data.text.text;
+			}
+		}
 		if (bi > 0) {
 			struct BGTK_Widget *ab = get_button(page, bi - 1);
-			if (ab) ab->data.button.callback = apply_cursor;
+			if (ab)
+				ab->data.button.callback = apply_cursor;
 		}
 		break;
 	}
@@ -1173,6 +1326,9 @@ static void rebuild_content(void)
 		theme_btn_border_input = get_input(page, 4);
 		theme_input_border_input = get_input(page, 5);
 		theme_frame_color_input = get_input(page, 6);
+		theme_focus_input = get_input(page, 7);
+		theme_focus_bg_input = get_input(page, 8);
+		theme_highlight_input = get_input(page, 9);
 		struct BGTK_Widget *b = get_button(page, 0);
 		if (b) b->data.button.callback = apply_theme;
 		break;
@@ -1187,31 +1343,34 @@ static void rebuild_content(void)
 /* Sidebar: rebuild with highlight on selected page                    */
 /* ------------------------------------------------------------------ */
 
+/* Selected nav: highlight fill only (no "> " prefix). */
+static struct BGTK_Widget *make_nav_button(int i, int sidebar_w)
+{
+	int selected = (i == current_page);
+	BGTK_Options to = {.padding = 2};
+	if (selected)
+		to.text_style = BGTK_TEXT_BOLD;
+	struct BGTK_Widget *lbl =
+		bgtk_text(ctx, (char *)page_names[i], to);
+	struct BGTK_Widget *btn = bgtk_button(ctx, lbl, page_cb,
+		(void *)(intptr_t)i,
+		(BGTK_Options){.padding = 6, .margin = 2});
+	btn->w = sidebar_w - 8;
+	if (selected) {
+		uint32_t hi = ctx->theme.highlight ? ctx->theme.highlight
+						   : 0xFF505060;
+		btn->data.button.bg_override = hi;
+	}
+	return btn;
+}
+
 static void rebuild_sidebar(void)
 {
 	int sidebar_w = 140;
 	struct BGTK_Widget **btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
 
-	for (int i = 0; i < NUM_PAGES; i++) {
-		/* Selected page gets inverted colors via header_level trick */
-		char label[64];
-		if (i == current_page)
-			snprintf(label, sizeof(label), "> %s", page_names[i]);
-		else
-			snprintf(label, sizeof(label), "  %s", page_names[i]);
-
-		struct BGTK_Widget *lbl = bgtk_text(ctx, label, (BGTK_Options){.padding = 2});
-
-		/* Use header_level = 10 (fuchsia/bold) for selected item */
-		if (i == current_page)
-			lbl->data.text.header_level = 10;
-
-		btns[i] = bgtk_button(ctx, lbl, page_cb, (void *)(intptr_t)i,
-			(BGTK_Options){.padding = 6, .margin = 2});
-		btns[i]->w = sidebar_w - 8;
-		if (i == current_page)
-			btns[i]->data.button.bg_override = 0xFF505060;
-	}
+	for (int i = 0; i < NUM_PAGES; i++)
+		btns[i] = make_nav_button(i, sidebar_w);
 
 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = 2});
@@ -1227,23 +1386,8 @@ static struct BGTK_Widget *build_sidebar(void)
 	int sidebar_w = 140;
 	struct BGTK_Widget **btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
 
-	for (int i = 0; i < NUM_PAGES; i++) {
-		char label[64];
-		if (i == current_page)
-			snprintf(label, sizeof(label), "> %s", page_names[i]);
-		else
-			snprintf(label, sizeof(label), "  %s", page_names[i]);
-
-		struct BGTK_Widget *lbl = bgtk_text(ctx, label, (BGTK_Options){.padding = 2});
-		if (i == current_page)
-			lbl->data.text.header_level = 10;
-
-		btns[i] = bgtk_button(ctx, lbl, page_cb, (void *)(intptr_t)i,
-			(BGTK_Options){.padding = 6, .margin = 2});
-		btns[i]->w = sidebar_w - 8;
-		if (i == current_page)
-			btns[i]->data.button.bg_override = 0xFF505060;
-	}
+	for (int i = 0; i < NUM_PAGES; i++)
+		btns[i] = make_nav_button(i, sidebar_w);
 
 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = 2});
@@ -1269,21 +1413,28 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
 	app_w = width;
 	app_h = height;
 	font_dropdown_open = 0;
+	/* Keep drawing theme in sync with the config we are editing. */
+	ctx->theme = cfg.theme;
 
 	sidebar = build_sidebar();
+	panel_rule = bgtk_rule(ctx, BGTK_LIST_VERTICAL, 1,
+			       (BGTK_Options){.margin = 4, .padding = 0});
+	panel_rule->h = app_h - 16;
 
-	int panel_w = app_w - sidebar->w - 20;
+	int panel_w = app_w - sidebar->w - panel_rule->w - 16;
 	int panel_h = app_h - 16;
+	if (panel_w < 80)
+		panel_w = 80;
 
 	struct BGTK_Widget *placeholder = bgtk_text(ctx, "Select a category",
 		(BGTK_Options){.padding = 8, .margin = 4});
+	/* Borderless content frame; vertical rule separates sidebar. */
 	content_panel = bgtk_frame(ctx, placeholder, panel_w, panel_h,
 		(BGTK_Options){.padding = 2, .margin = 2});
-	content_panel->data.frame.border_w = 1;
-	content_panel->data.frame.border_color = BGTK_COLOR_GRAY;
+	content_panel->data.frame.border_w = 0;
 
-	struct BGTK_Widget *cols[2] = { sidebar, content_panel };
-	struct BGTK_Widget *row = bgtk_list(ctx, cols, 2,
+	struct BGTK_Widget *cols[3] = { sidebar, panel_rule, content_panel };
+	struct BGTK_Widget *row = bgtk_list(ctx, cols, 3,
 		(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .margin = 2});
 
 	root_frame = bgtk_frame(ctx, row, app_w, app_h,
@@ -1291,6 +1442,23 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
 
 	ctx->root_widget = root_frame;
 	current_page = 0;
+	rebuild_content();
+}
+
+/* Reflow chrome + page after a window resize (MSG_BUFFER_CHANGE / mock resize). */
+void settings_layout(void)
+{
+	if (!ctx || !root_frame)
+		return;
+	app_w = ctx->width;
+	app_h = ctx->height;
+	if (app_w < 200)
+		app_w = 200;
+	if (app_h < 120)
+		app_h = 120;
+	root_frame->w = app_w;
+	root_frame->h = app_h;
+	/* rebuild_content resizes sidebar/content_panel and re-parses HTML. */
 	rebuild_content();
 }
 
@@ -1304,6 +1472,134 @@ struct config *settings_get_config(void)
 /* ------------------------------------------------------------------ */
 
 #ifndef SETTINGS_TEST_MODE
+
+/*
+ * Load full ~/.config/bgce.conf into settings state:
+ *   [background] type/color/path/mode
+ *   [cursors]    theme
+ *   [shortcuts]  combo = action
+ * Matches BGCE's load_config sections (see bgce/config.c).
+ */
+static void load_bgce_config(struct config *c)
+{
+	const char *home = getenv("HOME");
+	char path[512], line[1024], section[64] = "";
+	FILE *f;
+	char key[64], value[MAX_PATH_LEN];
+	char *valp;
+
+	if (!c || !home || !home[0])
+		return;
+	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
+	f = fopen(path, "r");
+	if (!f) {
+		bgtk_log("no %s; keeping bgtk defaults + builtin shortcuts",
+			 path);
+		return;
+	}
+
+	/* Reset shortcuts so file entries replace defaults when present. */
+	shortcuts_loaded = 0;
+	shortcut_row_count = 0;
+	cursor_theme[0] = '\0';
+
+	while (fgets(line, sizeof(line), f)) {
+		char *trimmed = line;
+		while (*trimmed == ' ' || *trimmed == '\t')
+			trimmed++;
+		if (*trimmed == '\0' || *trimmed == '#' || *trimmed == ';' ||
+		    *trimmed == '\n')
+			continue;
+		if (*trimmed == '[') {
+			char *end = strchr(trimmed, ']');
+			section[0] = '\0';
+			if (end &&
+			    (size_t)(end - trimmed - 1) < sizeof(section)) {
+				memcpy(section, trimmed + 1,
+				       (size_t)(end - trimmed - 1));
+				section[end - trimmed - 1] = '\0';
+			}
+			continue;
+		}
+		/* Accept "key = value" and "key=value" like BGCE. */
+		if (sscanf(trimmed, "%63s = %511[^\n]", key, value) != 2 &&
+		    sscanf(trimmed, "%63[^=]=%511[^\n]", key, value) != 2)
+			continue;
+		{
+			char *kp = key;
+			while (*kp == ' ' || *kp == '\t')
+				kp++;
+			if (kp != key)
+				memmove(key, kp, strlen(kp) + 1);
+			/* strip trailing spaces from key when key=value form */
+			{
+				char *ke = key + strlen(key);
+				while (ke > key &&
+				       (ke[-1] == ' ' || ke[-1] == '\t'))
+					*--ke = '\0';
+			}
+		}
+		valp = value;
+		while (*valp == ' ' || *valp == '\t')
+			valp++;
+		{
+			char *ve = valp + strlen(valp);
+			while (ve > valp &&
+			       (ve[-1] == '\n' || ve[-1] == '\r' ||
+				ve[-1] == ' ' || ve[-1] == '\t'))
+				*--ve = '\0';
+		}
+
+		if (strcmp(section, "background") == 0) {
+			if (strcmp(key, "type") == 0) {
+				if (strcmp(valp, "image") == 0)
+					c->type = BG_IMAGE;
+				else if (strcmp(valp, "color") == 0)
+					c->type = BG_COLOR;
+			} else if (strcmp(key, "color") == 0) {
+				c->color = parse_color_input(valp);
+			} else if (strcmp(key, "path") == 0) {
+				strncpy(c->path, valp, MAX_PATH_LEN - 1);
+				c->path[MAX_PATH_LEN - 1] = '\0';
+			} else if (strcmp(key, "mode") == 0) {
+				if (strcmp(valp, "scaled") == 0)
+					c->mode = IMAGE_SCALED;
+				else
+					c->mode = IMAGE_TILED;
+			}
+		} else if (strcmp(section, "cursors") == 0) {
+			if (strcmp(key, "theme") == 0) {
+				strncpy(cursor_theme, valp, MAX_PATH_LEN - 1);
+				cursor_theme[MAX_PATH_LEN - 1] = '\0';
+			}
+		} else if (strcmp(section, "shortcuts") == 0) {
+			char label[96];
+			if (shortcut_row_count >= MAX_SHORTCUT_ROWS)
+				continue;
+			if (!shortcuts_loaded) {
+				shortcut_row_count = 0;
+				shortcuts_loaded = 1;
+			}
+			shortcut_label_from_action(valp, label, sizeof(label));
+			shortcut_set_row(shortcut_row_count, label, key, valp);
+			shortcut_row_count++;
+		}
+	}
+	fclose(f);
+
+	if (!shortcuts_loaded)
+		load_shortcuts_defaults();
+	if (c->type == BG_IMAGE && !c->path[0]) {
+		bgtk_log("bgce type=image but empty path; showing as color");
+		c->type = BG_COLOR;
+	}
+	bgtk_log("bgce conf: bg=%s path='%s' mode=%s cursor='%s' shortcuts=%d",
+		 c->type == BG_IMAGE ? "image" : "color",
+		 c->path[0] ? c->path : "(none)",
+		 c->mode == IMAGE_SCALED ? "scaled" : "tiled",
+		 cursor_theme[0] ? cursor_theme : "(none)",
+		 shortcut_row_count);
+}
 
 int main(void)
 {
@@ -1335,6 +1631,8 @@ int main(void)
 
 	struct config config;
 	parse_config(&config);
+	/* Full BGCE file: background + cursors + shortcuts. */
+	load_bgce_config(&config);
 	settings_build_ui(c, &config, 700, 480);
 
 	struct BGCEMessage msg;
@@ -1354,7 +1652,7 @@ int main(void)
 			bgtk_set_window_focus(c, msg.data.focus_event.state);
 		} else if (msg.type == MSG_BUFFER_CHANGE) {
 			if (bgtk_handle_buffer_change(c, &msg.data.buffer_reply) == 0)
-				bgtk_draw_widgets(c);
+				settings_layout();
 		}
 	}
 

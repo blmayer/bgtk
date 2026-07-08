@@ -433,6 +433,8 @@ static struct BGTK_Widget *widget_new(struct BGTK_Context *ctx,
 	widget->padding = options.padding;
 	widget->margin = options.margin;
 	widget->text_align = options.text_align;
+	widget->text_v_align = options.text_v_align;
+	widget->baseline_offset = options.baseline_offset;
 	widget->w = 0;
 	widget->h = 0;
 
@@ -508,15 +510,46 @@ struct BGTK_Widget *bgtk_text(struct BGTK_Context *ctx, char *text,
 	sprintf(ptr, "%s", text);
 	widget->data.text.text = ptr;
 	widget->data.text.header_level = 0;
+	widget->data.text.style = options.text_style;
 
 	// Calculate size based on text
-	measure_text(widget->ctx->ft_face, widget->data.text.text, &widget->w,
-		     &widget->h);
+	measure_text_style(widget->ctx->ft_face, widget->data.text.text,
+			   widget->data.text.style, &widget->w, &widget->h);
 
 	// Add padding + margin to the text widget (outer size)
 	widget->w += 2 * (widget->padding + widget->margin);
 	widget->h += 2 * (widget->padding + widget->margin);
 	return widget;
+}
+
+static int rule_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+{
+	(void)widget;
+	(void)ev;
+	return 0;
+}
+
+struct BGTK_Widget *bgtk_rule(struct BGTK_Context *ctx,
+			      enum BGTK_List_Orientation orientation,
+			      int thickness, BGTK_Options options)
+{
+	struct BGTK_Widget *w = widget_new(ctx, BGTK_WIDGET_RULE, options);
+	if (!w)
+		return NULL;
+	if (thickness < 1)
+		thickness = 1;
+	w->data.rule.orientation = orientation;
+	w->data.rule.thickness = thickness;
+	w->data.rule.color = 0;
+	w->handle_event = rule_handle_event;
+	if (orientation == BGTK_LIST_VERTICAL) {
+		w->w = thickness + 2 * (w->padding + w->margin);
+		w->h = thickness + 2 * (w->padding + w->margin);
+	} else {
+		w->w = thickness + 2 * (w->padding + w->margin);
+		w->h = thickness + 2 * (w->padding + w->margin);
+	}
+	return w;
 }
 
 struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,

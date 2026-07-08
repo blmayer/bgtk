@@ -165,8 +165,7 @@ static struct BGTK_Widget *convert_p(struct BGTK_Context *ctx, xmlNode *node)
 	return w;
 }
 
-// <b>/<strong> -> text widget with pseudo-bold (header_level 10 triggers
-// the existing fuchsia/bold path in draw_text_widget).
+// <b>/<strong> -> text with BGTK_TEXT_BOLD.
 static struct BGTK_Widget *convert_bold(struct BGTK_Context *ctx, xmlNode *node)
 {
 	char *txt = collect_text(node);
@@ -174,14 +173,13 @@ static struct BGTK_Widget *convert_bold(struct BGTK_Context *ctx, xmlNode *node)
 		free(txt);
 		return NULL;
 	}
-	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){0});
+	struct BGTK_Widget *w =
+		bgtk_text(ctx, txt, (BGTK_Options){.text_style = BGTK_TEXT_BOLD});
 	free(txt);
-	if (w)
-		w->data.text.header_level = 10; // fuchsia bold marker
 	return w;
 }
 
-// <i>/<em> -> regular text (italic not supported yet; rendered as normal).
+// <i>/<em> -> synthetic italic.
 static struct BGTK_Widget *convert_italic(struct BGTK_Context *ctx,
 					  xmlNode *node)
 {
@@ -190,12 +188,13 @@ static struct BGTK_Widget *convert_italic(struct BGTK_Context *ctx,
 		free(txt);
 		return NULL;
 	}
-	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){0});
+	struct BGTK_Widget *w = bgtk_text(
+		ctx, txt, (BGTK_Options){.text_style = BGTK_TEXT_ITALIC});
 	free(txt);
 	return w;
 }
 
-// <a> -> text widget (styled like a link: header_level 10 = fuchsia).
+// <a> -> accent (theme.highlight) via header_level 10.
 static struct BGTK_Widget *convert_a(struct BGTK_Context *ctx, xmlNode *node)
 {
 	char *txt = collect_text(node);
@@ -206,7 +205,7 @@ static struct BGTK_Widget *convert_a(struct BGTK_Context *ctx, xmlNode *node)
 	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){0});
 	free(txt);
 	if (w)
-		w->data.text.header_level = 10; // fuchsia = link color
+		w->data.text.header_level = 10;
 	return w;
 }
 
@@ -513,8 +512,8 @@ static struct BGTK_Widget *convert_list(struct BGTK_Context *ctx, xmlNode *node,
 /* Table converter                                                     */
 /* ------------------------------------------------------------------ */
 
-// Convert a single <td>/<th> cell into a frame widget with a 1px border.
-// For <th>, content gets bold styling.
+// Convert a single <td>/<th> cell. Borderless by default (settings-friendly).
+// For <th>, content gets bold styling. Text is vertically centered in the cell.
 static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
 					xmlNode *node, int avail_w, int is_header)
 {
@@ -525,22 +524,23 @@ static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
 			free(txt);
 			txt = strdup(" ");
 		}
-		content = bgtk_text(ctx, txt, (BGTK_Options){0});
+		content = bgtk_text(ctx, txt,
+			(BGTK_Options){.text_v_align = BGTK_VALIGN_CENTER});
 		free(txt);
 		if (!content)
 			return NULL;
 	}
 	if (is_header && content->type == BGTK_WIDGET_TEXT)
-		content->data.text.header_level = 10;
+		content->data.text.style |= BGTK_TEXT_BOLD;
+	if (content->type == BGTK_WIDGET_TEXT)
+		content->text_v_align = BGTK_VALIGN_CENTER;
 
 	int cell_pad = 4;
 	struct BGTK_Widget *frame = bgtk_frame(ctx, content,
-		content->w + 2 * cell_pad + 2, content->h + 2 * cell_pad + 2,
+		content->w + 2 * cell_pad, content->h + 2 * cell_pad,
 		(BGTK_Options){.padding = cell_pad, .margin = 0});
-	if (frame) {
-		frame->data.frame.border_w = 1;
-		frame->data.frame.border_color = BGTK_COLOR_BLACK;
-	}
+	if (frame)
+		frame->data.frame.border_w = 0;
 	return frame;
 }
 
@@ -766,7 +766,7 @@ static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
 		return NULL;
 	}
 
-	// Wrap in a scrollable frame so the page can scroll if content overflows.
+	// Scrollable page; outer frame is borderless (host UI supplies chrome).
 	struct BGTK_Widget **items = malloc(sizeof(struct BGTK_Widget *));
 	items[0] = content;
 	struct BGTK_Widget *scroll = bgtk_scrollable(ctx, items, 1,
@@ -781,6 +781,8 @@ static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
 
 	struct BGTK_Widget *frame = bgtk_frame(ctx, scroll, width, height,
 		(BGTK_Options){.padding = 0, .margin = 0});
+	if (frame)
+		frame->data.frame.border_w = 0;
 
 	xmlFreeDoc(doc);
 	return frame ? frame : scroll;

@@ -311,18 +311,20 @@ static void pick_default_font_family(char *out, size_t outlen, int family)
 void init_config_defaults(struct config *config)
 {
 	config->type = BG_COLOR;
-	/* High-contrast defaults so labels/text stay readable without a
-	 * config file (previous semi-transparent grays made dark text vanish
-	 * on some compositors). Full alpha, light panel, dark ink. */
-	config->color = 0xFFE8E8E8;
+	/* Default "Paper" theme: warm light surface, soft chrome, readable ink. */
+	config->color = 0xFFF4F1EA;
 
-	config->theme.background = 0xFFE8E8E8;
-	config->theme.button = 0xFFD0D0D0;
-	config->theme.button_text = 0xFF111111;
+	config->theme.background = 0xFFF4F1EA;
+	config->theme.button = 0xFFE8E2D6;
+	config->theme.button_text = 0xFF1C1917;
 	config->theme.button_border_size = 1;
-	config->theme.input_border_size = 2;
-	config->theme.frame_border_size = 4;
-	config->theme.frame_border_color = 0xFF333333;
+	config->theme.input_border_size = 1;
+	config->theme.frame_border_size = 2;
+	config->theme.frame_border_color = 0xFFC4B8A8;
+	config->theme.focus = 0xFFB45309;
+	config->theme.focus_bg = 0xFFFFF7ED;
+	config->theme.highlight = 0xFF78716C;
+	config->theme.text_baseline_offset = 0;
 
 	/* Font defaults under [font]: sans, mono, serif, size. */
 	config->font_sans_path[0] = '\0';
@@ -403,6 +405,14 @@ int write_config(const struct config *config)
 	fprintf(f, "frame_border_size = %u\n", config->theme.frame_border_size);
 	format_hex_color(config->theme.frame_border_color, c, sizeof(c));
 	fprintf(f, "frame_border_color = %s\n", c);
+	format_hex_color(config->theme.focus, c, sizeof(c));
+	fprintf(f, "focus = %s\n", c);
+	format_hex_color(config->theme.focus_bg, c, sizeof(c));
+	fprintf(f, "focus_bg = %s\n", c);
+	format_hex_color(config->theme.highlight, c, sizeof(c));
+	fprintf(f, "highlight = %s\n", c);
+	fprintf(f, "text_baseline_offset = %d\n",
+		config->theme.text_baseline_offset);
 
 	fprintf(f, "\n[font]\n");
 	if (config->font_sans_path[0])
@@ -505,6 +515,14 @@ int parse_config(struct config *config)
 			} else if (strcmp(key, "frame_border_color") == 0) {
 				config->theme.frame_border_color =
 				    parse_hex_color(value);
+			} else if (strcmp(key, "focus") == 0) {
+				config->theme.focus = parse_hex_color(value);
+			} else if (strcmp(key, "focus_bg") == 0) {
+				config->theme.focus_bg = parse_hex_color(value);
+			} else if (strcmp(key, "highlight") == 0) {
+				config->theme.highlight = parse_hex_color(value);
+			} else if (strcmp(key, "text_baseline_offset") == 0) {
+				config->theme.text_baseline_offset = atoi(value);
 			}
 		} else if (strcmp(current_section, "font") == 0) {
 			if (strcmp(key, "sans") == 0) {

@@ -390,6 +390,63 @@ int main(void)
 	if (run_align_scene() != 0)
 		return 1;
 
+	/* 8. text style (bold/italic) + vertical/horizontal rules */
+	{
+		struct BGTK_Context *sctx = bgtk_init_mock(420, 160);
+		struct BGTK_Widget *items_l[2], *items_r[2], *row_i[3], *col_i[3];
+		struct BGTK_Widget *left, *right, *row, *col, *frame;
+		struct BGTK_Widget *vrule, *hrule;
+		BGTK_Options pad = {.padding = 4, .margin = 2};
+
+		if (!sctx) {
+			fprintf(stderr, "headless: style scene init failed\n");
+			return 1;
+		}
+		sctx->theme.highlight = 0xFF2A6F97;
+
+		items_l[0] = bgtk_text(sctx, "plain", pad);
+		items_l[1] = bgtk_text(sctx, "bold",
+			(BGTK_Options){.padding = 4, .margin = 2,
+				       .text_style = BGTK_TEXT_BOLD});
+		items_r[0] = bgtk_text(sctx, "italic",
+			(BGTK_Options){.padding = 4, .margin = 2,
+				       .text_style = BGTK_TEXT_ITALIC});
+		items_r[1] = bgtk_text(sctx, "bold+italic",
+			(BGTK_Options){.padding = 4, .margin = 2,
+				       .text_style = BGTK_TEXT_BOLD |
+						     BGTK_TEXT_ITALIC});
+		left = bgtk_list(sctx, items_l, 2,
+			(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+				       .margin = 2});
+		right = bgtk_list(sctx, items_r, 2,
+			(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+				       .margin = 2});
+		vrule = bgtk_rule(sctx, BGTK_LIST_VERTICAL, 1,
+				  (BGTK_Options){.margin = 6});
+		vrule->h = 80;
+		row_i[0] = left;
+		row_i[1] = vrule;
+		row_i[2] = right;
+		row = bgtk_list(sctx, row_i, 3,
+			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+				       .margin = 4});
+		hrule = bgtk_rule(sctx, BGTK_LIST_HORIZONTAL, 1,
+				  (BGTK_Options){.margin = 4});
+		hrule->w = 380;
+		col_i[0] = row;
+		col_i[1] = hrule;
+		col_i[2] = bgtk_text(sctx, "rules + styles", pad);
+		col = bgtk_list(sctx, col_i, 3,
+			(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+				       .margin = 4});
+		frame = bgtk_frame(sctx, col, 420, 160,
+				   (BGTK_Options){.padding = 4});
+		sctx->root_widget = frame;
+		bgtk_draw_widgets(sctx);
+		take_screenshot(sctx, "headless_07_styles_rules.png");
+		bgtk_destroy_mock(sctx);
+	}
+
 	printf("headless test complete. PNG frames written.\n");
 	return 0;
 }

@@ -83,15 +83,21 @@ ifeq ($(UNAME_S),Linux)
   PTY_LIBS := -lutil
 endif
 
+# Real BGCE apps (install always builds these so a lib-only install cannot
+# leave stale binaries against a newer libbgtk.so / struct layout).
+# gemini_browser needs libtls — built last and optional on install.
+CORE_APPS = test_app image_viewer launcher terminal settings sys_status
+ALL_APPS = $(CORE_APPS) gemini_browser
+
 # Default `make` builds the library and core apps. settings is intentionally
 # before gemini_browser so a missing libtls does not skip it.
 # gemini_browser needs libtls; build it last (or: make gemini_browser).
-TARGET = libbgtk.so test_app image_viewer launcher terminal settings sys_status gemini_browser
+TARGET = libbgtk.so $(ALL_APPS)
 # On macOS (Darwin), plain `make` will try to build libbgtk.so and real
 # apps which require the bgce library (Linux-specific). Default to
 # headless/test targets so `make` succeeds for development on mac.
 ifeq ($(UNAME_S),Darwin)
-  TARGET = headless test_terminal test_html test_settings test_sys_status
+  TARGET = headless test_terminal test_html test_settings test_theme_gallery test_sys_status
 endif
 
 # Install layout. Empty PREFIX → flat root (/lib, /include, /bin) for lin0.
@@ -121,6 +127,7 @@ TEST_GEMINI_OBJ := test/test_gemini_browser.o
 TEST_HTML_OBJ := test/test_html.o
 SETTINGS_OBJ := apps/settings.o
 TEST_SETTINGS_OBJ := test/test_settings.o
+TEST_THEME_GALLERY_OBJ := test/test_theme_gallery.o
 SETTINGS_TEST_OBJ := apps/settings_test.o
 SYS_STATUS_OBJ := apps/sys_status.o
 TEST_SYS_STATUS_OBJ := test/test_sys_status.o
@@ -159,6 +166,7 @@ help:
 	@echo "  test_terminal        Terminal/ANSI (+ optional real PTY) screenshots"
 	@echo "  test_html            HTML → widget tree screenshots"
 	@echo "  test_settings        Settings UI screenshots"
+	@echo "  test_theme_gallery   Settings under candidate themes (settings_theme_*.png)"
 	@echo "  test_gemini_browser  Gemini browser flow screenshots (libtls for live fetch)"
 	@echo ""
 	@echo "  Maintenance"
@@ -223,7 +231,7 @@ sys_status: $(SYS_STATUS_OBJ) libbgtk.so
 # Headless targets still link LIB_OBJS + stub directly (no libbgce).
 # Rebuild lib objs with -Icompat only for those units when on Linux so
 # mock/stub headers are available; on Darwin CFLAGS already has -Icompat.
-$(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ) $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ): CFLAGS += -I$(COMPAT_DIR)
+$(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ): CFLAGS += -I$(COMPAT_DIR)
 
 $(HEADLESS_STUB): $(COMPAT_DIR)/bgce_stub.c
 	$(CC) $(HEADLESS_CFLAGS) -c -o $@ $<
@@ -271,6 +279,13 @@ $(TEST_SETTINGS_OBJ): test/test_settings.c
 test_settings: $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 	$(CC) -o $@ $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS)
 
+# Theme gallery: same settings object, different driver
+$(TEST_THEME_GALLERY_OBJ): test/test_theme_gallery.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+test_theme_gallery: $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
+	$(CC) -o $@ $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS)
+
 # System status headless test
 $(SYS_STATUS_TEST_OBJ): apps/sys_status.c
 	$(CC) $(CFLAGS) -DSYS_STATUS_TEST_MODE -c -o $@ $<
@@ -292,24 +307,30 @@ $(HEADLESS_OBJ): bgtk.h
 $(SETTINGS_OBJ): html.h bgtk.h config.h
 $(SETTINGS_TEST_OBJ): html.h bgtk.h config.h
 $(TEST_SETTINGS_OBJ): html.h bgtk.h config.h
+$(TEST_THEME_GALLERY_OBJ): html.h bgtk.h config.h
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(TARGET) terminal test_terminal test_gemini_browser gemini_browser test_html test_settings test_sys_status settings sys_status \
+	rm -f $(TARGET) $(ALL_APPS) terminal test_terminal test_gemini_browser \
+		test_html test_settings test_theme_gallery test_sys_status headless \
 		$(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) \
 		$(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) \
-		$(TEST_HTML_OBJ) $(SETTINGS_OBJ) $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ) \
+		$(TEST_HTML_OBJ) $(SETTINGS_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) \
 		$(SYS_STATUS_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) libbgtk.so
 
-install: libbgtk.so bgtk.h
+# Rebuild core apps before install. After BGTK_Context layout changes, a
+# lib-only install leaves blank windows (apps write root_widget at wrong offset).
+# gemini_browser is best-effort (needs libtls).
+install: libbgtk.so bgtk.h $(CORE_APPS)
+	-$(MAKE) gemini_browser
 	install -d $(INSTALL_LIB)
 	install -m 755 libbgtk.so $(INSTALL_LIB)
 	install -d $(INSTALL_INCLUDE)
 	install -m 644 bgtk.h $(INSTALL_INCLUDE)
 	-install -d $(INSTALL_BIN)
-	-for f in test_app image_viewer launcher terminal settings sys_status gemini_browser; do \
+	-for f in $(ALL_APPS); do \
 		if [ -f $$f ]; then install -m 755 $$f $(INSTALL_BIN); fi; \
 	done
 	-ldconfig 2>/dev/null || true

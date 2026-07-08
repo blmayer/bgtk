@@ -21,6 +21,7 @@
 /* Declarations from apps/settings.c (compiled with SETTINGS_TEST_MODE) */
 extern void settings_build_ui(struct BGTK_Context *c, struct config *config,
 			       int width, int height);
+extern void settings_layout(void);
 extern struct config *settings_get_config(void);
 
 int main(void)
@@ -52,9 +53,9 @@ int main(void)
 		click.type = EV_KEY;
 		click.code = BTN_LEFT;
 		click.value = 1;
-		/* Screen pos of Apply (content scroll ~161,17; Apply ~4,190). */
+		/* Apply under preview; layout shifted by intro line + panel rule. */
 		click.x = 192;
-		click.y = 225;
+		click.y = 255;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		if (!bgtk_inject_event(ctx, click)) {
@@ -233,6 +234,21 @@ int main(void)
 		bgtk_inject_event(ctx, click);
 	}
 	take_screenshot(ctx, "settings_05_back_to_bg.png");
+
+	/* 06: Window resize — chrome + page must reflow (was a no-op before). */
+	if (bgtk_resize_mock(ctx, 900, 640) != 0) {
+		fprintf(stderr, "test_settings: bgtk_resize_mock failed\n");
+		bgtk_destroy_mock(ctx);
+		return 1;
+	}
+	settings_layout();
+	if (ctx->root_widget->w != 900 || ctx->root_widget->h != 640) {
+		fprintf(stderr, "test_settings: root not resized (%dx%d)\n",
+			ctx->root_widget->w, ctx->root_widget->h);
+		bgtk_destroy_mock(ctx);
+		return 1;
+	}
+	take_screenshot(ctx, "settings_06_resized.png");
 
 	printf("test_settings complete. PNG files written.\n");
 	bgtk_destroy_mock(ctx);

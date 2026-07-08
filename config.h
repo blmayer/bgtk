@@ -30,6 +30,14 @@ typedef struct {
 	uint32_t button_border_size;
 	uint32_t input_border_size;
 	uint32_t frame_border_color;
+	/* Focused text-input ring + caret. */
+	uint32_t focus;
+	/* Focused text-input field fill. */
+	uint32_t focus_bg;
+	/* Accent: headers, links, selected chrome (replaces hard-coded fuchsia/blue). */
+	uint32_t highlight;
+	/* Global FreeType baseline tweak (px; added after per-widget baseline_offset). */
+	int text_baseline_offset;
 } BGTK_Theme;
 
 // Config structure

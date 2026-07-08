@@ -3,6 +3,11 @@
 #include <string.h>
 #include <stdbool.h>
 
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include FT_OUTLINE_H
+#include FT_SYNTHESIS_H
+
 #include "bgtk.h"
 #include "internal.h"
 
@@ -59,32 +64,40 @@ void draw_rect(struct BGTK_Context *ctx, uint32_t *pixels, int x, int y, int w,
 void measure_text(FT_Face face, const char *text, int *out_width,
 		  int *out_height)
 {
+	measure_text_style(face, text, 0, out_width, out_height);
+}
+
+void measure_text_style(FT_Face face, const char *text, int style,
+			int *out_width, int *out_height)
+{
 	if (!face || !text) {
-		/* Degraded / no-font fallback: rough width from strlen */
 		int n = text ? (int)strlen(text) : 0;
-		*out_width = n * 7;   /* ~7px per char at typical size */
+		*out_width = n * 7;
 		*out_height = 12;
+		if (style & BGTK_TEXT_BOLD)
+			*out_width += n;
 		return;
 	}
 
 	int width = 0;
-
 	for (const char *p = text; *p; p++) {
-		if (FT_Load_Char(face, (unsigned char)*p, FT_LOAD_DEFAULT)) {
+		if (FT_Load_Char(face, (unsigned char)*p,
+				 FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP))
 			continue;
-		}
-
-		width += face->glyph->advance.x;	// 26.6 units
+		if ((style & BGTK_TEXT_BOLD) &&
+		    face->glyph->format == FT_GLYPH_FORMAT_OUTLINE)
+			FT_GlyphSlot_Embolden(face->glyph);
+		width += face->glyph->advance.x;
 	}
-
 	width >>= 6;
+	/* Synthetic italic shear needs a little end padding. */
+	if (style & BGTK_TEXT_ITALIC)
+		width += (face->size->metrics.height >> 6) / 4;
 
 	int ascent = face->size->metrics.ascender >> 6;
 	int descent = -face->size->metrics.descender >> 6;
-	int height = ascent + descent;
-
 	*out_width = width;
-	*out_height = height;
+	*out_height = ascent + descent;
 }
 
 void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
@@ -110,7 +123,12 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 	case BGTK_WIDGET_TEXT:
 		if (w->data.text.text) {
 			int tw = 0, th = 0;
-			measure_text(ctx->ft_face, w->data.text.text, &tw, &th);
+			int st = w->data.text.style;
+			if (w->data.text.header_level > 0 &&
+			    w->data.text.header_level <= 3)
+				st |= BGTK_TEXT_BOLD;
+			measure_text_style(ctx->ft_face, w->data.text.text, st,
+					   &tw, &th);
 			int nw = tw + 2 * (w->padding + w->margin);
 			int nh = th + 2 * (w->padding + w->margin);
 			if (w->w < nw)
@@ -118,6 +136,26 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 			w->h = nh;
 		}
 		break;
+	case BGTK_WIDGET_RULE: {
+		int t = w->data.rule.thickness;
+		if (t < 1)
+			t = 1;
+		if (w->data.rule.orientation == BGTK_LIST_VERTICAL) {
+			int nw = t + 2 * (w->padding + w->margin);
+			if (w->w < nw)
+				w->w = nw;
+			/* Height usually set by parent; keep a minimal stub. */
+			if (w->h < t + 2 * (w->padding + w->margin))
+				w->h = t + 2 * (w->padding + w->margin);
+		} else {
+			int nh = t + 2 * (w->padding + w->margin);
+			if (w->h < nh)
+				w->h = nh;
+			if (w->w < t + 2 * (w->padding + w->margin))
+				w->w = t + 2 * (w->padding + w->margin);
+		}
+		break;
+	}
 	case BGTK_WIDGET_BUTTON:
 		if (w->data.button.label) {
 			calculate_widget_size(ctx, w->data.button.label);
@@ -208,31 +246,57 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 void draw_text(struct BGTK_Context *ctx, uint32_t *pixels, const char *text,
 	       int x, int y, uint32_t color)
 {
+	draw_text_style(ctx, pixels, text, x, y, color, 0);
+}
+
+void draw_text_style(struct BGTK_Context *ctx, uint32_t *pixels, const char *text,
+		     int x, int y, uint32_t color, int style)
+{
+	draw_text_style_ex(ctx, pixels, text, x, y, color, style, 0);
+}
+
+void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
+			const char *text, int x, int y, uint32_t color,
+			int style, int baseline_offset)
+{
 	if (!ctx->ft_face) {
-		// Fallback to simple placeholder if font didn't load
 		draw_rect(ctx, pixels, x, y, 5, 5, color);
 		return;
 	}
-	// Set font size for drawing context
-	FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
+	FT_Set_Pixel_Sizes(ctx->ft_face, 0,
+			   ctx->font_size > 0 ? ctx->font_size : 14);
 
 	int pen_x = x;
-	int pen_y = y + (ctx->ft_face->size->metrics.ascender >> 6);
-
+	/* y is top of the text box; FreeType pen is baseline. */
+	int pen_y = y + (ctx->ft_face->size->metrics.ascender >> 6) +
+		    baseline_offset;
+	if (ctx->theme.text_baseline_offset)
+		pen_y += ctx->theme.text_baseline_offset;
 	int stride = ctx->width;
+	/* ~12° synthetic italic shear (16.16 fixed). */
+	FT_Matrix italic = { .xx = 0x10000, .xy = 0x5000, .yx = 0, .yy = 0x10000 };
+
 	for (const char *p = text; *p; p++) {
-		FT_UInt index = FT_Get_Char_Index(ctx->ft_face, (unsigned char)*p);
-
+		FT_UInt index =
+			FT_Get_Char_Index(ctx->ft_face, (unsigned char)*p);
 		if (FT_Load_Glyph(ctx->ft_face, index,
-				  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
+				  FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP |
+					  FT_LOAD_TARGET_LIGHT))
 			continue;
-		}
 
-		FT_Render_Glyph(ctx->ft_face->glyph, FT_RENDER_MODE_NORMAL);
+		if ((style & BGTK_TEXT_BOLD) &&
+		    ctx->ft_face->glyph->format == FT_GLYPH_FORMAT_OUTLINE)
+			FT_GlyphSlot_Embolden(ctx->ft_face->glyph);
+		if ((style & BGTK_TEXT_ITALIC) &&
+		    ctx->ft_face->glyph->format == FT_GLYPH_FORMAT_OUTLINE)
+			FT_Outline_Transform(&ctx->ft_face->glyph->outline,
+					     &italic);
+
+		if (FT_Render_Glyph(ctx->ft_face->glyph, FT_RENDER_MODE_NORMAL))
+			continue;
 
 		FT_GlyphSlot slot = ctx->ft_face->glyph;
 		FT_Bitmap *bitmap = &slot->bitmap;
-
 		int gx = pen_x + slot->bitmap_left;
 		int gy = pen_y - slot->bitmap_top;
 
@@ -240,34 +304,28 @@ void draw_text(struct BGTK_Context *ctx, uint32_t *pixels, const char *text,
 			for (unsigned int col = 0; col < bitmap->width; col++) {
 				uint8_t a =
 				    bitmap->buffer[row * bitmap->pitch + col];
-				if (a == 0) {
+				if (a == 0)
 					continue;
-				}
-
-				int32_t dx = gx + col;
-				int32_t dy = gy + row;
-
-				// Blend
+				int32_t dx = gx + (int)col;
+				int32_t dy = gy + (int)row;
+				if (dx < 0 || dy < 0 || dx >= ctx->width ||
+				    dy >= ctx->height)
+					continue;
 				uint32_t dst = pixels[dy * stride + dx];
 				uint8_t inv = 255 - a;
-
 				uint8_t r_dst = (dst >> 16) & 0xFF;
 				uint8_t g_dst = (dst >> 8) & 0xFF;
 				uint8_t b_dst = (dst) & 0xFF;
-
 				uint8_t r_src = (color >> 16) & 0xFF;
 				uint8_t g_src = (color >> 8) & 0xFF;
 				uint8_t b_src = (color) & 0xFF;
-
 				uint8_t r = (r_src * a + r_dst * inv) / 255;
 				uint8_t g = (g_src * a + g_dst * inv) / 255;
 				uint8_t b = (b_src * a + b_dst * inv) / 255;
-
 				pixels[dy * stride + dx] =
 				    (0xFFu << 24) | (r << 16) | (g << 8) | b;
 			}
 		}
-
 		pen_x += slot->advance.x >> 6;
 	}
 }
@@ -400,32 +458,40 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	int level = w->data.text.header_level;
 	uint32_t color = ctx->theme.button_text;
 	int old_size = ctx->font_size;
+	int style = w->data.text.style;
 	bool is_header = (level > 0 && level <= 3);
-	bool is_fuchsia_line = (level == 10);
+	bool is_accent = (level == 10);
+	uint32_t accent = ctx->theme.highlight ? ctx->theme.highlight
+					      : BGTK_COLOR_FUCHSIA;
+
 	if (is_header) {
-		color = BGTK_COLOR_FUCHSIA;
-		ctx->font_size = ctx->font_size + (4 - level);  // h1 biggest
-	} else if (is_fuchsia_line) {
-		color = BGTK_COLOR_FUCHSIA;
+		color = accent;
+		style |= BGTK_TEXT_BOLD;
+		ctx->font_size = ctx->font_size + (4 - level);
+	} else if (is_accent) {
+		color = accent;
 	}
 
 	int content_x0 = w->x + w->margin + w->padding;
 	int content_y0 = w->y + w->margin + w->padding;
 	int content_w = w->w - 2 * (w->margin + w->padding);
+	int content_h = w->h - 2 * (w->margin + w->padding);
 	int tw = 0, th = 0;
-	measure_text(ctx->ft_face, w->data.text.text, &tw, &th);
+	measure_text_style(ctx->ft_face, w->data.text.text, style, &tw, &th);
 	int ax = text_align_offset(w->text_align, content_w, tw);
 	int tx = content_x0 + ax;
 	int ty = content_y0;
+	if (content_h > th) {
+		if (w->text_v_align == BGTK_VALIGN_CENTER)
+			ty += (content_h - th) / 2;
+		else if (w->text_v_align == BGTK_VALIGN_BOTTOM)
+			ty += content_h - th;
+	}
 
-	if (is_header) {
-		// cheap bold effect via 1px offset
-		draw_text(ctx, pixels, w->data.text.text, tx + 1, ty + 1, color);
-	}
-	draw_text(ctx, pixels, w->data.text.text, tx, ty, color);
-	if (is_header) {
+	draw_text_style_ex(ctx, pixels, w->data.text.text, tx, ty, color, style,
+			   w->baseline_offset);
+	if (is_header)
 		ctx->font_size = old_size;
-	}
 }
 
 static void draw_button(struct BGTK_Context *ctx, struct BGTK_Widget *w,
@@ -606,23 +672,27 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		  w->w - 2 * w->margin, w->h - 2 * w->margin,
 		  ctx->theme.background);
 
-	uint32_t border = w->data.frame.border_color ? w->data.frame.border_color
-						     : ctx->theme.frame_border_color;
-
-	// If the whole window is unfocused, dim
-	// heavily.
-	if (!ctx->window_focused) {
-		border = ctx->theme.background;
-	}
-	// Draw frame border
+	/* border_w 0 = no border (used for HTML cells / borderless panels). */
 	int bw = w->data.frame.border_w;
-	if (bw < 1) {
-		bw = 1;
+	if (bw < 0)
+		bw = 0;
+
+	if (bw > 0) {
+		uint32_t border =
+			w->data.frame.border_color ? w->data.frame.border_color
+						  : ctx->theme.frame_border_color;
+		if (!ctx->window_focused)
+			border = ctx->theme.background;
+		draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
+			  w->w - 2 * w->margin, bw, border);
+		draw_rect(ctx, pixels, w->x + w->margin,
+			  w->y + w->h - w->margin - bw, w->w - 2 * w->margin, bw,
+			  border);
+		draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, bw,
+			  w->h - 2 * w->margin, border);
+		draw_rect(ctx, pixels, w->x + w->w - w->margin - bw,
+			  w->y + w->margin, bw, w->h - 2 * w->margin, border);
 	}
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->w - 2 * w->margin, bw, border);	// Top
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->h - w->margin - bw, w->w - 2 * w->margin, bw, border);	// Bottom
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, bw, w->h - 2 * w->margin, border);	// Left
-	draw_rect(ctx, pixels, w->x + w->w - w->margin - bw, w->y + w->margin, bw, w->h - 2 * w->margin, border);	// Right
 
 	// Draw child widget inside the frame
 	if (w->data.frame.child) {
@@ -640,9 +710,11 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 			    uint32_t *pixels)
 {
 	int focused = ctx->focused_widget == w;
-	/* Focused: cool-tint field + strong blue border. Unfocused: white + gray. */
-	uint32_t field_bg = focused ? 0xFFE8F2FF : 0xFFFFFFFF;
-	uint32_t border = focused ? 0xFF0066FF : 0xFF888888;
+	uint32_t focus = ctx->theme.focus ? ctx->theme.focus : 0xFF0066FF;
+	uint32_t focus_bg =
+		ctx->theme.focus_bg ? ctx->theme.focus_bg : 0xFFE8F2FF;
+	uint32_t field_bg = focused ? focus_bg : 0xFFFFFFFF;
+	uint32_t border = focused ? focus : 0xFF888888;
 	uint32_t text_color = ctx->theme.button_text ?
 		ctx->theme.button_text : 0xFF111111;
 
@@ -688,11 +760,18 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	int content_w = inner_w - 2 * w->padding;
 	if (content_w < 1)
 		content_w = 1;
+	int content_h = inner_h - 2 * w->padding;
+	if (content_h < 1)
+		content_h = 1;
 	int tw = 0, th = 0;
 	measure_text(ctx->ft_face, full, &tw, &th);
 	int align_off = 0;
 	if (scroll_x == 0 && tw < content_w)
 		align_off = text_align_offset(w->text_align, content_w, tw);
+	/* Vertically center glyphs in the field (baseline was top-heavy). */
+	if (th > 0 && content_h > th)
+		text_y += (content_h - th) / 2;
+	text_y += w->baseline_offset;
 
 	int draw_x = text_x - scroll_x + align_off;
 
@@ -708,6 +787,8 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size);
 		int pen_x = draw_x;
 		int pen_y = text_y + (ctx->ft_face->size->metrics.ascender >> 6);
+		if (ctx->theme.text_baseline_offset)
+			pen_y += ctx->theme.text_baseline_offset;
 		uint8_t r_src = (text_color >> 16) & 0xFF;
 		uint8_t g_src = (text_color >> 8) & 0xFF;
 		uint8_t b_src = text_color & 0xFF;
@@ -781,8 +862,33 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		if (cursor_x > inner_x0 + inner_w - 2)
 			cursor_x = inner_x0 + inner_w - 2;
 
-		/* 2px blue caret — clearer than a 1px black line on light fields. */
-		draw_rect(ctx, pixels, cursor_x, inner_y0, 2, inner_h, 0xFF0066FF);
+		draw_rect(ctx, pixels, cursor_x, inner_y0, 2, inner_h, focus);
+	}
+}
+
+static void draw_rule(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+		      uint32_t *pixels)
+{
+	int t = w->data.rule.thickness;
+	uint32_t color = w->data.rule.color ? w->data.rule.color
+					   : ctx->theme.frame_border_color;
+	int x0 = w->x + w->margin + w->padding;
+	int y0 = w->y + w->margin + w->padding;
+	int iw = w->w - 2 * (w->margin + w->padding);
+	int ih = w->h - 2 * (w->margin + w->padding);
+
+	if (t < 1)
+		t = 1;
+	if (iw < 1 || ih < 1)
+		return;
+	if (w->data.rule.orientation == BGTK_LIST_VERTICAL) {
+		if (t > iw)
+			t = iw;
+		draw_rect(ctx, pixels, x0 + (iw - t) / 2, y0, t, ih, color);
+	} else {
+		if (t > ih)
+			t = ih;
+		draw_rect(ctx, pixels, x0, y0 + (ih - t) / 2, iw, t, color);
 	}
 }
 
@@ -813,6 +919,9 @@ void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		break;
 	case BGTK_WIDGET_TEXT_INPUT:
 		draw_text_input(ctx, w, pixels);
+		break;
+	case BGTK_WIDGET_RULE:
+		draw_rule(ctx, w, pixels);
 		break;
 	default:
 		puts("can't draw unknown widget");

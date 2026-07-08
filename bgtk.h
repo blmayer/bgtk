@@ -263,17 +263,28 @@ enum BGTK_Widget_Type {
 	BGTK_WIDGET_IMAGE,
 	BGTK_WIDGET_FRAME,
 	BGTK_WIDGET_TEXT_INPUT,
-	// Add more types as needed
+	BGTK_WIDGET_RULE,
 };
 
 // Widget flags
 #define BGTK_FLAG_CENTER (1 << 0)  // Center child widgets horizontally (containers)
+
+/* Text style bits (bgtk_text / BGTK_Options.text_style). Synthetic via FreeType. */
+#define BGTK_TEXT_BOLD   (1 << 0)
+#define BGTK_TEXT_ITALIC (1 << 1)
 
 // Text alignment within a widget's content area (like CSS text-align)
 enum BGTK_Text_Align {
 	BGTK_ALIGN_LEFT = 0,
 	BGTK_ALIGN_CENTER,
 	BGTK_ALIGN_RIGHT,
+};
+
+/* Vertical placement of text within the widget content box. */
+enum BGTK_VAlign {
+	BGTK_VALIGN_TOP = 0,
+	BGTK_VALIGN_CENTER,
+	BGTK_VALIGN_BOTTOM,
 };
 
 // List widget orientation
@@ -288,7 +299,10 @@ typedef struct {
 	int padding;    // Internal spacing (pixels).
 	int margin;     // External spacing (pixels).
 	enum BGTK_Text_Align text_align;  // Horizontal text alignment (default: left)
-	enum BGTK_List_Orientation orientation;  // For list widget: vertical or horizontal
+	enum BGTK_VAlign text_v_align;    // Vertical text alignment (default: top)
+	int baseline_offset; // Added to FreeType baseline (px; can be negative)
+	enum BGTK_List_Orientation orientation;  // For list/rule: vertical or horizontal
+	int text_style; // BGTK_TEXT_BOLD | BGTK_TEXT_ITALIC (text widgets)
 } BGTK_Options;
 
 // BGTK_Widget: Base structure for all widgets
@@ -300,6 +314,8 @@ struct BGTK_Widget {
 	int padding;        // Internal spacing (pixels)
 	int margin;         // External spacing (pixels)
 	enum BGTK_Text_Align text_align;  // Horizontal text alignment
+	enum BGTK_VAlign text_v_align;    // Vertical text alignment
+	int baseline_offset;              // FreeType baseline tweak (px)
 	
 	// Function pointer for event handling
 	int (*handle_event)(struct BGTK_Widget* widget, struct InputEvent ev);
@@ -319,8 +335,14 @@ struct BGTK_Widget {
 		} button;
 		struct {
 			char* text;
-			int header_level;  // 0=normal, 1/2/3 for # headers (for bigger/bold/colored rendering)
+			int header_level;  // 0=normal, 1/2/3 headers; 10=accent line
+			int style;         // BGTK_TEXT_BOLD | BGTK_TEXT_ITALIC
 		} text;
+		struct {
+			enum BGTK_List_Orientation orientation;
+			int thickness;     // line width in px (>=1)
+			uint32_t color;    // 0 = theme.frame_border_color
+		} rule;
 		struct {
 			uint32_t* pixels;  // Pixel buffer for image
 			int img_w;  // Image intrinsic width
@@ -434,5 +456,12 @@ struct BGTK_Widget* bgtk_text_input(struct BGTK_Context* ctx, char* initial_text
 
 // Creates a list widget (arranges children vertically or horizontally without scrolling).
 struct BGTK_Widget* bgtk_list(struct BGTK_Context* ctx, struct BGTK_Widget** items, int widget_count, BGTK_Options options);
+
+/* Divider line. orientation: BGTK_LIST_HORIZONTAL = bar across width,
+ * BGTK_LIST_VERTICAL = bar down height. thickness < 1 → 1.
+ * Long axis is usually set by the parent (list/frame); short axis = thickness. */
+struct BGTK_Widget *bgtk_rule(struct BGTK_Context *ctx,
+			      enum BGTK_List_Orientation orientation,
+			      int thickness, BGTK_Options options);
 
 #endif
