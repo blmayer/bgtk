@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <poll.h>
 #include <fcntl.h>
@@ -244,7 +245,10 @@ int main(void)
 			ts->pty_fd = master_fd;
 
 			/* Wait for initial shell prompt */
-			usleep(200 * 1000);
+			{
+				struct timespec ts_wait = { .tv_sec = 0, .tv_nsec = 200 * 1000 * 1000 };
+				nanosleep(&ts_wait, NULL);
+			}
 			{
 				char buf[4096];
 				ssize_t n = read(master_fd, buf, sizeof(buf));

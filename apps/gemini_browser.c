@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <tls.h>
 #include <unistd.h>
 
@@ -41,12 +42,13 @@ static ssize_t gemini_tls_read(struct tls *t, void *buf, size_t len)
 	for (;;) {
 		ssize_t n = tls_read(t, buf, len);
 		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
+			struct timespec ts = { .tv_sec = 0, .tv_nsec = 5 * 1000 * 1000 };
 			if (waited >= GEMINI_IO_TIMEOUT_MS) {
 				bgtk_log("tls_read timed out after %dms (want=%zd)",
 					 waited, n);
 				return -1;
 			}
-			usleep(5000);
+			nanosleep(&ts, NULL);
 			waited += 5;
 			continue;
 		}
@@ -63,12 +65,13 @@ static ssize_t gemini_tls_write(struct tls *t, const void *buf, size_t len)
 	while (left > 0) {
 		ssize_t n = tls_write(t, p, left);
 		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
+			struct timespec ts = { .tv_sec = 0, .tv_nsec = 5 * 1000 * 1000 };
 			if (waited >= GEMINI_IO_TIMEOUT_MS) {
 				bgtk_log("tls_write timed out after %dms (want=%zd)",
 					 waited, n);
 				return -1;
 			}
-			usleep(5000);
+			nanosleep(&ts, NULL);
 			waited += 5;
 			continue;
 		}
