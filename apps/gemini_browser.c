@@ -8,9 +8,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <tls.h>
 #include <unistd.h>
+
+/*
+ * BGTK port of ereandel keybindings (see ../ereandel):
+ *   b back · u up path · o open URL · r reload · H home
+ *   g go to link # · s save page · m mark · M bookmarks · K unmark · q quit
+ * Also: Ctrl+L / Ctrl+R, j/k scroll, Esc blur URL then quit.
+ */
 
 static struct BGTK_Context *ctx = NULL;
 static struct BGTK_Widget *content_scroll = NULL;
@@ -19,6 +27,7 @@ static struct BGTK_Widget *main_list = NULL;
 static struct BGTK_Widget *root_frame = NULL;
 
 static char current_url[512] = "gemini://geminiprotocol.net/";
+static const char *homepage = "gemini://geminiprotocol.net/";
 /* Retained gemtext body so resize can reflow wrap without re-fetch. */
 static char *last_body = NULL;
 
@@ -26,13 +35,290 @@ static struct BGTK_Widget *link_target_widgets[128];
 static char link_targets[128][512];
 static int num_page_links = 0;
 
+/* Navigation history (ereandel histfile). */
+#define HIST_MAX 64
+static char hist[HIST_MAX][512];
+static int hist_n;
+
+/* g = go-to-link: digits then Enter (or single-digit 1–9). */
+static int go_link_mode;
+static int go_link_num;
+
 static void content_scroll_invalidate_tmp(void);
 static void rebuild_content_from_gemtext(const char *body);
+static void load_url(const char *url);
+static void navigate(const char *url, int push_hist);
 
-/* Line chrome: keep body lines dense; theme spacing is for outer chrome. */
+/* Line chrome: body stays fairly dense; headers/paragraphs add extra vspace. */
 static BGTK_Options line_opts(void)
 {
 	return (BGTK_Options){.padding = 1, .margin = 1};
+}
+
+/* Extra vertical space (px) around gemtext structure. */
+#define GEM_V_BEFORE_HEADER 18
+#define GEM_V_AFTER_HEADER  12
+#define GEM_V_AFTER_PARA    14
+#define GEM_V_EMPTY_LINE    12
+
+/* Keep content_height in sync with items (scroll keys need this before draw). */
+static void gemini_recompute_scroll_height(void)
+{
+	int cy = 0, i, n;
+
+	if (!content_scroll)
+		return;
+	n = content_scroll->data.scrollable.widget_count;
+	for (i = 0; i < n; i++) {
+		struct BGTK_Widget *ch = content_scroll->data.scrollable.items[i];
+
+		if (ch)
+			cy += ch->h + 2 * content_scroll->margin;
+	}
+	content_scroll->data.scrollable.content_height =
+		cy + 2 * (content_scroll->margin + content_scroll->padding);
+}
+
+static void hist_push(const char *url)
+{
+	if (!url || !url[0])
+		return;
+	if (hist_n > 0 && strcmp(hist[hist_n - 1], url) == 0)
+		return;
+	if (hist_n >= HIST_MAX) {
+		memmove(hist[0], hist[1], (HIST_MAX - 1) * sizeof(hist[0]));
+		hist_n = HIST_MAX - 1;
+	}
+	snprintf(hist[hist_n], sizeof(hist[0]), "%s", url);
+	hist_n++;
+}
+
+/* Pop previous URL into out (history does not include current page). */
+static int hist_back(char *out, size_t n)
+{
+	if (hist_n < 1 || !out || n == 0)
+		return -1;
+	snprintf(out, n, "%s", hist[--hist_n]);
+	return 0;
+}
+
+static void config_paths(char *bookmarks, size_t bn, char *certdir, size_t cn)
+{
+	const char *xdg = getenv("XDG_CONFIG_HOME");
+	const char *home = getenv("HOME");
+	char base[512];
+
+	if (xdg && xdg[0])
+		snprintf(base, sizeof(base), "%s/ereandel", xdg);
+	else if (home && home[0])
+		snprintf(base, sizeof(base), "%s/.config/ereandel", home);
+	else
+		snprintf(base, sizeof(base), "/tmp/ereandel");
+	mkdir(base, 0755);
+	if (bookmarks && bn)
+		snprintf(bookmarks, bn, "%s/bookmarks", base);
+	if (certdir && cn) {
+		snprintf(certdir, cn, "%s/certs", base);
+		mkdir(certdir, 0755);
+	}
+}
+
+/* Strip last path segment: gemini://h/a/b -> gemini://h/a */
+static void url_go_up(char *url)
+{
+	char *scheme, *host_end, *slash;
+	size_t len;
+
+	if (!url || !url[0])
+		return;
+	scheme = strstr(url, "://");
+	if (!scheme)
+		return;
+	host_end = strchr(scheme + 3, '/');
+	if (!host_end)
+		return;
+	len = strlen(url);
+	while (len > 1 && url[len - 1] == '/' && &url[len - 1] > host_end) {
+		url[--len] = '\0';
+	}
+	slash = strrchr(url, '/');
+	if (!slash || slash <= host_end)
+		return;
+	if (slash == host_end)
+		slash[1] = '\0';
+	else
+		*slash = '\0';
+}
+
+static void navigate(const char *url, int push_hist)
+{
+	if (!url || !url[0])
+		return;
+	if (push_hist && current_url[0])
+		hist_push(current_url);
+	go_link_mode = 0;
+	go_link_num = 0;
+	load_url(url);
+}
+
+static void bookmark_add(void)
+{
+	char path[512];
+	FILE *f;
+
+	config_paths(path, sizeof(path), NULL, 0);
+	f = fopen(path, "a");
+	if (!f) {
+		bgtk_log("bookmark_add: cannot open %s", path);
+		return;
+	}
+	fprintf(f, "%s\n", current_url);
+	fclose(f);
+	bgtk_log("bookmark added: %s", current_url);
+}
+
+static void bookmark_del(void)
+{
+	char path[512], tmp[520], line[600];
+	FILE *in, *out;
+
+	config_paths(path, sizeof(path), NULL, 0);
+	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+	in = fopen(path, "r");
+	if (!in)
+		return;
+	out = fopen(tmp, "w");
+	if (!out) {
+		fclose(in);
+		return;
+	}
+	while (fgets(line, sizeof(line), in)) {
+		char *nl = strchr(line, '\n');
+		if (nl)
+			*nl = '\0';
+		if (strncmp(line, current_url, strlen(current_url)) != 0 ||
+		    (line[strlen(current_url)] != '\0' &&
+		     line[strlen(current_url)] != ' '))
+			fprintf(out, "%s\n", line);
+	}
+	fclose(in);
+	fclose(out);
+	rename(tmp, path);
+	bgtk_log("bookmark removed for %s", current_url);
+}
+
+/* Show bookmarks as a synthetic gemtext page (like ereandel M). */
+static void bookmark_goto_page(void)
+{
+	char path[512], line[600], *body = NULL;
+	size_t cap = 0, len = 0;
+	FILE *f;
+	int n = 0;
+
+	config_paths(path, sizeof(path), NULL, 0);
+	f = fopen(path, "r");
+	body = strdup("# Bookmarks\n\n");
+	if (!body)
+		return;
+	len = strlen(body);
+	cap = len + 1;
+	if (f) {
+		while (fgets(line, sizeof(line), f)) {
+			char url[512], *sp, *nl;
+			char entry[640];
+			size_t el;
+
+			nl = strchr(line, '\n');
+			if (nl)
+				*nl = '\0';
+			if (!line[0])
+				continue;
+			sp = strchr(line, ' ');
+			if (sp) {
+				size_t ul = (size_t)(sp - line);
+				if (ul >= sizeof(url))
+					ul = sizeof(url) - 1;
+				memcpy(url, line, ul);
+				url[ul] = '\0';
+				snprintf(entry, sizeof(entry), "=> %s %s\n", url,
+					 sp + 1);
+			} else {
+				snprintf(entry, sizeof(entry), "=> %s\n", line);
+			}
+			el = strlen(entry);
+			if (len + el + 1 > cap) {
+				char *nb = realloc(body, len + el + 256);
+				if (!nb)
+					break;
+				body = nb;
+				cap = len + el + 256;
+			}
+			memcpy(body + len, entry, el + 1);
+			len += el;
+			n++;
+		}
+		fclose(f);
+	}
+	if (n == 0) {
+		const char *empty = "No bookmarks yet. Press m to add.\n";
+		size_t el = strlen(empty);
+		char *nb = realloc(body, len + el + 1);
+		if (nb) {
+			body = nb;
+			memcpy(body + len, empty, el + 1);
+		}
+	}
+	if (current_url[0])
+		hist_push(current_url);
+	free(last_body);
+	last_body = body;
+	snprintf(current_url, sizeof(current_url), "about:bookmarks");
+	if (addr_input && addr_input->data.text_input.text) {
+		free(addr_input->data.text_input.text);
+		addr_input->data.text_input.text = strdup(current_url);
+		addr_input->data.text_input.cursor_pos =
+			(uint32_t)strlen(current_url);
+		addr_input->data.text_input.scroll_x = 0;
+	}
+	rebuild_content_from_gemtext(last_body);
+	if (content_scroll)
+		bgtk_set_focus(ctx, content_scroll);
+	else
+		bgtk_draw_widgets(ctx);
+}
+
+static void save_page(void)
+{
+	const char *home = getenv("HOME");
+	char path[640];
+	FILE *f;
+	time_t t = time(NULL);
+
+	if (!last_body) {
+		bgtk_log("save_page: no body");
+		return;
+	}
+	if (home && home[0])
+		snprintf(path, sizeof(path), "%s/gemini-%ld.gmi", home,
+			 (long)t);
+	else
+		snprintf(path, sizeof(path), "/tmp/gemini-%ld.gmi", (long)t);
+	f = fopen(path, "w");
+	if (!f) {
+		bgtk_log_errno("save_page %s", path);
+		return;
+	}
+	fputs(last_body, f);
+	fclose(f);
+	bgtk_log("saved page to %s", path);
+}
+
+static void go_link_index(int idx)
+{
+	/* 1-based like ereandel */
+	if (idx < 1 || idx > num_page_links)
+		return;
+	navigate(link_targets[idx - 1], 1);
 }
 
 /* Root chrome: [frame_margin][border][padding][content]… (from theme). */
@@ -494,7 +780,7 @@ static int gemini_link_handler(struct BGTK_Widget *w, struct InputEvent ev)
 	if (ev.code == BTN_LEFT && ev.value == 1) {
 		for (int i = 0; i < num_page_links; i++) {
 			if (link_target_widgets[i] == w) {
-				load_url(link_targets[i]);
+				navigate(link_targets[i], 1);
 				return 1;
 			}
 		}
@@ -665,7 +951,9 @@ static void rebuild_content_from_gemtext(const char *body)
 			else
 				strncpy(disp, tgt, sizeof(disp) - 1);
 
-			snprintf(vis, sizeof(vis), "=> %s", disp);
+			/* Numbered like ereandel so g + N can jump. */
+			snprintf(vis, sizeof(vis), "[%d] %s",
+				 num_page_links + 1, disp);
 			strncpy(link_to, tgt, sizeof(link_to) - 1);
 			is_link = 1;
 			item_color = 10;
@@ -692,9 +980,8 @@ static void rebuild_content_from_gemtext(const char *body)
 		if (is_link)
 			resolve_url(current_url, link_to, resolved, sizeof(resolved));
 
-		if (header_level > 0 && cnt > 0) {
-			new_items[cnt-1]->h += 5;  /* increase the top spacing a little before headings */
-		}
+		if (header_level > 0 && cnt > 0)
+			new_items[cnt - 1]->h += GEM_V_BEFORE_HEADER;
 
 		if (header_level > 0 && ctx->ft_face) {
 			FT_Set_Pixel_Sizes(ctx->ft_face, 0,
@@ -726,6 +1013,12 @@ static void rebuild_content_from_gemtext(const char *body)
 						tw->handle_event =
 							gemini_link_handler;
 					}
+					if (header_level > 0)
+						tw->h += GEM_V_AFTER_HEADER;
+					else if (!vis[0])
+						tw->h += GEM_V_EMPTY_LINE;
+					else
+						tw->h += GEM_V_AFTER_PARA / 2;
 					if (cnt >= cap) {
 						cap = cap ? cap * 2 : 32;
 						new_items = realloc(
@@ -763,10 +1056,13 @@ static void rebuild_content_from_gemtext(const char *body)
 					tw->handle_event = gemini_link_handler;
 				}
 				if (s < nsubs - 1) {
-					tw->h -= 3;  /* decrease a little for lines in the same paragraph (tighter leading between wraps) */
-				}
-				if (s == nsubs - 1) {
-					tw->h += 5;  /* extra vertical space after this logical block */
+					/* tighter leading between wraps of same block */
+					if (tw->h > 4)
+						tw->h -= 2;
+				} else if (header_level > 0) {
+					tw->h += GEM_V_AFTER_HEADER;
+				} else {
+					tw->h += GEM_V_AFTER_PARA;
 				}
 				if (cnt >= cap) {
 					cap = cap ? cap * 2 : 32;
@@ -813,7 +1109,10 @@ static void rebuild_content_from_gemtext(const char *body)
 	content_scroll->data.scrollable.widget_count = cnt;
 	content_scroll->data.scrollable.scroll_y = 0;
 	content_scroll_invalidate_tmp();
-	bgtk_log("rebuild: %d line widgets, %d links", cnt, num_page_links);
+	gemini_recompute_scroll_height();
+	bgtk_log("rebuild: %d line widgets, %d links, content_h=%d", cnt,
+		 num_page_links,
+		 content_scroll->data.scrollable.content_height);
 }
 
 /* main navigation entry */
@@ -905,6 +1204,7 @@ static void load_url(const char *url)
 		content_scroll->data.scrollable.widget_count = errs ? 1 : 0;
 		content_scroll->data.scrollable.scroll_y = 0;
 		content_scroll_invalidate_tmp();
+		gemini_recompute_scroll_height();
 		/* Drop retained body so resize does not reflow a prior page. */
 		free(last_body);
 		last_body = NULL;
@@ -938,14 +1238,33 @@ static void load_url(const char *url)
 	if (body)
 		free(body);
 
-	bgtk_draw_widgets(ctx);
-	bgtk_log("load_url: draw complete for %s", current_url);
+	/*
+	 * Content focus so j/k/Page* scroll work after every navigation.
+	 * Ctrl+L returns focus to the URL field.
+	 */
+	if (content_scroll)
+		bgtk_set_focus(ctx, content_scroll);
+	else
+		bgtk_draw_widgets(ctx);
+	bgtk_log("load_url: draw complete for %s focus=content", current_url);
 }
 
 static void addr_on_enter(void)
 {
-	if (addr_input)
-		load_url(addr_input->data.text_input.text);
+	char url[512];
+
+	if (!addr_input || !addr_input->data.text_input.text)
+		return;
+	snprintf(url, sizeof(url), "%s", addr_input->data.text_input.text);
+	/* Convenience: allow host/path without scheme (ereandel). */
+	if (strncmp(url, "gemini://", 9) != 0 && strncmp(url, "about:", 6) != 0 &&
+	    url[0]) {
+		char full[512];
+		snprintf(full, sizeof(full), "gemini://%s", url);
+		navigate(full, 1);
+		return;
+	}
+	navigate(url, 1);
 }
 
 int main(void)
@@ -1046,7 +1365,8 @@ int main(void)
 	}
 
 	ctx->root_widget = frame;
-	bgtk_set_focus(ctx, addr_input);
+	/* Content focused so j/k/Page* scroll work; Ctrl+L focuses the URL. */
+	bgtk_set_focus(ctx, content_scroll);
 	bgtk_draw_widgets(ctx);
 	bgtk_log("shell drawn; loading initial url %s", current_url);
 
@@ -1086,50 +1406,178 @@ int main(void)
 				break;
 
 			bgtk_update_modifiers(ctx, *ev);
-			if (bgtk_is_app_quit_event(ctx, *ev)) {
-				bgtk_log("quit key type=%d code=%d value=%d "
-					 "mods shift=%d ctrl=%d alt=%d",
-					 ev->type, ev->code, ev->value,
-					 ctx->shift_held, ctx->ctrl_held,
-					 ctx->alt_held);
-				quit_reason = "app quit key (Esc or Ctrl+C)";
-				goto done;
-			}
 
-			/* Browser chords (before text-input eats the key). */
+			/*
+			 * Ereandel-style keys when content is focused (not
+			 * typing in the URL bar). Ctrl chords always work.
+			 */
 			if (ev->type == EV_KEY &&
 			    (ev->value == 1 || ev->value == 2)) {
-				if (ctx->ctrl_held && ev->code == KEY_L) {
+				int addr_focus =
+					(ctx->focused_widget == addr_input);
+				int mods = bgtk_mods_from_ctx(ctx);
+				int scroll_key = 0;
+				char prev[512];
+
+				/* Ctrl+L / o: open (focus URL). */
+				if (((mods & BGTK_MOD_CTRL) &&
+				     ev->code == KEY_L) ||
+				    (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
+				     !(mods & BGTK_MOD_SHIFT) &&
+				     ev->code == KEY_O)) {
+					go_link_mode = 0;
 					bgtk_set_focus(ctx, addr_input);
 					res = 1;
 					break;
 				}
-				if (ctx->ctrl_held && ev->code == KEY_R) {
+				/* Ctrl+R / r: reload. */
+				if (((mods & BGTK_MOD_CTRL) &&
+				     ev->code == KEY_R) ||
+				    (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
+				     !(mods & BGTK_MOD_SHIFT) &&
+				     ev->code == KEY_R)) {
+					go_link_mode = 0;
 					load_url(current_url);
 					res = 1;
 					break;
 				}
+				/* Esc: cancel go-mode, blur URL, or quit. */
 				if (ev->code == KEY_ESC) {
-					if (ctx->focused_widget == addr_input) {
+					if (go_link_mode) {
+						go_link_mode = 0;
+						go_link_num = 0;
+						res = 1;
+						break;
+					}
+					if (addr_focus) {
 						bgtk_set_focus(ctx,
 							       content_scroll);
 						res = 1;
 						break;
 					}
+					quit_reason = "Esc";
+					goto done;
 				}
-				/* Scroll page when focus is not the URL field. */
-				if (content_scroll &&
-				    ctx->focused_widget != addr_input &&
-				    content_scroll->handle_event &&
-				    (ev->code == KEY_UP ||
-				     ev->code == KEY_DOWN ||
-				     ev->code == KEY_PAGEUP ||
-				     ev->code == KEY_PAGEDOWN ||
-				     ev->code == KEY_HOME ||
-				     ev->code == KEY_END ||
-				     ev->code == KEY_SPACE ||
-				     ev->code == KEY_J ||
-				     ev->code == KEY_K)) {
+				/* Ctrl+C / q: quit. */
+				if (((mods & BGTK_MOD_CTRL) &&
+				     ev->code == KEY_C) ||
+				    (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
+				     ev->code == KEY_Q)) {
+					quit_reason = "quit key";
+					goto done;
+				}
+
+				/* go-link mode: type number, Enter to open. */
+				if (go_link_mode && !addr_focus) {
+					if (ev->code >= KEY_1 &&
+					    ev->code <= KEY_0) {
+						int d = (ev->code == KEY_0)
+								? 0
+								: (int)(ev->code -
+									KEY_1 +
+									1);
+						go_link_num =
+							go_link_num * 10 + d;
+						res = 1;
+						break;
+					}
+					if (ev->code == KEY_ENTER ||
+					    ev->code == KEY_KPENTER) {
+						int n = go_link_num;
+						go_link_mode = 0;
+						go_link_num = 0;
+						if (n > 0)
+							go_link_index(n);
+						res = 1;
+						break;
+					}
+					if (ev->code == KEY_BACKSPACE) {
+						go_link_num /= 10;
+						res = 1;
+						break;
+					}
+				}
+
+				/* Ereandel single-letter keys (content only). */
+				if (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
+				    !(mods & BGTK_MOD_ALT)) {
+					if (ev->code == KEY_B) {
+						if (hist_back(prev,
+							      sizeof(prev)) == 0)
+							navigate(prev, 0);
+						res = 1;
+						break;
+					}
+					if (ev->code == KEY_U) {
+						char u[512];
+						snprintf(u, sizeof(u), "%s",
+							 current_url);
+						url_go_up(u);
+						if (strcmp(u, current_url) != 0)
+							navigate(u, 1);
+						res = 1;
+						break;
+					}
+					if (ev->code == KEY_H &&
+					    (mods & BGTK_MOD_SHIFT)) {
+						navigate(homepage, 1);
+						res = 1;
+						break;
+					}
+					if (ev->code == KEY_G &&
+					    !(mods & BGTK_MOD_SHIFT)) {
+						go_link_mode = 1;
+						go_link_num = 0;
+						bgtk_log("go-link mode (type #)");
+						res = 1;
+						break;
+					}
+					if (ev->code == KEY_S &&
+					    !(mods & BGTK_MOD_SHIFT)) {
+						save_page();
+						res = 1;
+						break;
+					}
+					if (ev->code == KEY_M &&
+					    !(mods & BGTK_MOD_SHIFT)) {
+						bookmark_add();
+						res = 1;
+						break;
+					}
+					if (ev->code == KEY_M &&
+					    (mods & BGTK_MOD_SHIFT)) {
+						bookmark_goto_page();
+						res = 1;
+						break;
+					}
+					if (ev->code == KEY_K &&
+					    (mods & BGTK_MOD_SHIFT)) {
+						bookmark_del();
+						res = 1;
+						break;
+					}
+				}
+
+				/*
+				 * Scroll: PageUp/Down always; j/k/arrows when
+				 * not editing URL.
+				 */
+				if (ev->code == KEY_PAGEUP ||
+				    ev->code == KEY_PAGEDOWN)
+					scroll_key = 1;
+				else if (!addr_focus && !go_link_mode &&
+					 (ev->code == KEY_UP ||
+					  ev->code == KEY_DOWN ||
+					  ev->code == KEY_HOME ||
+					  ev->code == KEY_END ||
+					  ev->code == KEY_SPACE ||
+					  ev->code == KEY_J ||
+					  ev->code == KEY_K))
+					scroll_key = 1;
+
+				if (scroll_key && content_scroll &&
+				    content_scroll->handle_event) {
+					gemini_recompute_scroll_height();
 					if (content_scroll->handle_event(
 						    content_scroll, *ev)) {
 						res = 1;

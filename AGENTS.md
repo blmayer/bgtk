@@ -235,13 +235,19 @@ etc.) still need BGCE on Linux.
 
 ## Important Notes for Agents
 
-1. **Event Coordinate System**: Events use absolute screen coordinates. When propagating to children, transform coordinates to be relative to the child widget.
-2. **Widget Hierarchy**: The root widget is in `ctx->root_widget`. Child widgets are stored in parent widgets.
+1. **Event Coordinate System**: Pointer events use screen coordinates at the root.
+   Hit-test with `bgtk_widget_hit()` (handles `BGTK_FLAG_RELATIVE`). Scrollables
+   still transform events into content space for their children.
+2. **Widget Hierarchy**: Root is `ctx->root_widget`. Containers set `child->parent`.
 3. **Focus Management**: Text input widgets need special handling for keyboard events. Use `bgtk_set_focus()` to manage focus.
 4. **Drawing**: Widgets are drawn to `ctx->shm_buffer`. Use the drawing functions in `drawing.c`.
 5. **Memory Management**: Widgets are responsible for freeing their own resources in the destructor. Mock contexts are freed with `bgtk_destroy_mock()`, real ones with `bgtk_destroy()`.
 6. **Configuration**: Theme and font settings are loaded from a config file at startup.
 7. **Platform**: Full BGCE apps are Linux-oriented. Headless/mock builds are the default on macOS (`Makefile` sets `TARGET = headless test_terminal test_html` on Darwin).
+8. **Layout flags** (optional; default is legacy absolute placement):
+   - `BGTK_FLAG_EXPAND_X` / `BGTK_FLAG_EXPAND_Y` / `BGTK_FLAG_FILL` — grow into free space in a parent list (main axis shared among expanders; cross axis fills content box). Parent list needs a fixed/pre-set size larger than content (e.g. filled by a frame).
+   - `BGTK_FLAG_RELATIVE` — `x`/`y` are parent-relative; `abs_x`/`abs_y` are screen (or scroll content) coords after layout. Set on a container to opt a subtree in; children inherit during place.
+   - `bgtk_widget_screen_pos()`, `bgtk_widget_hit()`, `bgtk_widget_set_parent()`.
 
 ## Useful Functions
 
@@ -254,6 +260,7 @@ etc.) still need BGCE on Linux.
 - `take_screenshot()`: Write framebuffer to PNG
 - `draw_widget()`: Draw a single widget
 - `calculate_widget_size()`: Calculate widget dimensions and positions
+- `bgtk_widget_screen_pos()` / `bgtk_widget_hit()`: Screen bounds after layout
 
 ### Widget constructors
 - `bgtk_text()`, `bgtk_label()`, `bgtk_button()`, `bgtk_scrollable()`,

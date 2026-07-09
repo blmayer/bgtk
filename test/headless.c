@@ -498,6 +498,111 @@ int main(void)
 		bgtk_destroy_mock(sctx);
 	}
 
+	/* 09: Expand/fill + relative positioning.
+	 * Horizontal row: fixed sidebar + EXPAND_X content.
+	 * Content is a RELATIVE vertical list with a FILL body. */
+	{
+		struct BGTK_Context *lctx = bgtk_init_mock(480, 240);
+		struct BGTK_Widget *side, *body, *row, *frame, *title, *fill;
+		struct BGTK_Widget *side_items[2], *body_items[2], *row_items[2];
+		struct InputEvent click = {0};
+		int sx, sy;
+
+		if (!lctx) {
+			fprintf(stderr, "headless: layout scene init failed\n");
+			return 1;
+		}
+		side_items[0] = bgtk_text(lctx, "Nav A",
+					  (BGTK_Options){.padding = 4});
+		side_items[1] = bgtk_text(lctx, "Nav B",
+					  (BGTK_Options){.padding = 4});
+		side = bgtk_list(lctx, side_items, 2,
+				 (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+						.margin = 4, .padding = 4});
+		if (side)
+			side->w = 100;
+
+		title = bgtk_text(lctx, "expand content",
+				  (BGTK_Options){.padding = 4});
+		fill = bgtk_frame(lctx, bgtk_text(lctx, "FILL",
+						  (BGTK_Options){.padding = 8}),
+				  40, 40, (BGTK_Options){.padding = 4});
+		if (fill)
+			fill->flags |= BGTK_FLAG_FILL;
+		body_items[0] = title;
+		body_items[1] = fill;
+		body = bgtk_list(lctx, body_items, 2,
+				 (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+						.margin = 4, .padding = 4,
+						.flags = BGTK_FLAG_RELATIVE});
+		if (body)
+			body->flags |= BGTK_FLAG_EXPAND_X | BGTK_FLAG_EXPAND_Y |
+				       BGTK_FLAG_RELATIVE;
+
+		row_items[0] = side;
+		row_items[1] = body;
+		row = bgtk_list(lctx, row_items, 2,
+				(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+					       .margin = 6, .padding = 4});
+		if (row) {
+			row->w = 480;
+			row->h = 240;
+		}
+		frame = bgtk_frame(lctx, row, 480, 240,
+				   (BGTK_Options){.padding = 0, .margin = 0});
+		if (frame)
+			frame->data.frame.border_w = 0;
+		lctx->root_widget = frame;
+		bgtk_draw_widgets(lctx);
+		take_screenshot(lctx, "headless_09_expand_relative.png");
+
+		/* Content list should be relative and wider than sidebar. */
+		if (!body || !(body->flags & BGTK_FLAG_RELATIVE)) {
+			fprintf(stderr, "headless: body not RELATIVE\n");
+			bgtk_destroy_mock(lctx);
+			return 1;
+		}
+		if (body->w < 200) {
+			fprintf(stderr, "headless: body did not EXPAND_X (w=%d)\n",
+				body->w);
+			bgtk_destroy_mock(lctx);
+			return 1;
+		}
+		if (fill && fill->h < 80) {
+			fprintf(stderr, "headless: fill did not EXPAND_Y (h=%d)\n",
+				fill->h);
+			bgtk_destroy_mock(lctx);
+			return 1;
+		}
+		/* Relative: x/y parent-local; abs_* screen after layout. */
+		if (body->x != body->abs_x) {
+			/* body.x is relative offset within row; abs is screen. */
+			if (body->abs_x <= body->x) {
+				fprintf(stderr,
+					"headless: relative abs_x expected > rel x "
+					"(rel=%d abs=%d)\n",
+					body->x, body->abs_x);
+				bgtk_destroy_mock(lctx);
+				return 1;
+			}
+		}
+		bgtk_widget_screen_pos(body, &sx, &sy);
+		click.type = EV_KEY;
+		click.code = BTN_LEFT;
+		click.value = 1;
+		click.x = sx + 20;
+		click.y = sy + 10;
+		if (!bgtk_widget_hit(body, click.x, click.y)) {
+			fprintf(stderr, "headless: hit test missed body at %d,%d\n",
+				click.x, click.y);
+			bgtk_destroy_mock(lctx);
+			return 1;
+		}
+		bgtk_inject_event(lctx, click);
+		take_screenshot(lctx, "headless_09b_expand_clicked.png");
+		bgtk_destroy_mock(lctx);
+	}
+
 	printf("headless test complete. PNG frames written.\n");
 	return 0;
 }

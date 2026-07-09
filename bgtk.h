@@ -269,7 +269,13 @@ enum BGTK_Widget_Type {
 };
 
 // Widget flags
-#define BGTK_FLAG_CENTER (1 << 0)  // Center child widgets horizontally (containers)
+#define BGTK_FLAG_CENTER (1 << 0) /* Center children on cross-axis (lists). */
+/* Grow into free space along parent list main/cross axis (see layout). */
+#define BGTK_FLAG_EXPAND_X (1 << 1)
+#define BGTK_FLAG_EXPAND_Y (1 << 2)
+#define BGTK_FLAG_FILL (BGTK_FLAG_EXPAND_X | BGTK_FLAG_EXPAND_Y)
+/* x/y are parent-relative; abs_x/abs_y hold screen position after layout. */
+#define BGTK_FLAG_RELATIVE (1 << 3)
 
 /* Text style bits (bgtk_text / BGTK_Options.text_style). Synthetic via FreeType. */
 #define BGTK_TEXT_BOLD   (1 << 0)
@@ -311,7 +317,11 @@ typedef struct {
 struct BGTK_Widget {
 	struct BGTK_Context* ctx;
 	enum BGTK_Widget_Type type;
-	int x, y, w, h;      // Absolute position and size
+	/* Position: absolute by default. With BGTK_FLAG_RELATIVE, x/y are
+	 * parent-relative and abs_x/abs_y are the screen origin after layout. */
+	int x, y, w, h;
+	int abs_x, abs_y;
+	struct BGTK_Widget *parent; /* set by list/frame/scrollable constructors */
 	int flags;          // Flags for widget behavior
 	int padding;        // Internal spacing (pixels)
 	int margin;         // External spacing (pixels)
@@ -396,6 +406,15 @@ struct BGTK_Widget {
 
 /* Free a widget subtree (safe on NULL). Clears ctx focus if it was inside. */
 void bgtk_widget_destroy(struct BGTK_Widget *w);
+
+/* Screen-space origin after the last layout/draw (handles RELATIVE). */
+void bgtk_widget_screen_pos(const struct BGTK_Widget *w, int *x, int *y);
+/* 1 if screen point (x,y) is inside the widget's outer box. */
+int bgtk_widget_hit(const struct BGTK_Widget *w, int x, int y);
+/* Link child→parent (constructors do this; use when re-homing a subtree). */
+void bgtk_widget_set_parent(struct BGTK_Widget *child, struct BGTK_Widget *parent);
+/* Apply EXPAND_X/Y / FILL to list children using list's current w/h. */
+void bgtk_list_layout_expand(struct BGTK_Widget *list);
 
 // --- Logging (dedicated files under ~/.cache/bgtk/, not shared with BGCE) ---
 // Open $XDG_CACHE_HOME/bgtk/<app_name>.log (or ~/.cache/bgtk/...). Creates dirs.

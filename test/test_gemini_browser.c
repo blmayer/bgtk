@@ -43,6 +43,28 @@ static BGTK_Options line_opts(void)
 	return (BGTK_Options){.padding = 1, .margin = 1};
 }
 
+#define GEM_V_BEFORE_HEADER 18
+#define GEM_V_AFTER_HEADER  12
+#define GEM_V_AFTER_PARA    14
+#define GEM_V_EMPTY_LINE    12
+
+static void gemini_recompute_scroll_height(void)
+{
+	int cy = 0, i, n;
+
+	if (!content_scroll)
+		return;
+	n = content_scroll->data.scrollable.widget_count;
+	for (i = 0; i < n; i++) {
+		struct BGTK_Widget *ch = content_scroll->data.scrollable.items[i];
+
+		if (ch)
+			cy += ch->h + 2 * content_scroll->margin;
+	}
+	content_scroll->data.scrollable.content_height =
+		cy + 2 * (content_scroll->margin + content_scroll->padding);
+}
+
 /* Root chrome: [frame_margin][border][padding][content]… */
 static void gemini_chrome(int *pad, int *fmar, int *bw)
 {
@@ -558,9 +580,8 @@ static void rebuild_content_from_gemtext(const char *body)
 		if (is_link)
 			resolve_url(current_url, link_to, resolved, sizeof(resolved));
 
-		if (header_level > 0 && cnt > 0) {
-			new_items[cnt-1]->h += 5;  /* increase the top spacing a little before headings */
-		}
+		if (header_level > 0 && cnt > 0)
+			new_items[cnt - 1]->h += GEM_V_BEFORE_HEADER;
 
 		if (header_level > 0) {
 			FT_Set_Pixel_Sizes(ctx->ft_face, 0, ctx->font_size + 4 - header_level);
@@ -584,10 +605,14 @@ static void rebuild_content_from_gemtext(const char *body)
 					tw->handle_event = gemini_link_handler;
 				}
 				if (s < nsubs - 1) {
-					tw->h -= 3;  /* decrease a little for lines in the same paragraph (tighter leading between wraps) */
-				}
-				if (s == nsubs - 1) {
-					tw->h += 5;  /* extra vertical space after this logical block */
+					if (tw->h > 4)
+						tw->h -= 2;
+				} else if (header_level > 0) {
+					tw->h += GEM_V_AFTER_HEADER;
+				} else if (!vis[0]) {
+					tw->h += GEM_V_EMPTY_LINE;
+				} else {
+					tw->h += GEM_V_AFTER_PARA;
 				}
 				if (cnt >= cap) {
 					cap = cap ? cap*2 : 32;
@@ -624,6 +649,7 @@ static void rebuild_content_from_gemtext(const char *body)
 	content_scroll->data.scrollable.items = new_items;
 	content_scroll->data.scrollable.widget_count = cnt;
 	content_scroll->data.scrollable.scroll_y = 0;
+	gemini_recompute_scroll_height();
 }
 
 /* Real navigation using live capsule */
@@ -720,6 +746,50 @@ static void load_real_url(const char *url)
 static void demo_addr_on_enter(void)
 {
 	load_real_url(addr_input->data.text_input.text);
+}
+
+/*
+ * Mirror apps/gemini_browser.c key chords (must stay in sync).
+ * Returns: 0 pass-through, 1 handled, -1 quit.
+ */
+static int gemini_browser_key(struct InputEvent ev)
+{
+	int addr_focus, mods, scroll_key = 0;
+
+	bgtk_update_modifiers(ctx, ev);
+	if (ev.type != EV_KEY || (ev.value != 1 && ev.value != 2))
+		return 0;
+	addr_focus = (ctx->focused_widget == addr_input);
+	mods = bgtk_mods_from_ctx(ctx);
+	if ((mods & BGTK_MOD_CTRL) && ev.code == KEY_L) {
+		bgtk_set_focus(ctx, addr_input);
+		return 1;
+	}
+	if ((mods & BGTK_MOD_CTRL) && ev.code == KEY_R)
+		return 1;
+	if (ev.code == KEY_ESC) {
+		if (addr_focus) {
+			bgtk_set_focus(ctx, content_scroll);
+			return 1;
+		}
+		return -1;
+	}
+	if ((mods & BGTK_MOD_CTRL) && ev.code == KEY_C)
+		return -1;
+	if (ev.code == KEY_PAGEUP || ev.code == KEY_PAGEDOWN)
+		scroll_key = 1;
+	else if (!addr_focus &&
+		 (ev.code == KEY_UP || ev.code == KEY_DOWN ||
+		  ev.code == KEY_HOME || ev.code == KEY_END ||
+		  ev.code == KEY_SPACE || ev.code == KEY_J ||
+		  ev.code == KEY_K))
+		scroll_key = 1;
+	if (scroll_key && content_scroll && content_scroll->handle_event) {
+		gemini_recompute_scroll_height();
+		if (content_scroll->handle_event(content_scroll, ev))
+			return 1;
+	}
+	return 0;
 }
 
 int main(void)
@@ -910,6 +980,51 @@ int main(void)
 		}
 	}
 	take_screenshot(ctx, "gemini_browser_02_typing_in_bar.png");
+
+	/* Esc while URL focused must blur to content — not quit the app. */
+	{
+		struct InputEvent k = {0};
+		int r;
+
+		k.type = EV_KEY;
+		k.value = 1;
+		k.code = KEY_ESC;
+		r = gemini_browser_key(k);
+		if (r != 1 || ctx->focused_widget != content_scroll) {
+			fprintf(stderr,
+				"test_gemini_browser: Esc blur failed "
+				"(ret=%d focus=%p want content_scroll)\n",
+				r, (void *)ctx->focused_widget);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		take_screenshot(ctx, "gemini_browser_02b_esc_blur.png");
+	}
+
+	/* Ctrl+L focuses the URL bar again. */
+	{
+		struct InputEvent k = {0};
+		int r;
+
+		k.type = EV_KEY;
+		k.value = 1;
+		k.code = KEY_LEFTCTRL;
+		gemini_browser_key(k);
+		k.code = KEY_L;
+		r = gemini_browser_key(k);
+		if (r != 1 || ctx->focused_widget != addr_input) {
+			fprintf(stderr,
+				"test_gemini_browser: Ctrl+L focus failed "
+				"(ret=%d ctrl=%d focus=%p)\n",
+				r, ctx->ctrl_held, (void *)ctx->focused_widget);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		k.code = KEY_LEFTCTRL;
+		k.value = 0;
+		gemini_browser_key(k);
+		take_screenshot(ctx, "gemini_browser_02c_ctrl_l.png");
+	}
 
 	/* ENTER -> real fetch of the (re)typed capsule URL via on_enter */
 	{

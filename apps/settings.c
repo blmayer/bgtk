@@ -38,6 +38,7 @@ static struct BGTK_Widget *sidebar_list;
 static struct BGTK_Widget *sidebar;
 static struct BGTK_Widget *panel_rule;
 static struct BGTK_Widget *content_panel;
+static struct BGTK_Widget *shell_row; /* [sidebar | rule | content] */
 static struct BGTK_Widget *root_frame;
 
 static int current_page = 0;
@@ -365,15 +366,35 @@ static int root_pad(void)
 	return outer > pin ? outer - pin : 0;
 }
 
+/* One side of window chrome: frame_margin + border + root padding.
+ * Matches content→window-edge distance (top/bottom/left). */
+static int edge_inset(void)
+{
+	int fmar = (ctx && ctx->theme.frame_margin >= 0) ? ctx->theme.frame_margin
+							: 0;
+	int fbw = ctx ? (int)ctx->theme.frame_border_size : 1;
+	int e;
+
+	if (fbw < 0)
+		fbw = 0;
+	e = fmar + fbw + root_pad();
+	if (e < 8)
+		e = 8;
+	return e;
+}
+
 static BGTK_Options ctl_opts(void)
 {
-	return (BGTK_Options){.padding = control_pad(), .margin = 0};
+	return (BGTK_Options){.padding = control_pad(), .margin = 0,
+			      .text_align = BGTK_ALIGN_LEFT,
+			      .text_v_align = BGTK_VALIGN_CENTER};
 }
 
 static struct BGTK_Widget *ui_text(const char *s)
 {
 	return bgtk_text(ctx, (char *)s,
 		(BGTK_Options){.padding = 2, .margin = 0,
+			       .text_align = BGTK_ALIGN_LEFT,
 			       .text_v_align = BGTK_VALIGN_CENTER});
 }
 
@@ -400,9 +421,11 @@ static struct BGTK_Widget *ui_input(const char *val, int width)
 
 static struct BGTK_Widget *ui_hbox(struct BGTK_Widget **items, int n)
 {
+	/* CENTER: vertically align label + field on form rows. */
 	return bgtk_list(ctx, items, n,
 		(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
-			       .margin = 0, .padding = 0});
+			       .margin = 0, .padding = 0,
+			       .flags = BGTK_FLAG_CENTER});
 }
 
 static struct BGTK_Widget *ui_vbox(struct BGTK_Widget **items, int n)
@@ -470,21 +493,45 @@ static struct BGTK_Widget *ui_row2(const char *l0, struct BGTK_Widget *f0,
 			       .margin = FORM_COL_GAP, .padding = 0});
 }
 
-/* Scrollable borderless page; pad matches sidebar panel_inset. */
-static struct BGTK_Widget *make_page(struct BGTK_Widget *body, int pw, int ph)
+/* Content size after reflow (panel filled by shell EXPAND). */
+static void content_size(int *out_w, int *out_h)
+{
+	int w = content_panel ? content_panel->w : 400;
+	int h = content_panel ? content_panel->h : 300;
+
+	if (w < 80)
+		w = 80;
+	if (h < 40)
+		h = 40;
+	if (out_w)
+		*out_w = w;
+	if (out_h)
+		*out_h = h;
+}
+
+/* Scrollable borderless page; sizes from parent frame FILL on draw. */
+static struct BGTK_Widget *make_page(struct BGTK_Widget *body)
 {
 	struct BGTK_Widget *scroll;
 	struct BGTK_Widget *frame;
 	int pin = panel_inset();
+	int pw, ph;
 
+	content_size(&pw, &ph);
+	if (body)
+		body->flags |= BGTK_FLAG_EXPAND_X;
 	scroll = bgtk_scrollable(ctx, &body, 1,
 		(BGTK_Options){.padding = pin, .margin = 0});
-	scroll->w = pw;
-	scroll->h = ph;
-	frame = bgtk_frame(ctx, scroll, pw, ph,
+	/* Seed size for first draw / preview; parent frame refills on layout. */
+	scroll->w = pw > 0 ? pw : 80;
+	scroll->h = ph > 0 ? ph : 40;
+	scroll->flags |= BGTK_FLAG_FILL;
+	frame = bgtk_frame(ctx, scroll, scroll->w, scroll->h,
 		(BGTK_Options){.padding = 0, .margin = 0});
-	if (frame)
+	if (frame) {
 		frame->data.frame.border_w = 0;
+		frame->flags |= BGTK_FLAG_FILL;
+	}
 	return frame ? frame : scroll;
 }
 
@@ -1112,9 +1159,9 @@ static struct BGTK_Widget *make_solid_preview(int pw, int ph, uint32_t color)
 	return img;
 }
 
-static void add_bg_preview(struct BGTK_Widget *page, int panel_w, int panel_h)
+static void add_bg_preview(struct BGTK_Widget *page)
 {
-	int pw, ph;
+	int pw, ph, panel_w, panel_h;
 	struct BGTK_Widget *preview = NULL;
 	struct BGTK_Widget *scroll;
 	struct BGTK_Widget *list;
@@ -1135,6 +1182,8 @@ static void add_bg_preview(struct BGTK_Widget *page, int panel_w, int panel_h)
 	n = list->data.list_widget.widget_count;
 	if (n < 1)
 		return;
+
+	content_size(&panel_w, &panel_h);
 
 	/* Height already used by form rows + Apply — preview fills the rest. */
 	reserved = 0;
@@ -1225,7 +1274,7 @@ static void page_cb(void *userdata)
 	rebuild_content();
 }
 
-static struct BGTK_Widget *build_background_page(int panel_w, int panel_h)
+static struct BGTK_Widget *build_background_page(void)
 {
 	char color_hex[16];
 	struct BGTK_Widget *rows[8];
@@ -1262,12 +1311,12 @@ static struct BGTK_Widget *build_background_page(int panel_w, int panel_h)
 	}
 	rows[n++] = ui_btn("Apply", apply_background, NULL);
 	body = ui_vbox(rows, n);
-	page = make_page(body, panel_w, panel_h);
-	add_bg_preview(page, panel_w, panel_h);
+	page = make_page(body);
+	add_bg_preview(page);
 	return page;
 }
 
-static struct BGTK_Widget *build_cursor_page(int panel_w, int panel_h)
+static struct BGTK_Widget *build_cursor_page(void)
 {
 	char **cursors = NULL;
 	int nc = scan_cursors(&cursors);
@@ -1293,10 +1342,10 @@ static struct BGTK_Widget *build_cursor_page(int panel_w, int panel_h)
 	rows[n++] = ui_btn("Apply", apply_cursor, NULL);
 	body = ui_vbox(rows, n);
 	free(rows);
-	return make_page(body, panel_w, panel_h);
+	return make_page(body);
 }
 
-static struct BGTK_Widget *build_shortcuts_page(int panel_w, int panel_h)
+static struct BGTK_Widget *build_shortcuts_page(void)
 {
 	struct BGTK_Widget **rows;
 	int n = 0, i;
@@ -1314,10 +1363,10 @@ static struct BGTK_Widget *build_shortcuts_page(int panel_w, int panel_h)
 	rows[n++] = ui_btn("Apply", apply_shortcuts, NULL);
 	body = ui_vbox(rows, n);
 	free(rows);
-	return make_page(body, panel_w, panel_h);
+	return make_page(body);
 }
 
-static struct BGTK_Widget *build_font_page(int panel_w, int panel_h)
+static struct BGTK_Widget *build_font_page(void)
 {
 	char size_buf[16];
 	struct BGTK_Widget *rows[64];
@@ -1353,7 +1402,7 @@ static struct BGTK_Widget *build_font_page(int panel_w, int panel_h)
 	}
 	rows[n++] = ui_btn("Apply", apply_font, NULL);
 	body = ui_vbox(rows, n);
-	return make_page(body, panel_w, panel_h);
+	return make_page(body);
 }
 
 static struct BGTK_Widget *theme_color_input(uint32_t c, int w)
@@ -1370,7 +1419,7 @@ static struct BGTK_Widget *theme_int_input(int v, int w)
 	return ui_input(buf, w);
 }
 
-static struct BGTK_Widget *build_theme_page(int panel_w, int panel_h)
+static struct BGTK_Widget *build_theme_page(void)
 {
 	struct BGTK_Widget *rows[16];
 	int n = 0;
@@ -1430,7 +1479,7 @@ static struct BGTK_Widget *build_theme_page(int panel_w, int panel_h)
 
 	rows[n++] = ui_btn("Apply", apply_theme, NULL);
 	body = ui_vbox(rows, n);
-	return make_page(body, panel_w, panel_h);
+	return make_page(body);
 }
 
 
@@ -1455,10 +1504,10 @@ static void clear_page_ptrs(void)
 	theme_frame_margin_input = theme_baseline_input = NULL;
 }
 
-/* Resize shell chrome to current theme/app size without rebuilding pages. */
+/* Size root + shell_row; EXPAND fills content_panel / sidebar height. */
 static void reflow_shell(void)
 {
-	int rpad, fmar, fbw, chrome, rule_w, panel_w, panel_h;
+	int rpad, fmar, fbw, inner_w, inner_h, edge, gap;
 
 	if (!ctx || !root_frame)
 		return;
@@ -1467,38 +1516,44 @@ static void reflow_shell(void)
 	fbw = (int)ctx->theme.frame_border_size;
 	if (fbw < 0)
 		fbw = 0;
-	chrome = 2 * (fmar + fbw + rpad);
-	rule_w = panel_rule ? panel_rule->w : 1;
-	panel_w = app_w - (sidebar ? sidebar->w : SIDEBAR_W) - rule_w - chrome;
-	panel_h = app_h - chrome;
-	if (panel_w < 80)
-		panel_w = 80;
-	if (panel_h < 40)
-		panel_h = 40;
 	root_frame->w = app_w;
 	root_frame->h = app_h;
 	root_frame->padding = rpad;
 	root_frame->margin = fmar;
+
+	/* Content box inside root frame (margin + border + padding). */
+	inner_w = app_w - 2 * (fmar + fbw + rpad);
+	inner_h = app_h - 2 * (fmar + fbw + rpad);
+	if (inner_w < 80)
+		inner_w = 80;
+	if (inner_h < 40)
+		inner_h = 40;
+
+	/* Match button↔rule (and rule↔content) gap to content↔window edge. */
+	edge = edge_inset();
+	gap = (edge + 1) / 2; /* list inter-item gap = 2×margin */
+
 	if (sidebar) {
-		sidebar->h = panel_h;
-		sidebar->padding = panel_inset();
-		if (sidebar->h < 40)
-			sidebar->h = 40;
+		sidebar->w = SIDEBAR_W;
+		sidebar->padding = 0; /* gap to rule is shell_row margin */
+		sidebar->flags |= BGTK_FLAG_EXPAND_Y;
 	}
-	if (panel_rule) {
-		panel_rule->h = panel_h;
-		if (panel_rule->h < 40)
-			panel_rule->h = 40;
-	}
-	if (content_panel) {
-		content_panel->w = panel_w;
-		content_panel->h = panel_h;
+	if (panel_rule)
+		panel_rule->flags |= BGTK_FLAG_EXPAND_Y;
+	if (content_panel)
+		content_panel->flags |= BGTK_FLAG_FILL;
+
+	if (shell_row) {
+		shell_row->w = inner_w;
+		shell_row->h = inner_h;
+		shell_row->margin = gap;
+		/* Same expand pass as draw — content_panel gets free width. */
+		bgtk_list_layout_expand(shell_row);
 	}
 }
 
 static void rebuild_content(void)
 {
-	int panel_w, panel_h;
 	struct BGTK_Widget *page = NULL;
 	struct BGTK_Widget *old;
 
@@ -1517,21 +1572,20 @@ static void rebuild_content(void)
 		font_list_count = scan_fonts(&font_list_cache);
 
 	reflow_shell();
-	panel_w = content_panel ? content_panel->w : 80;
-	panel_h = content_panel ? content_panel->h : 40;
 
 	switch (current_page) {
-	case 0: page = build_background_page(panel_w, panel_h); break;
-	case 1: page = build_cursor_page(panel_w, panel_h); break;
-	case 2: page = build_shortcuts_page(panel_w, panel_h); break;
-	case 3: page = build_font_page(panel_w, panel_h); break;
-	case 4: page = build_theme_page(panel_w, panel_h); break;
+	case 0: page = build_background_page(); break;
+	case 1: page = build_cursor_page(); break;
+	case 2: page = build_shortcuts_page(); break;
+	case 3: page = build_font_page(); break;
+	case 4: page = build_theme_page(); break;
 	}
 	if (!page)
 		page = ui_text("Error loading page");
 
 	old = content_panel->data.frame.child;
 	content_panel->data.frame.child = page;
+	bgtk_widget_set_parent(page, content_panel);
 	bgtk_widget_destroy(old);
 	bgtk_draw_widgets(ctx);
 }
@@ -1540,8 +1594,10 @@ static void sidebar_spacing(int *pad, int *mar, int *scroll_pad, int *btn_w)
 {
 	int p = theme_outer_pad();
 	int m = (ctx && ctx->theme.margin > 0) ? ctx->theme.margin / 2 : 4;
-	int sp = panel_inset();
-	int bw = SIDEBAR_W - 2 * sp;
+	/* No side pad on the scroll — button↔rule gap comes from shell_row
+	 * margin (= edge_inset), matching content↔window chrome. */
+	int sp = 0;
+	int bw = SIDEBAR_W;
 
 	if (bw < 40)
 		bw = 40;
@@ -1558,8 +1614,9 @@ static void sidebar_spacing(int *pad, int *mar, int *scroll_pad, int *btn_w)
 static struct BGTK_Widget *make_nav_button(int i, int btn_w)
 {
 	int selected = (i == current_page);
-	int pad, bw;
-	BGTK_Options to = {.padding = 2};
+	int pad, bw, hpad;
+	BGTK_Options to = {.padding = 2, .text_align = BGTK_ALIGN_LEFT,
+			   .text_v_align = BGTK_VALIGN_CENTER};
 	struct BGTK_Widget *lbl, *btn;
 
 	sidebar_spacing(&pad, NULL, NULL, &bw);
@@ -1568,8 +1625,13 @@ static struct BGTK_Widget *make_nav_button(int i, int btn_w)
 	if (selected)
 		to.text_style = BGTK_TEXT_BOLD;
 	lbl = bgtk_text(ctx, (char *)page_names[i], to);
+	hpad = pad / 2 + 2;
+	if (hpad < 6)
+		hpad = 6;
 	btn = bgtk_button(ctx, lbl, page_cb, (void *)(intptr_t)i,
-			  (BGTK_Options){.padding = pad / 2 + 2, .margin = 0});
+			  (BGTK_Options){.padding = hpad, .margin = 0,
+					 .text_align = BGTK_ALIGN_LEFT,
+					 .text_v_align = BGTK_VALIGN_CENTER});
 	btn->w = bw;
 	if (selected) {
 		uint32_t hi = ctx->theme.highlight ? ctx->theme.highlight
@@ -1599,8 +1661,9 @@ static void rebuild_sidebar(void)
 	free(btns);
 	sidebar->data.scrollable.items[0] = sidebar_list;
 	sidebar->data.scrollable.widget_count = 1;
-	sidebar->padding = panel_inset();
+	sidebar->padding = 0;
 	sidebar->margin = 0;
+	bgtk_widget_set_parent(sidebar_list, sidebar);
 	if (old && old != sidebar_list)
 		bgtk_widget_destroy(old);
 }
@@ -1608,16 +1671,10 @@ static void rebuild_sidebar(void)
 static struct BGTK_Widget *build_sidebar(void)
 {
 	int pad, mar, scroll_pad, btn_w, i;
-	int bw = ctx ? (int)ctx->theme.frame_border_size : 1;
-	int fmar = ctx && ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin
-						       : 0;
-	int rpad = root_pad();
 	struct BGTK_Widget **btns;
 	struct BGTK_Widget *scroll;
 
 	sidebar_spacing(&pad, &mar, &scroll_pad, &btn_w);
-	if (bw < 0)
-		bw = 0;
 	btns = malloc(NUM_PAGES * sizeof(*btns));
 	if (!btns)
 		return NULL;
@@ -1630,7 +1687,8 @@ static struct BGTK_Widget *build_sidebar(void)
 	scroll = bgtk_scrollable(ctx, &sidebar_list, 1,
 		(BGTK_Options){.padding = scroll_pad, .margin = 0});
 	scroll->w = SIDEBAR_W;
-	scroll->h = app_h - 2 * (fmar + bw + rpad);
+	scroll->h = 40; /* reflow_shell / EXPAND_Y set real height */
+	scroll->flags |= BGTK_FLAG_EXPAND_Y;
 	return scroll;
 }
 
@@ -1648,40 +1706,35 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
 		int rpad = root_pad();
 		int fmar = cfg.theme.frame_margin >= 0 ? cfg.theme.frame_margin
 							: 0;
-		int bw = (int)cfg.theme.frame_border_size;
-		int chrome, panel_w, panel_h;
 		struct BGTK_Widget *placeholder;
 		struct BGTK_Widget *cols[3];
-		struct BGTK_Widget *row;
 
-		if (bw < 0)
-			bw = 0;
-		chrome = 2 * (fmar + bw + rpad);
 		sidebar = build_sidebar();
 		panel_rule = bgtk_rule(ctx, BGTK_LIST_VERTICAL, 1,
 				       (BGTK_Options){.margin = 0, .padding = 0});
 		panel_rule->w = 1;
 		panel_rule->data.rule.thickness = 1;
 		panel_rule->data.rule.color = 0;
-		panel_rule->h = app_h - chrome;
-		panel_w = app_w - sidebar->w - panel_rule->w - chrome;
-		panel_h = app_h - chrome;
-		if (panel_w < 80)
-			panel_w = 80;
+		panel_rule->flags |= BGTK_FLAG_EXPAND_Y;
 		placeholder = bgtk_text(ctx, "Select a category",
 			(BGTK_Options){.padding = theme_outer_pad(), .margin = 0});
-		content_panel = bgtk_frame(ctx, placeholder, panel_w, panel_h,
+		/* Size seeded in reflow_shell; FILL takes free width/height. */
+		content_panel = bgtk_frame(ctx, placeholder, 80, 40,
 			(BGTK_Options){.padding = 0, .margin = 0});
 		content_panel->data.frame.border_w = 0;
+		content_panel->flags |= BGTK_FLAG_FILL;
 		cols[0] = sidebar;
 		cols[1] = panel_rule;
 		cols[2] = content_panel;
-		row = bgtk_list(ctx, cols, 3,
+		/* margin set in reflow_shell to match edge_inset (button↔rule). */
+		shell_row = bgtk_list(ctx, cols, 3,
 			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
-				       .margin = 0, .padding = 0});
-		root_frame = bgtk_frame(ctx, row, app_w, app_h,
+				       .margin = (edge_inset() + 1) / 2,
+				       .padding = 0});
+		root_frame = bgtk_frame(ctx, shell_row, app_w, app_h,
 			(BGTK_Options){.padding = rpad, .margin = fmar});
 		ctx->root_widget = root_frame;
+		reflow_shell();
 	}
 	current_page = 0;
 	rebuild_content();

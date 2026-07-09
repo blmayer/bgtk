@@ -7,13 +7,47 @@
 #include "bgtk.h"
 #include "internal.h"
 
+void bgtk_widget_screen_pos(const struct BGTK_Widget *w, int *x, int *y)
+{
+	int sx = 0, sy = 0;
+
+	if (w) {
+		if (w->flags & BGTK_FLAG_RELATIVE) {
+			sx = w->abs_x;
+			sy = w->abs_y;
+		} else {
+			sx = w->x;
+			sy = w->y;
+		}
+	}
+	if (x)
+		*x = sx;
+	if (y)
+		*y = sy;
+}
+
+int bgtk_widget_hit(const struct BGTK_Widget *w, int x, int y)
+{
+	int sx, sy;
+
+	if (!w)
+		return 0;
+	bgtk_widget_screen_pos(w, &sx, &sy);
+	return x >= sx && x < sx + w->w && y >= sy && y < sy + w->h;
+}
+
+void bgtk_widget_set_parent(struct BGTK_Widget *child,
+			    struct BGTK_Widget *parent)
+{
+	if (child)
+		child->parent = parent;
+}
+
 // Default event handler for widgets
 static int
 default_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 {
-	// Check if the event coordinates are within the widget's bounds
-	if (ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
-	    ev.y >= widget->y && ev.y < (widget->y + widget->h)) {
+	if (bgtk_widget_hit(widget, ev.x, ev.y)) {
 		if (ev.code == BTN_LEFT && ev.value == 1) {
 			bgtk_set_focus(widget->ctx, widget);
 			return 1;
@@ -25,8 +59,7 @@ default_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 // Button event handler
 static int button_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 {
-	int inside = (ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
-		      ev.y >= widget->y && ev.y < (widget->y + widget->h));
+	int inside = bgtk_widget_hit(widget, ev.x, ev.y);
 
 	// Mouse down: set pressed state if inside.
 	if (ev.code == BTN_LEFT && ev.value == 1) {
@@ -122,8 +155,7 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 	// For non-pointer events (keyboard), coordinates may be 0/undefined,
 	// so we only hit-test when a position is actually provided.
 	if (ev.code == BTN_LEFT && ev.value == 1) {
-		if (ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
-		    ev.y >= widget->y && ev.y < (widget->y + widget->h)) {
+		if (bgtk_widget_hit(widget, ev.x, ev.y)) {
 			bgtk_set_focus(widget->ctx, widget);
 			return 1;	// Event handled
 		}
@@ -300,9 +332,10 @@ static int scrollable_nudge(struct BGTK_Widget *widget, int delta)
 static int scrollable_handle_event(struct BGTK_Widget *widget,
 				   struct InputEvent ev)
 {
-	int in_bounds =
-	    (ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
-	     ev.y >= widget->y && ev.y < (widget->y + widget->h));
+	int sx, sy;
+	int in_bounds = bgtk_widget_hit(widget, ev.x, ev.y);
+
+	bgtk_widget_screen_pos(widget, &sx, &sy);
 
 	/* Keyboard scroll when this widget (or nothing texty) has focus. */
 	if (ev.type == EV_KEY && (ev.value == 1 || ev.value == 2) &&
@@ -360,13 +393,14 @@ static int scrollable_handle_event(struct BGTK_Widget *widget,
 	/* Pass pointer events to children in content coordinates. */
 	{
 		struct InputEvent cev = ev;
-		cev.x = ev.x - widget->x;
-		cev.y = ev.y - widget->y + widget->data.scrollable.scroll_y;
+		cev.x = ev.x - sx;
+		cev.y = ev.y - sy + widget->data.scrollable.scroll_y;
 
 		for (int i = 0; i < widget->data.scrollable.widget_count; i++) {
 			struct BGTK_Widget *child =
 				widget->data.scrollable.items[i];
 
+			/* Scroll content children are always content-relative. */
 			if (!(cev.x >= child->x && cev.x < child->x + child->w &&
 			      cev.y >= child->y && cev.y < child->y + child->h))
 				continue;
@@ -401,19 +435,11 @@ static int frame_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 	if (ev.type == EV_REL && ev.code == REL_WHEEL && child &&
 	    child->handle_event)
 		return child->handle_event(child, ev);
-	// First check if the event is within the frame's bounds
-	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
-	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
-		return 0;	// Event not in this widget
-	}
+	if (!bgtk_widget_hit(widget, ev.x, ev.y))
+		return 0;
 	// Pass event to child widget if it exists and the point is in the child
 	if (child) {
-		int cx0 = child->x;
-		int cy0 = child->y;
-		int cx1 = cx0 + child->w;
-		int cy1 = cy0 + child->h;
-
-		if (ev.x >= cx0 && ev.x < cx1 && ev.y >= cy0 && ev.y < cy1) {
+		if (bgtk_widget_hit(child, ev.x, ev.y)) {
 			if (child->handle_event(child, ev))
 				return 1;
 		}
@@ -576,14 +602,17 @@ static int switch_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 {
 	int inside, mid, new_v;
 
-	inside = (ev.x >= widget->x && ev.x < widget->x + widget->w &&
-		  ev.y >= widget->y && ev.y < widget->y + widget->h);
+	inside = bgtk_widget_hit(widget, ev.x, ev.y);
 	if (ev.code != BTN_LEFT || ev.value != 1 || !inside)
 		return 0;
 
 	/* Center of content box (labels + track). */
-	mid = widget->x + widget->margin + widget->padding +
-	      (widget->w - 2 * (widget->margin + widget->padding)) / 2;
+	{
+		int sx, sy;
+		bgtk_widget_screen_pos(widget, &sx, &sy);
+		mid = sx + widget->margin + widget->padding +
+		      (widget->w - 2 * (widget->margin + widget->padding)) / 2;
+	}
 	new_v = (ev.x >= mid) ? 1 : 0;
 	if (new_v != widget->data.switch_w.value) {
 		widget->data.switch_w.value = new_v;
@@ -635,8 +664,8 @@ struct BGTK_Widget *bgtk_switch(struct BGTK_Context *ctx, const char *left,
 		kn = 12;
 	gap = 8;
 	track_h = kn + 6;
-	/* Track wide enough for knob travel (≈ 2.5× knob). */
-	w->w = lw + rw + kn * 5 / 2 + gap * 2 + 2 * (w->padding + w->margin);
+	/* Track ≈ 4.5× knob so the pill reads clearly between labels. */
+	w->w = lw + rw + kn * 9 / 2 + gap * 2 + 2 * (w->padding + w->margin);
 	w->h = (track_h > lh ? track_h : lh) + 2 * (w->padding + w->margin);
 	return w;
 }
@@ -667,6 +696,7 @@ struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,
 	// size)
 	widget->w = label->w + 2 * (widget->padding + widget->margin);
 	widget->h = label->h + 2 * (widget->padding + widget->margin);
+	bgtk_widget_set_parent(label, widget);
 	return widget;
 }
 
@@ -695,6 +725,7 @@ struct BGTK_Widget *bgtk_scrollable(struct BGTK_Context *ctx,
 	widget->data.scrollable.content_height = 0;
 	for (int i = 0; i < widget_count; i++) {
 		widget->data.scrollable.items[i] = items[i];
+		bgtk_widget_set_parent(items[i], widget);
 		widget->data.scrollable.content_height += items[i]->h + 5 + 2 * widget->margin;	// 5px spacing + margin
 	}
 
@@ -727,28 +758,21 @@ list_widget_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 		for (int i = 0; i < widget->data.list_widget.widget_count; i++) {
 			struct BGTK_Widget *child =
 				widget->data.list_widget.items[i];
-			if (ev.x >= child->x && ev.x < child->x + child->w &&
-			    ev.y >= child->y && ev.y < child->y + child->h &&
+			if (bgtk_widget_hit(child, ev.x, ev.y) &&
 			    child->handle_event &&
 			    child->handle_event(child, ev))
 				return 1;
 		}
 		return 0;
 	}
-	// First check if the event is within the list's bounds
-	if (!(ev.x >= widget->x && ev.x < (widget->x + widget->w) &&
-	      ev.y >= widget->y && ev.y < (widget->y + widget->h))) {
-		return 0;	// Event not in this widget
-	}
-	// Pass event to child widget if it exists
-	// Events use absolute coordinates.
+	if (!bgtk_widget_hit(widget, ev.x, ev.y))
+		return 0;
+	/* Screen coordinates (or content-relative inside scrollables). */
 	for (int i = 0; i < widget->data.list_widget.widget_count; i++) {
 		struct BGTK_Widget *child = widget->data.list_widget.items[i];
 
-		if (!(ev.x >= child->x && ev.x < child->x + child->w &&
-		      ev.y >= child->y && ev.y < child->y + child->h)) {
+		if (!bgtk_widget_hit(child, ev.x, ev.y))
 			continue;
-		}
 
 		if (child->handle_event(child, ev)) {
 			return 1;	// Event was handled by a child
@@ -795,6 +819,7 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
 	int pad2 = 2 * widget->padding;
 	for (int i = 0; i < widget_count; i++) {
 		widget->data.list_widget.items[i] = items[i];
+		bgtk_widget_set_parent(items[i], widget);
 		if (options.orientation == BGTK_LIST_VERTICAL) {
 			widget->h += items[i]->h + 2 * widget->margin;
 			if (items[i]->w > max_width) {
@@ -881,6 +906,7 @@ struct BGTK_Widget *bgtk_frame(struct BGTK_Context *ctx,
 
 	frame->data.frame.child = child;
 	frame->data.frame.border_w = ctx->theme.frame_border_size;
+	bgtk_widget_set_parent(child, frame);
 
 	// Set the event handler for the frame
 	frame->handle_event = frame_handle_event;

@@ -376,14 +376,17 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 	case BGTK_WIDGET_LIST: {
 		int max_width = 0;
 		int max_height = 0;
-		int inset = 2 * (w->margin + w->padding);
 		int n = w->data.list_widget.widget_count;
+		int keep_w = w->w;
+		int keep_h = w->h;
 
 		w->data.list_widget.content_width = 0;
 		w->data.list_widget.content_height = 0;
 		for (int i = 0; i < n; i++) {
 			struct BGTK_Widget *child =
 			    w->data.list_widget.items[i];
+			if (!child)
+				continue;
 			calculate_widget_size(ctx, child);
 			if (w->data.list_widget.orientation ==
 			    BGTK_LIST_VERTICAL) {
@@ -407,7 +410,8 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 				w->data.list_widget.content_width -=
 				    2 * w->margin;
 		}
-		/* Outer size: content + padding; margin is inter-item gap only. */
+		/* Outer size: content + padding; margin is inter-item gap only.
+		 * Keep a larger pre-set size so EXPAND children have free space. */
 		if (w->data.list_widget.orientation == BGTK_LIST_VERTICAL) {
 			w->data.list_widget.content_width = max_width;
 			w->w = max_width + 2 * w->padding;
@@ -419,7 +423,10 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 			w->w = w->data.list_widget.content_width +
 			       2 * w->padding;
 		}
-		(void)inset;
+		if (keep_w > w->w)
+			w->w = keep_w;
+		if (keep_h > w->h)
+			w->h = keep_h;
 		break;
 	}
 	case BGTK_WIDGET_IMAGE:
@@ -845,9 +852,13 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	for (i = 0; i < w->data.scrollable.widget_count; i++) {
 		struct BGTK_Widget *child = w->data.scrollable.items[i];
 		int bottom;
+		int inner_w = w->w - 2 * (w->margin + w->padding);
 
 		if (!child)
 			continue;
+		/* EXPAND_X: fill content width (scroll body). */
+		if ((child->flags & BGTK_FLAG_EXPAND_X) && inner_w > 0)
+			child->w = inner_w;
 		child->x = w->margin + w->padding;
 		if (w->flags & BGTK_FLAG_CENTER) {
 			child->x =
@@ -855,6 +866,10 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		}
 		/* Padding insets content on all sides (was X-only — Y ignored). */
 		child->y = current_y + w->margin + w->padding;
+		/* Content-space coords (events transform into this space). */
+		child->abs_x = child->x;
+		child->abs_y = child->y;
+		child->parent = w;
 		bottom = child->y + child->h;
 		/* Skip draw if entirely past buffer (defensive). */
 		if (child->y < content_height && bottom > 0)
@@ -898,35 +913,143 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	}
 }
 
+/* Grow EXPAND_* children into free space inside a list's content box. */
+void bgtk_list_layout_expand(struct BGTK_Widget *w)
+{
+	int n, pad, gap, inner_w, inner_h, i, n_exp, fixed, free_sp, share, rem;
+	int vert;
+
+	if (!w || w->type != BGTK_WIDGET_LIST)
+		return;
+	n = w->data.list_widget.widget_count;
+	pad = w->padding;
+	gap = 2 * w->margin;
+	inner_w = w->w - 2 * pad;
+	inner_h = w->h - 2 * pad;
+	n_exp = 0;
+	fixed = 0;
+	vert = (w->data.list_widget.orientation == BGTK_LIST_VERTICAL);
+
+	if (inner_w < 0)
+		inner_w = 0;
+	if (inner_h < 0)
+		inner_h = 0;
+
+	if (vert) {
+		for (i = 0; i < n; i++) {
+			struct BGTK_Widget *c = w->data.list_widget.items[i];
+
+			if (!c)
+				continue;
+			if (c->flags & BGTK_FLAG_EXPAND_X)
+				c->w = inner_w;
+			if (c->flags & BGTK_FLAG_EXPAND_Y)
+				n_exp++;
+			else
+				fixed += c->h;
+		}
+		if (n > 1)
+			fixed += (n - 1) * gap;
+		free_sp = inner_h - fixed;
+		if (n_exp > 0 && free_sp > 0) {
+			share = free_sp / n_exp;
+			rem = free_sp % n_exp;
+			for (i = 0; i < n; i++) {
+				struct BGTK_Widget *c =
+					w->data.list_widget.items[i];
+				if (c && (c->flags & BGTK_FLAG_EXPAND_Y)) {
+					c->h = share + (rem > 0 ? 1 : 0);
+					if (rem > 0)
+						rem--;
+				}
+			}
+		}
+	} else {
+		for (i = 0; i < n; i++) {
+			struct BGTK_Widget *c = w->data.list_widget.items[i];
+
+			if (!c)
+				continue;
+			if (c->flags & BGTK_FLAG_EXPAND_Y)
+				c->h = inner_h;
+			if (c->flags & BGTK_FLAG_EXPAND_X)
+				n_exp++;
+			else
+				fixed += c->w;
+		}
+		if (n > 1)
+			fixed += (n - 1) * gap;
+		free_sp = inner_w - fixed;
+		if (n_exp > 0 && free_sp > 0) {
+			share = free_sp / n_exp;
+			rem = free_sp % n_exp;
+			for (i = 0; i < n; i++) {
+				struct BGTK_Widget *c =
+					w->data.list_widget.items[i];
+				if (c && (c->flags & BGTK_FLAG_EXPAND_X)) {
+					c->w = share + (rem > 0 ? 1 : 0);
+					if (rem > 0)
+						rem--;
+				}
+			}
+		}
+	}
+}
+
+/* Place a child: relative or absolute. ox/oy are parent content origin (draw space). */
+static void place_child(struct BGTK_Widget *parent, struct BGTK_Widget *child,
+			int ox, int oy, int rel_x, int rel_y)
+{
+	int use_rel = (parent->flags & BGTK_FLAG_RELATIVE) ||
+		      (child->flags & BGTK_FLAG_RELATIVE);
+
+	child->parent = parent;
+	if (use_rel) {
+		child->flags |= BGTK_FLAG_RELATIVE;
+		child->x = rel_x;
+		child->y = rel_y;
+		child->abs_x = ox + rel_x;
+		child->abs_y = oy + rel_y;
+	} else {
+		child->x = ox + rel_x;
+		child->y = oy + rel_y;
+		child->abs_x = child->x;
+		child->abs_y = child->y;
+	}
+}
+
 static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		      uint32_t *pixels)
 {
-	// Draw list widget children directly
-	// (no scrolling)
 	int current_x = 0;
 	int current_y = 0;
+	int ox = w->x;
+	int oy = w->y;
+	int i, n = w->data.list_widget.widget_count;
 
-	for (int i = 0; i < w->data.list_widget.widget_count; i++) {
+	bgtk_list_layout_expand(w);
+
+	for (i = 0; i < n; i++) {
 		struct BGTK_Widget *child = w->data.list_widget.items[i];
+		int rel_x, rel_y;
+
+		if (!child)
+			continue;
 
 		if (w->data.list_widget.orientation == BGTK_LIST_VERTICAL) {
-			/* Margin is row gap only — not a left inset (kept L/R even). */
-			child->x = w->x + w->padding;
-			if (w->flags & BGTK_FLAG_CENTER) {
-				child->x =
-				    w->x +
-				    (w->w - child->w) / 2;
-			}
-			child->y = w->y + w->padding + current_y;
+			/* Margin is row gap only — not a left inset. */
+			rel_x = w->padding;
+			if (w->flags & BGTK_FLAG_CENTER)
+				rel_x = (w->w - child->w) / 2;
+			rel_y = w->padding + current_y;
+			place_child(w, child, ox, oy, rel_x, rel_y);
 			current_y += child->h + 2 * w->margin;
-		} else {	// BGTK_LIST_HORIZONTAL
-			child->x = w->x + w->padding + current_x;
-			child->y = w->y + w->padding;
-			if (w->flags & BGTK_FLAG_CENTER) {
-				child->y =
-				    w->y +
-				    (w->h - child->h) / 2;
-			}
+		} else {
+			rel_x = w->padding + current_x;
+			rel_y = w->padding;
+			if (w->flags & BGTK_FLAG_CENTER)
+				rel_y = (w->h - child->h) / 2;
+			place_child(w, child, ox, oy, rel_x, rel_y);
 			current_x += child->w + 2 * w->margin;
 		}
 
@@ -987,13 +1110,20 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 
 	// Draw child widget inside the frame
 	if (w->data.frame.child) {
-		w->data.frame.child->x = w->x + w->margin + bw + w->padding;
-		w->data.frame.child->y = w->y + w->margin + bw + w->padding;
-		w->data.frame.child->w =
-		    w->w - 2 * (w->margin + bw + w->padding);
-		w->data.frame.child->h =
-		    w->h - 2 * (w->margin + bw + w->padding);
-		draw_widget(ctx, w->data.frame.child, pixels);
+		struct BGTK_Widget *ch = w->data.frame.child;
+		int rel_x = w->margin + bw + w->padding;
+		int rel_y = w->margin + bw + w->padding;
+		int cw = w->w - 2 * (w->margin + bw + w->padding);
+		int chh = w->h - 2 * (w->margin + bw + w->padding);
+
+		/* Default: fill frame content box. EXPAND flags same; without
+		 * FILL a fixed child still gets the box (historical behavior). */
+		if (cw > 0)
+			ch->w = cw;
+		if (chh > 0)
+			ch->h = chh;
+		place_child(w, ch, w->x, w->y, rel_x, rel_y);
+		draw_widget(ctx, ch, pixels);
 	}
 }
 
@@ -1269,14 +1399,15 @@ static void draw_switch(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	track_h = kn + 4;
 	if (track_h > ih)
 		track_h = ih;
-	track_w = kn * 5 / 2;
-	if (track_w < kn + 16)
-		track_w = kn + 16;
+	/* Wider pill (≈ 4.5× knob); matches bgtk_switch sizing. */
+	track_w = kn * 9 / 2;
+	if (track_w < kn + 40)
+		track_w = kn + 40;
 	/* Keep room for both labels. */
 	if (lw + gap + track_w + gap + rw > iw)
 		track_w = iw - lw - rw - gap * 2;
-	if (track_w < kn + 8)
-		track_w = kn + 8;
+	if (track_w < kn + 16)
+		track_w = kn + 16;
 
 	track_x = x0 + lw + gap;
 	track_y = y0 + (ih - track_h) / 2;
@@ -1317,6 +1448,24 @@ static void draw_switch(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		 uint32_t *pixels)
 {
+	int saved_x = 0, saved_y = 0;
+	int rel = w && (w->flags & BGTK_FLAG_RELATIVE);
+
+	if (!w)
+		return;
+	/* Ensure abs is set for non-relative / root widgets. */
+	if (!rel) {
+		w->abs_x = w->x;
+		w->abs_y = w->y;
+	}
+	/* Draw uses screen (or content-buffer) absolute coords. */
+	if (rel) {
+		saved_x = w->x;
+		saved_y = w->y;
+		w->x = w->abs_x;
+		w->y = w->abs_y;
+	}
+
 	switch (w->type) {
 	case BGTK_WIDGET_LABEL:
 		draw_label(ctx, w, pixels);
@@ -1351,5 +1500,10 @@ void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	default:
 		puts("can't draw unknown widget");
 		break;
+	}
+
+	if (rel) {
+		w->x = saved_x;
+		w->y = saved_y;
 	}
 }
