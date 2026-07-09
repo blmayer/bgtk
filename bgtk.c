@@ -764,6 +764,7 @@ int bgtk_resize_mock(struct BGTK_Context *ctx, int width, int height)
 }
 
 static void destroy_widget(struct BGTK_Widget *w);
+static int widget_contains(struct BGTK_Widget *root, struct BGTK_Widget *target);
 
 void bgtk_destroy(struct BGTK_Context *ctx)
 {
@@ -803,6 +804,37 @@ void bgtk_destroy_mock(struct BGTK_Context *ctx)
 {
 	/* buffer released inside bgtk_destroy via bgtk_release_buffer. */
 	bgtk_destroy(ctx);
+}
+
+static int widget_contains(struct BGTK_Widget *root, struct BGTK_Widget *target)
+{
+	int i;
+
+	if (!root || !target)
+		return 0;
+	if (root == target)
+		return 1;
+	switch (root->type) {
+	case BGTK_WIDGET_SCROLLABLE:
+		for (i = 0; i < root->data.scrollable.widget_count; i++)
+			if (widget_contains(root->data.scrollable.items[i], target))
+				return 1;
+		break;
+	case BGTK_WIDGET_LIST:
+		for (i = 0; i < root->data.list_widget.widget_count; i++)
+			if (widget_contains(root->data.list_widget.items[i], target))
+				return 1;
+		break;
+	case BGTK_WIDGET_FRAME:
+		return widget_contains(root->data.frame.child, target);
+	case BGTK_WIDGET_BUTTON:
+		return widget_contains(root->data.button.label, target);
+	case BGTK_WIDGET_LABEL:
+		return widget_contains(root->data.label.text, target);
+	default:
+		break;
+	}
+	return 0;
 }
 
 static void destroy_widget(struct BGTK_Widget *w)
@@ -862,6 +894,16 @@ static void destroy_widget(struct BGTK_Widget *w)
 	}
 
 	free(w);
+}
+
+void bgtk_widget_destroy(struct BGTK_Widget *w)
+{
+	if (!w)
+		return;
+	if (w->ctx && w->ctx->focused_widget &&
+	    widget_contains(w, w->ctx->focused_widget))
+		w->ctx->focused_widget = NULL;
+	destroy_widget(w);
 }
 
 void bgtk_set_window_focus(struct BGTK_Context *ctx, int focused)

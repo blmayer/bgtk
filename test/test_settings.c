@@ -14,7 +14,6 @@
 #include <linux/input.h>
 
 #include "bgtk.h"
-#include "html.h"
 #include "config.h"
 #include "internal.h"
 
@@ -54,8 +53,9 @@ static int write_pattern_ppm(const char *path)
 
 int main(void)
 {
-	int width = 700;
-	int height = 480;
+	/* Match settings app request — dual-col theme needs ~900 wide. */
+	int width = 900;
+	int height = 560;
 
 	struct BGTK_Context *ctx = bgtk_init_mock(width, height);
 	if (!ctx) {
@@ -101,8 +101,8 @@ int main(void)
 		click.code = BTN_LEFT;
 		click.value = 1;
 		/* Apply sits under the aspect-correct preview (fills leftover). */
-		click.x = 200;
-		click.y = 418;
+		click.x = 180;
+		click.y = 512;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		if (!bgtk_inject_event(ctx, click)) {
@@ -211,14 +211,9 @@ int main(void)
 		settings_layout();
 	}
 
-	/* Sidebar buttons are inside a scrollable; their content-space positions
-	 * are offset by the scrollable's screen position (~8px) plus internal
-	 * padding/margin.  Each button is ~38px tall with ~4px gap.
-	 * Content-space centers: btn0=23, btn1=65, btn2=107, btn3=149, btn4=191.
-	 * Add scrollable screen-y offset (~8) for absolute coords. */
+	/* Sidebar nav: first button center ~40, step ~45 (pad/2+2 chrome). */
 	#define SIDEBAR_X 70
-	/* Larger Goldie pad/mar: first row center ~40, step ~48. */
-	#define SIDEBAR_BTN_Y(n) (40 + (n) * 48)
+	#define SIDEBAR_BTN_Y(n) (40 + (n) * 45)
 
 	/* 01: Click "Cursor" */
 	{
@@ -320,8 +315,8 @@ int main(void)
 		click.code = BTN_LEFT;
 		click.value = 1;
 		/* First theme color field (Background) under Goldie chrome. */
-		click.x = 360;
-		click.y = 55;
+		click.x = 320;
+		click.y = 40;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		bgtk_inject_event(ctx, click);
@@ -376,13 +371,13 @@ int main(void)
 	take_screenshot(ctx, "settings_05_back_to_bg.png");
 
 	/* 06: Window resize — chrome + page must reflow (was a no-op before). */
-	if (bgtk_resize_mock(ctx, 900, 640) != 0) {
+	if (bgtk_resize_mock(ctx, 1100, 700) != 0) {
 		fprintf(stderr, "test_settings: bgtk_resize_mock failed\n");
 		bgtk_destroy_mock(ctx);
 		return 1;
 	}
 	settings_layout();
-	if (ctx->root_widget->w != 900 || ctx->root_widget->h != 640) {
+	if (ctx->root_widget->w != 1100 || ctx->root_widget->h != 700) {
 		fprintf(stderr, "test_settings: root not resized (%dx%d)\n",
 			ctx->root_widget->w, ctx->root_widget->h);
 		bgtk_destroy_mock(ctx);

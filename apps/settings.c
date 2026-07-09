@@ -1,16 +1,8 @@
 /* apps/settings.c
  *
- * BGCE + BGTK System Settings application.
- * GTK theme-chooser style: sidebar list on the left, content panel on the right.
- *
- * Sections:
- *   - Background: type/mode toggles, color input, image path, preview
- *   - Cursor:     scan system cursor dirs, custom path, select cursor theme
- *   - Shortcuts:  editable BGCE key bindings
- *   - Font:       dropdown selector, size, preview
- *   - Theme:      all BGTK_Theme color/size options
- *
- * Uses bgtk_html_parse_inline() to build each page, then wires callbacks.
+ * BGCE + BGTK System Settings (widget UI, no HTML).
+ * Sidebar categories + content panel for background, cursor, shortcuts,
+ * font, and theme.
  */
 
 #include <dirent.h>
@@ -24,7 +16,6 @@
 #include <linux/input.h>
 
 #include "bgtk.h"
-#include "html.h"
 #include "config.h"
 #include "internal.h"
 
@@ -35,15 +26,17 @@
 static struct BGTK_Context *ctx;
 static struct config cfg;
 
-static int app_w = 700;
-static int app_h = 480;
-/* Desktop aspect for wallpaper preview (from BGCE server or 16:9). */
+#define SETTINGS_W 900
+#define SETTINGS_H 560
+
+static int app_w = SETTINGS_W;
+static int app_h = SETTINGS_H;
 static int screen_aspect_w = 16;
 static int screen_aspect_h = 9;
 
-static struct BGTK_Widget *sidebar_list; /* the list widget inside the scrollable */
+static struct BGTK_Widget *sidebar_list;
 static struct BGTK_Widget *sidebar;
-static struct BGTK_Widget *panel_rule; /* vertical divider between sidebar + content */
+static struct BGTK_Widget *panel_rule;
 static struct BGTK_Widget *content_panel;
 static struct BGTK_Widget *root_frame;
 
@@ -55,12 +48,9 @@ static const char *page_names[NUM_PAGES] = {
 	"Background", "Cursor", "Shortcuts", "Font", "Theme"
 };
 
-/* Cached widget pointers for active page */
 static struct BGTK_Widget *bg_color_input;
 static struct BGTK_Widget *bg_path_input;
-
 static struct BGTK_Widget *cursor_path_input;
-/* [cursors] theme = from ~/.config/bgce.conf (name or path). */
 static char cursor_theme[MAX_PATH_LEN];
 
 #define MAX_SHORTCUT_ROWS 24
@@ -80,24 +70,26 @@ static struct BGTK_Widget *theme_focus_input;
 static struct BGTK_Widget *theme_focus_bg_input;
 static struct BGTK_Widget *theme_input_bg_input;
 static struct BGTK_Widget *theme_highlight_input;
+static struct BGTK_Widget *theme_rule_color_input;
 static struct BGTK_Widget *theme_margin_input;
 static struct BGTK_Widget *theme_padding_input;
 static struct BGTK_Widget *theme_frame_margin_input;
 static struct BGTK_Widget *theme_baseline_input;
 
-/* Font dropdown: open for one role (sans/mono/serif) at a time. */
 static int font_dropdown_open;
-static int font_pick_role; /* BGTK_FONT_SANS / MONO / SERIF */
+static int font_pick_role;
 static char **font_list_cache;
 static int font_list_count;
 
-/* Shortcuts shown in UI (loaded from ~/.config/bgce.conf when present). */
 static char shortcut_labels[MAX_SHORTCUT_ROWS][96];
 static char shortcut_actions[MAX_SHORTCUT_ROWS][96];
 static char shortcut_keys[MAX_SHORTCUT_ROWS][64];
 static int shortcuts_loaded;
 
-/* Human label for the Action column (config still stores type:value). */
+static void rebuild_content(void);
+static void rebuild_sidebar(void);
+static void reflow_shell(void);
+
 static void shortcut_label_from_action(const char *action, char *out, size_t n)
 {
 	if (!action || !out || n == 0)
@@ -338,113 +330,127 @@ static int scan_cursors(char ***out)
 }
 
 /* ------------------------------------------------------------------ */
-/* Widget tree finder helpers                                          */
+/* Form helpers (pure widgets)                                         */
 /* ------------------------------------------------------------------ */
 
-static struct BGTK_Widget *find_nth_input(struct BGTK_Widget *w, int *counter, int target)
+static int theme_outer_pad(void)
 {
-	if (!w)
-		return NULL;
-	if (w->type == BGTK_WIDGET_TEXT_INPUT) {
-		if (*counter == target)
-			return w;
-		(*counter)++;
-	}
-	switch (w->type) {
-	case BGTK_WIDGET_FRAME:
-		return find_nth_input(w->data.frame.child, counter, target);
-	case BGTK_WIDGET_LIST:
-		for (int i = 0; i < w->data.list_widget.widget_count; i++) {
-			struct BGTK_Widget *r = find_nth_input(w->data.list_widget.items[i], counter, target);
-			if (r) return r;
-		}
-		break;
-	case BGTK_WIDGET_SCROLLABLE:
-		for (int i = 0; i < w->data.scrollable.widget_count; i++) {
-			struct BGTK_Widget *r = find_nth_input(w->data.scrollable.items[i], counter, target);
-			if (r) return r;
-		}
-		break;
-	default:
-		break;
-	}
-	return NULL;
+	return (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 12;
 }
 
-static struct BGTK_Widget *get_input(struct BGTK_Widget *root, int idx)
+/* Control pad: theme.pad/2+2 (matches former HTML cell pad). */
+static int control_pad(void)
 {
-	int c = 0;
-	return find_nth_input(root, &c, idx);
+	int p = theme_outer_pad();
+	int cp = p / 2 + 2;
+
+	if (cp < 2)
+		cp = 2;
+	if (cp > 10)
+		cp = 10;
+	return cp;
 }
 
-static struct BGTK_Widget *find_nth_button(struct BGTK_Widget *w, int *counter, int target)
+static int panel_inset(void)
 {
-	if (!w)
-		return NULL;
-	if (w->type == BGTK_WIDGET_BUTTON) {
-		if (*counter == target)
-			return w;
-		(*counter)++;
-		return NULL;
-	}
-	switch (w->type) {
-	case BGTK_WIDGET_FRAME:
-		return find_nth_button(w->data.frame.child, counter, target);
-	case BGTK_WIDGET_LIST:
-		for (int i = 0; i < w->data.list_widget.widget_count; i++) {
-			struct BGTK_Widget *r = find_nth_button(w->data.list_widget.items[i], counter, target);
-			if (r) return r;
-		}
-		break;
-	case BGTK_WIDGET_SCROLLABLE:
-		for (int i = 0; i < w->data.scrollable.widget_count; i++) {
-			struct BGTK_Widget *r = find_nth_button(w->data.scrollable.items[i], counter, target);
-			if (r) return r;
-		}
-		break;
-	default:
-		break;
-	}
-	return NULL;
+	return control_pad();
 }
 
-static struct BGTK_Widget *get_button(struct BGTK_Widget *root, int idx)
+static int root_pad(void)
 {
-	int c = 0;
-	return find_nth_button(root, &c, idx);
+	int outer = theme_outer_pad();
+	int pin = panel_inset();
+
+	return outer > pin ? outer - pin : 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Forward declarations                                                */
-/* ------------------------------------------------------------------ */
-
-static void rebuild_content(void);
-static void rebuild_sidebar(void);
-
-/* ------------------------------------------------------------------ */
-/* Page switching                                                      */
-/* ------------------------------------------------------------------ */
-
-static void page_cb(void *userdata)
+static BGTK_Options ctl_opts(void)
 {
-	current_page = (int)(intptr_t)userdata;
-	font_dropdown_open = 0;
-	rebuild_sidebar();
-	rebuild_content();
+	return (BGTK_Options){.padding = control_pad(), .margin = 0};
 }
 
-/* ------------------------------------------------------------------ */
-/* Apply callbacks                                                     */
-/* ------------------------------------------------------------------ */
+static struct BGTK_Widget *ui_text(const char *s)
+{
+	return bgtk_text(ctx, (char *)s,
+		(BGTK_Options){.padding = 2, .margin = 0,
+			       .text_v_align = BGTK_VALIGN_CENTER});
+}
+
+/* Fixed-width label so form columns line up. */
+static struct BGTK_Widget *ui_label(const char *s, int min_w)
+{
+	struct BGTK_Widget *t = ui_text(s ? s : "");
+
+	if (t && min_w > 0 && t->w < min_w)
+		t->w = min_w;
+	return t;
+}
+
+static struct BGTK_Widget *ui_btn(const char *s, BGTK_Callback cb, void *data)
+{
+	return bgtk_button(ctx, ui_text(s), cb, data, ctl_opts());
+}
+
+static struct BGTK_Widget *ui_input(const char *val, int width)
+{
+	return bgtk_text_input(ctx, (char *)(val ? val : ""), width, 0,
+			       ctl_opts());
+}
+
+static struct BGTK_Widget *ui_hbox(struct BGTK_Widget **items, int n)
+{
+	return bgtk_list(ctx, items, n,
+		(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+			       .margin = 0, .padding = 0});
+}
+
+static struct BGTK_Widget *ui_vbox(struct BGTK_Widget **items, int n)
+{
+	return bgtk_list(ctx, items, n,
+		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+			       .margin = 0, .padding = 0});
+}
+
+#define FORM_LABEL_W 130
+#define FORM_LABEL2_W 150
+
+static struct BGTK_Widget *ui_row(const char *label, struct BGTK_Widget *field)
+{
+	struct BGTK_Widget *items[2] = { ui_label(label, FORM_LABEL_W), field };
+	return ui_hbox(items, 2);
+}
+
+static struct BGTK_Widget *ui_row2(const char *l0, struct BGTK_Widget *f0,
+				   const char *l1, struct BGTK_Widget *f1)
+{
+	struct BGTK_Widget *items[4] = {
+		ui_label(l0, FORM_LABEL_W), f0,
+		ui_label(l1, FORM_LABEL2_W), f1
+	};
+	return ui_hbox(items, 4);
+}
+
+/* Scrollable borderless page; pad matches sidebar panel_inset. */
+static struct BGTK_Widget *make_page(struct BGTK_Widget *body, int pw, int ph)
+{
+	struct BGTK_Widget *scroll;
+	struct BGTK_Widget *frame;
+	int pin = panel_inset();
+
+	scroll = bgtk_scrollable(ctx, &body, 1,
+		(BGTK_Options){.padding = pin, .margin = 0});
+	scroll->w = pw;
+	scroll->h = ph;
+	frame = bgtk_frame(ctx, scroll, pw, ph,
+		(BGTK_Options){.padding = 0, .margin = 0});
+	if (frame)
+		frame->data.frame.border_w = 0;
+	return frame ? frame : scroll;
+}
 
 static uint32_t parse_color_input(const char *text)
 {
-	if (!text || text[0] != '#' || strlen(text) < 7)
-		return 0xFF000000;
-	unsigned r, g, b;
-	if (sscanf(text + 1, "%02x%02x%02x", &r, &g, &b) != 3)
-		return 0xFF000000;
-	return 0xFF000000 | (r << 16) | (g << 8) | b;
+	return parse_hex_color(text);
 }
 
 /* Merge [background] into ~/.config/bgce.conf (compositor owns the desktop). */
@@ -574,7 +580,8 @@ static void apply_background(void *userdata)
 	/* Desktop background lives in bgce.conf; also mirror into bgtk.conf. */
 	write_bgce_background();
 	write_config(&cfg);
-	rebuild_content();
+	/* Structure unchanged — redraw only (preview updates on page revisit). */
+	bgtk_draw_widgets(ctx);
 }
 
 static void toggle_bg_mode(void *userdata)
@@ -679,7 +686,7 @@ static void apply_cursor(void *userdata)
 {
 	(void)userdata;
 	write_bgce_cursors();
-	rebuild_content();
+	bgtk_draw_widgets(ctx);
 }
 
 static void pick_cursor_theme(void *userdata)
@@ -689,7 +696,13 @@ static void pick_cursor_theme(void *userdata)
 		strncpy(cursor_theme, name, MAX_PATH_LEN - 1);
 		cursor_theme[MAX_PATH_LEN - 1] = '\0';
 	}
-	rebuild_content();
+	if (cursor_path_input && cursor_path_input->type == BGTK_WIDGET_TEXT_INPUT) {
+		free(cursor_path_input->data.text_input.text);
+		cursor_path_input->data.text_input.text = strdup(cursor_theme);
+		cursor_path_input->data.text_input.cursor_pos =
+			(uint32_t)strlen(cursor_theme);
+	}
+	bgtk_draw_widgets(ctx);
 }
 
 static void apply_shortcuts(void *userdata)
@@ -713,7 +726,7 @@ static void apply_shortcuts(void *userdata)
 	/* Persist to ~/.config/bgce.conf [shortcuts] (BGCE owns these). */
 	home = getenv("HOME");
 	if (!home || !home[0]) {
-		rebuild_content();
+		bgtk_draw_widgets(ctx);
 		return;
 	}
 	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
@@ -723,7 +736,7 @@ static void apply_shortcuts(void *userdata)
 	if (!out) {
 		if (in)
 			fclose(in);
-		rebuild_content();
+		bgtk_draw_widgets(ctx);
 		return;
 	}
 	if (in) {
@@ -782,19 +795,19 @@ static void apply_shortcuts(void *userdata)
 	}
 	fclose(out);
 	rename(tmp, path);
-	rebuild_content();
+	bgtk_draw_widgets(ctx);
 }
 
 static void apply_font(void *userdata)
 {
 	(void)userdata;
-	if (font_size_input) {
+	if (font_size_input && font_size_input->data.text_input.text) {
 		int sz = atoi(font_size_input->data.text_input.text);
 		if (sz > 0 && sz < 200)
 			cfg.font_size = sz;
 	}
 	write_config(&cfg);
-	rebuild_content();
+	bgtk_draw_widgets(ctx);
 }
 
 static const char *font_basename(const char *path)
@@ -818,32 +831,53 @@ static char *font_path_for_role(int role)
 static void apply_theme(void *userdata)
 {
 	(void)userdata;
-	if (theme_bg_input)
-		cfg.theme.background = parse_color_input(theme_bg_input->data.text_input.text);
-	if (theme_btn_input)
-		cfg.theme.button = parse_color_input(theme_btn_input->data.text_input.text);
-	if (theme_btn_text_input)
-		cfg.theme.button_text = parse_color_input(theme_btn_text_input->data.text_input.text);
-	if (theme_frame_border_input)
-		cfg.theme.frame_border_size = atoi(theme_frame_border_input->data.text_input.text);
-	if (theme_btn_border_input)
-		cfg.theme.button_border_size = atoi(theme_btn_border_input->data.text_input.text);
-	if (theme_input_border_input)
-		cfg.theme.input_border_size = atoi(theme_input_border_input->data.text_input.text);
-	if (theme_frame_color_input)
-		cfg.theme.frame_border_color = parse_color_input(theme_frame_color_input->data.text_input.text);
-	if (theme_focus_input)
-		cfg.theme.focus = parse_color_input(theme_focus_input->data.text_input.text);
-	if (theme_focus_bg_input)
-		cfg.theme.focus_bg = parse_color_input(theme_focus_bg_input->data.text_input.text);
-	if (theme_input_bg_input)
-		cfg.theme.input_bg = parse_color_input(theme_input_bg_input->data.text_input.text);
-	if (theme_highlight_input)
-		cfg.theme.highlight = parse_color_input(theme_highlight_input->data.text_input.text);
+	if (theme_bg_input && theme_bg_input->data.text_input.text)
+		cfg.theme.background =
+			parse_color_input(theme_bg_input->data.text_input.text);
+	if (theme_btn_input && theme_btn_input->data.text_input.text)
+		cfg.theme.button =
+			parse_color_input(theme_btn_input->data.text_input.text);
+	if (theme_btn_text_input && theme_btn_text_input->data.text_input.text)
+		cfg.theme.button_text = parse_color_input(
+			theme_btn_text_input->data.text_input.text);
+	if (theme_frame_border_input &&
+	    theme_frame_border_input->data.text_input.text)
+		cfg.theme.frame_border_size =
+			(uint32_t)atoi(theme_frame_border_input->data.text_input.text);
+	if (theme_btn_border_input &&
+	    theme_btn_border_input->data.text_input.text)
+		cfg.theme.button_border_size =
+			(uint32_t)atoi(theme_btn_border_input->data.text_input.text);
+	if (theme_input_border_input &&
+	    theme_input_border_input->data.text_input.text)
+		cfg.theme.input_border_size =
+			(uint32_t)atoi(theme_input_border_input->data.text_input.text);
+	if (theme_frame_color_input &&
+	    theme_frame_color_input->data.text_input.text)
+		cfg.theme.frame_border_color = parse_color_input(
+			theme_frame_color_input->data.text_input.text);
+	if (theme_focus_input && theme_focus_input->data.text_input.text)
+		cfg.theme.focus =
+			parse_color_input(theme_focus_input->data.text_input.text);
+	if (theme_focus_bg_input && theme_focus_bg_input->data.text_input.text)
+		cfg.theme.focus_bg = parse_color_input(
+			theme_focus_bg_input->data.text_input.text);
+	if (theme_input_bg_input && theme_input_bg_input->data.text_input.text)
+		cfg.theme.input_bg = parse_color_input(
+			theme_input_bg_input->data.text_input.text);
+	if (theme_highlight_input && theme_highlight_input->data.text_input.text)
+		cfg.theme.highlight = parse_color_input(
+			theme_highlight_input->data.text_input.text);
+	if (theme_rule_color_input &&
+	    theme_rule_color_input->data.text_input.text)
+		cfg.theme.rule_color = parse_color_input(
+			theme_rule_color_input->data.text_input.text);
 	if (theme_margin_input && theme_margin_input->data.text_input.text)
-		cfg.theme.margin = atoi(theme_margin_input->data.text_input.text);
+		cfg.theme.margin =
+			atoi(theme_margin_input->data.text_input.text);
 	if (theme_padding_input && theme_padding_input->data.text_input.text)
-		cfg.theme.padding = atoi(theme_padding_input->data.text_input.text);
+		cfg.theme.padding =
+			atoi(theme_padding_input->data.text_input.text);
 	if (theme_frame_margin_input &&
 	    theme_frame_margin_input->data.text_input.text)
 		cfg.theme.frame_margin =
@@ -854,8 +888,8 @@ static void apply_theme(void *userdata)
 	write_config(&cfg);
 	if (ctx)
 		ctx->theme = cfg.theme;
-	rebuild_sidebar();
-	rebuild_content();
+	reflow_shell();
+	bgtk_draw_widgets(ctx);
 }
 
 /* ------------------------------------------------------------------ */
@@ -888,255 +922,7 @@ static void toggle_font_dropdown(void *userdata)
 	rebuild_content();
 }
 
-/* ------------------------------------------------------------------ */
-/* HTML page builders                                                  */
-/* ------------------------------------------------------------------ */
-
-static char *build_background_html(void)
-{
-	/* Values come from load_bgce_config / cfg (desktop = bgce.conf). */
-	char color_hex[16];
-	format_hex_color(cfg.color, color_hex, sizeof(color_hex));
-
-	char *buf = malloc(4096);
-	int pos = 0;
-	pos += snprintf(buf + pos, 4096 - pos,
-		"<html><body>"
-		"<table>"
-		"<tr><td>Type</td><td><button>[ %s ]</button></td></tr>",
-		cfg.type == BG_IMAGE ? "Image" : "Color");
-
-	if (cfg.type == BG_COLOR) {
-		pos += snprintf(buf + pos, 4096 - pos,
-			"<tr><td>Color</td><td><input type=\"text\" value=\"%s\" width=\"120\" /></td></tr>",
-			color_hex);
-	} else {
-		pos += snprintf(buf + pos, 4096 - pos,
-			"<tr><td>Path</td><td><input type=\"text\" value=\"%s\" width=\"280\" /></td></tr>"
-			"<tr><td>Mode</td><td><button>[ %s ]</button></td></tr>",
-			cfg.path[0] ? cfg.path : "",
-			cfg.mode == IMAGE_SCALED ? "Scaled" : "Tiled");
-	}
-
-	/* Preview inserted by add_bg_preview before Apply. */
-	pos += snprintf(buf + pos, 4096 - pos,
-		"</table>"
-		"<div><button>Apply</button></div>"
-		"</body></html>");
-	return buf;
-}
-
-static char *build_cursor_html(void)
-{
-	char **cursors = NULL;
-	int ncursors = scan_cursors(&cursors);
-	const char *cur = cursor_theme[0] ? cursor_theme : "";
-
-	int buflen = 4096 + ncursors * 256;
-	char *buf = malloc(buflen);
-	int pos = 0;
-
-	pos += snprintf(buf + pos, buflen - pos,
-		"<html><body>"
-		"<table>"
-		"<tr><td>Theme</td><td><input type=\"text\" value=\"%s\" width=\"260\" /></td></tr>"
-		"</table>"
-		"<p>Installed themes</p>"
-		"<ul>",
-		cur);
-
-	if (ncursors == 0) {
-		pos += snprintf(buf + pos, buflen - pos,
-			"<li>No cursor themes found in system paths</li>");
-	}
-	for (int i = 0; i < ncursors; i++) {
-		pos += snprintf(buf + pos, buflen - pos,
-			"<li><button>%s</button></li>", cursors[i]);
-		free(cursors[i]);
-	}
-	free(cursors);
-
-	pos += snprintf(buf + pos, buflen - pos,
-		"</ul>"
-		"<div><button>Apply</button></div>"
-		"</body></html>");
-
-	return buf;
-}
-
-static char *build_shortcuts_html(void)
-{
-	char *buf;
-	int buflen = 2048 + shortcut_row_count * 256;
-	int pos = 0;
-	int i;
-
-	if (!shortcut_row_count)
-		load_shortcuts_table();
-
-	buf = malloc((size_t)buflen);
-	if (!buf)
-		return NULL;
-	pos += snprintf(buf + pos, (size_t)(buflen - pos),
-		"<html><body>"
-		"<table>"
-		"<tr><th>Action</th><th>Key binding</th></tr>");
-	for (i = 0; i < shortcut_row_count; i++) {
-		const char *label = shortcut_labels[i][0]
-					    ? shortcut_labels[i]
-					    : shortcut_actions[i];
-		pos += snprintf(buf + pos, (size_t)(buflen - pos),
-			"<tr><td>%s</td><td><input type=\"text\" value=\"%s\" "
-			"width=\"160\" /></td></tr>",
-			label, shortcut_keys[i]);
-	}
-	pos += snprintf(buf + pos, (size_t)(buflen - pos),
-		"</table>"
-		"<div><button>Apply</button></div>"
-		"</body></html>");
-	(void)pos;
-	return buf;
-}
-
-static char *build_font_html(void)
-{
-	const char *sans_name = font_basename(cfg.font_sans_path);
-	const char *mono_name = font_basename(cfg.font_mono_path);
-	const char *serif_name = font_basename(cfg.font_serif_path);
-	const char *open_label = "";
-	int buflen = 8192 + font_list_count * 256;
-	char *buf = malloc(buflen);
-	int pos = 0;
-
-	if (!buf)
-		return NULL;
-	if (font_dropdown_open) {
-		if (font_pick_role == BGTK_FONT_MONO)
-			open_label = " (picking mono)";
-		else if (font_pick_role == BGTK_FONT_SERIF)
-			open_label = " (picking serif)";
-		else
-			open_label = " (picking sans)";
-	}
-
-	pos += snprintf(buf + pos, buflen - pos,
-		"<html><body>"
-		"<table>"
-		"<tr><td>Sans (UI)</td><td><button>%s</button></td></tr>"
-		"<tr><td>Mono</td><td><button>%s</button></td></tr>"
-		"<tr><td>Serif</td><td><button>%s</button></td></tr>"
-		"<tr><td>Size</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td></tr>"
-		"</table>",
-		sans_name, mono_name, serif_name, cfg.font_size);
-
-	/* Dropdown list for the active role (only when open). */
-	if (font_dropdown_open) {
-		pos += snprintf(buf + pos, buflen - pos, "<p>Fonts%s:</p><ul>",
-				open_label);
-		int show = font_list_count > 50 ? 50 : font_list_count;
-		for (int i = 0; i < show; i++) {
-			const char *name = strrchr(font_list_cache[i], '/');
-			name = name ? name + 1 : font_list_cache[i];
-			pos += snprintf(buf + pos, buflen - pos,
-				"<li><button>%s</button></li>", name);
-		}
-		pos += snprintf(buf + pos, buflen - pos, "</ul>");
-	}
-
-	/* Preview (rendered with the active UI/sans face). */
-	pos += snprintf(buf + pos, buflen - pos,
-		"<p>Preview:</p>"
-		"<p>The quick brown fox jumps over the lazy dog</p>"
-		"<p>ABCDEFGHIJKLM 0123456789 !@#$%%</p>"
-		"<div><button>Apply</button></div>"
-		"</body></html>");
-
-	return buf;
-}
-
-/*
- * Theme page: 4-column table (label|value|label|value).
- * Left pair = surfaces/fills; right pair = borders + spacing + text.
- * get_input() order is document order L→R, top→bottom.
- */
-static char *build_theme_html(void)
-{
-	char bg[16], btn[16], btxt[16], fbc[16], foc[16], fbg[16], ibg[16],
-		hi[16];
-	format_hex_color(cfg.theme.background, bg, sizeof(bg));
-	format_hex_color(cfg.theme.button, btn, sizeof(btn));
-	format_hex_color(cfg.theme.button_text, btxt, sizeof(btxt));
-	format_hex_color(cfg.theme.frame_border_color, fbc, sizeof(fbc));
-	format_hex_color(cfg.theme.focus, foc, sizeof(foc));
-	format_hex_color(cfg.theme.focus_bg, fbg, sizeof(fbg));
-	format_hex_color(cfg.theme.input_bg, ibg, sizeof(ibg));
-	format_hex_color(cfg.theme.highlight, hi, sizeof(hi));
-
-	char *buf = malloc(8192);
-	if (!buf)
-		return NULL;
-	/* iw = input width; shorter for numeric fields. */
-	snprintf(buf, 8192,
-		"<html><body>"
-		"<table>"
-		/* Surfaces | Borders */
-		"<tr>"
-		"<td>Background</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
-		"<td>Frame border color</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
-		"</tr>"
-		"<tr>"
-		"<td>Button</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
-		"<td>Focus</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
-		"</tr>"
-		"<tr>"
-		"<td>Button text</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
-		"<td>Frame border size</td><td><input type=\"text\" value=\"%u\" width=\"60\" /></td>"
-		"</tr>"
-		"<tr>"
-		"<td>Input background</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
-		"<td>Button border size</td><td><input type=\"text\" value=\"%u\" width=\"60\" /></td>"
-		"</tr>"
-		"<tr>"
-		"<td>Focus background</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
-		"<td>Input border size</td><td><input type=\"text\" value=\"%u\" width=\"60\" /></td>"
-		"</tr>"
-		"<tr>"
-		"<td>Highlight</td><td><input type=\"text\" value=\"%s\" width=\"90\" /></td>"
-		"<td>Widget margin</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td>"
-		"</tr>"
-		/* Spacing / text (right column only continues) */
-		"<tr>"
-		"<td></td><td></td>"
-		"<td>Frame padding</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td>"
-		"</tr>"
-		"<tr>"
-		"<td></td><td></td>"
-		"<td>Frame margin</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td>"
-		"</tr>"
-		"<tr>"
-		"<td></td><td></td>"
-		"<td>Text baseline</td><td><input type=\"text\" value=\"%d\" width=\"60\" /></td>"
-		"</tr>"
-		"</table>"
-		"<div><button>Apply</button></div>"
-		"</body></html>",
-		/* L0 */ bg, /* R0 */ fbc,
-		/* L1 */ btn, /* R1 */ foc,
-		/* L2 */ btxt, /* R2 */ cfg.theme.frame_border_size,
-		/* L3 */ ibg, /* R3 */ cfg.theme.button_border_size,
-		/* L4 */ fbg, /* R4 */ cfg.theme.input_border_size,
-		/* L5 */ hi, /* R5 */ cfg.theme.margin,
-		/* R6 */ cfg.theme.padding,
-		/* R7 */ cfg.theme.frame_margin,
-		/* R8 */ cfg.theme.text_baseline_offset);
-	return buf;
-}
-
-/* ------------------------------------------------------------------ */
-/* Background preview: aspect-correct desktop wallpaper box            */
-/* ------------------------------------------------------------------ */
-
-/* Fit preview inside max_w x max_h using screen_aspect_w:h. */
+/* Wallpaper preview */
 static void preview_fit(int max_w, int max_h, int *out_w, int *out_h)
 {
 	int aw = screen_aspect_w > 0 ? screen_aspect_w : 16;
@@ -1367,65 +1153,257 @@ static void add_bg_preview(struct BGTK_Widget *page, int panel_w, int panel_h)
 }
 
 /* ------------------------------------------------------------------ */
-/* Rebuild the content panel for current_page                          */
+/* Page builders                                                       */
 /* ------------------------------------------------------------------ */
 
-static void rebuild_content(void)
+static void page_cb(void *userdata)
+{
+	current_page = (int)(intptr_t)userdata;
+	font_dropdown_open = 0;
+	rebuild_sidebar();
+	rebuild_content();
+}
+
+static struct BGTK_Widget *build_background_page(int panel_w, int panel_h)
+{
+	char color_hex[16];
+	struct BGTK_Widget *rows[8];
+	int n = 0;
+	struct BGTK_Widget *body;
+	struct BGTK_Widget *page;
+	char type_lbl[32], mode_lbl[32];
+
+	format_hex_color(cfg.color, color_hex, sizeof(color_hex));
+	snprintf(type_lbl, sizeof(type_lbl), "[ %s ]",
+		 cfg.type == BG_IMAGE ? "Image" : "Color");
+
+	rows[n++] = ui_row("Type", ui_btn(type_lbl, toggle_bg_type, NULL));
+	if (cfg.type == BG_COLOR) {
+		bg_color_input = ui_input(color_hex, 120);
+		rows[n++] = ui_row("Color", bg_color_input);
+	} else {
+		bg_path_input = ui_input(cfg.path, 280);
+		rows[n++] = ui_row("Path", bg_path_input);
+		snprintf(mode_lbl, sizeof(mode_lbl), "[ %s ]",
+			 cfg.mode == IMAGE_SCALED ? "Scaled" : "Tiled");
+		rows[n++] = ui_row("Mode", ui_btn(mode_lbl, toggle_bg_mode, NULL));
+	}
+	rows[n++] = ui_btn("Apply", apply_background, NULL);
+	body = ui_vbox(rows, n);
+	page = make_page(body, panel_w, panel_h);
+	add_bg_preview(page, panel_w, panel_h);
+	return page;
+}
+
+static struct BGTK_Widget *build_cursor_page(int panel_w, int panel_h)
+{
+	char **cursors = NULL;
+	int nc = scan_cursors(&cursors);
+	struct BGTK_Widget **rows;
+	int n = 0, i, cap;
+	struct BGTK_Widget *body;
+
+	cap = nc + 4;
+	rows = calloc(cap, sizeof(*rows));
+	if (!rows) {
+		for (i = 0; i < nc; i++)
+			free(cursors[i]);
+		free(cursors);
+		return ui_text("Out of memory");
+	}
+	cursor_path_input = ui_input(cursor_theme, 260);
+	rows[n++] = ui_row("Theme", cursor_path_input);
+	for (i = 0; i < nc; i++) {
+		rows[n++] = ui_btn(cursors[i], pick_cursor_theme, cursors[i]);
+		/* cursors[i] kept as cb_data; free list array only */
+	}
+	free(cursors);
+	rows[n++] = ui_btn("Apply", apply_cursor, NULL);
+	body = ui_vbox(rows, n);
+	free(rows);
+	return make_page(body, panel_w, panel_h);
+}
+
+static struct BGTK_Widget *build_shortcuts_page(int panel_w, int panel_h)
+{
+	struct BGTK_Widget **rows;
+	int n = 0, i;
+	struct BGTK_Widget *body;
+
+	if (!shortcut_row_count)
+		load_shortcuts_table();
+	rows = calloc(shortcut_row_count + 2, sizeof(*rows));
+	if (!rows)
+		return ui_text("Out of memory");
+	for (i = 0; i < shortcut_row_count; i++) {
+		shortcut_inputs[i] = ui_input(shortcut_keys[i], 160);
+		rows[n++] = ui_row(shortcut_labels[i], shortcut_inputs[i]);
+	}
+	rows[n++] = ui_btn("Apply", apply_shortcuts, NULL);
+	body = ui_vbox(rows, n);
+	free(rows);
+	return make_page(body, panel_w, panel_h);
+}
+
+static struct BGTK_Widget *build_font_page(int panel_w, int panel_h)
+{
+	char size_buf[16];
+	struct BGTK_Widget *rows[64];
+	int n = 0, i, show;
+	struct BGTK_Widget *body;
+
+	if (!font_list_cache)
+		font_list_count = scan_fonts(&font_list_cache);
+
+	snprintf(size_buf, sizeof(size_buf), "%d", cfg.font_size);
+	rows[n++] = ui_row("Sans (UI)",
+		ui_btn((char *)font_basename(cfg.font_sans_path),
+		       toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_SANS));
+	rows[n++] = ui_row("Mono",
+		ui_btn((char *)font_basename(cfg.font_mono_path),
+		       toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_MONO));
+	rows[n++] = ui_row("Serif",
+		ui_btn((char *)font_basename(cfg.font_serif_path),
+		       toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_SERIF));
+	font_size_input = ui_input(size_buf, 60);
+	rows[n++] = ui_row("Size", font_size_input);
+
+	if (font_dropdown_open && font_list_count > 0) {
+		const char *role = font_pick_role == BGTK_FONT_MONO ? "mono"
+			: font_pick_role == BGTK_FONT_SERIF ? "serif" : "sans";
+		char hdr[64];
+		snprintf(hdr, sizeof(hdr), "Fonts (picking %s):", role);
+		rows[n++] = ui_text(hdr);
+		show = font_list_count > 50 ? 50 : font_list_count;
+		for (i = 0; i < show && n < 62; i++)
+			rows[n++] = ui_btn((char *)font_basename(font_list_cache[i]),
+					   font_select_cb, (void *)(intptr_t)i);
+	}
+	rows[n++] = ui_btn("Apply", apply_font, NULL);
+	body = ui_vbox(rows, n);
+	return make_page(body, panel_w, panel_h);
+}
+
+static struct BGTK_Widget *theme_color_input(uint32_t c, int w)
+{
+	char hex[16];
+	format_hex_color(c, hex, sizeof(hex));
+	return ui_input(hex, w);
+}
+
+static struct BGTK_Widget *theme_int_input(int v, int w)
+{
+	char buf[32];
+	snprintf(buf, sizeof(buf), "%d", v);
+	return ui_input(buf, w);
+}
+
+static struct BGTK_Widget *build_theme_page(int panel_w, int panel_h)
+{
+	struct BGTK_Widget *rows[16];
+	int n = 0;
+	struct BGTK_Widget *body;
+
+	theme_bg_input = theme_color_input(cfg.theme.background, 90);
+	theme_frame_color_input =
+		theme_color_input(cfg.theme.frame_border_color, 90);
+	rows[n++] = ui_row2("Background", theme_bg_input,
+			    "Frame border color", theme_frame_color_input);
+
+	theme_btn_input = theme_color_input(cfg.theme.button, 90);
+	theme_rule_color_input = theme_color_input(cfg.theme.rule_color, 90);
+	rows[n++] = ui_row2("Button", theme_btn_input,
+			    "Rule color", theme_rule_color_input);
+
+	theme_btn_text_input = theme_color_input(cfg.theme.button_text, 90);
+	theme_focus_input = theme_color_input(cfg.theme.focus, 90);
+	rows[n++] = ui_row2("Button text", theme_btn_text_input,
+			    "Focus", theme_focus_input);
+
+	theme_input_bg_input = theme_color_input(cfg.theme.input_bg, 90);
+	theme_frame_border_input =
+		theme_int_input((int)cfg.theme.frame_border_size, 60);
+	rows[n++] = ui_row2("Input background", theme_input_bg_input,
+			    "Frame border size", theme_frame_border_input);
+
+	theme_focus_bg_input = theme_color_input(cfg.theme.focus_bg, 90);
+	theme_btn_border_input =
+		theme_int_input((int)cfg.theme.button_border_size, 60);
+	rows[n++] = ui_row2("Focus background", theme_focus_bg_input,
+			    "Button border size", theme_btn_border_input);
+
+	theme_highlight_input = theme_color_input(cfg.theme.highlight, 90);
+	theme_input_border_input =
+		theme_int_input((int)cfg.theme.input_border_size, 60);
+	rows[n++] = ui_row2("Highlight", theme_highlight_input,
+			    "Input border size", theme_input_border_input);
+
+	theme_margin_input = theme_int_input(cfg.theme.margin, 60);
+	rows[n++] = ui_row("Widget margin", theme_margin_input);
+
+	theme_padding_input = theme_int_input(cfg.theme.padding, 60);
+	rows[n++] = ui_row("Frame padding", theme_padding_input);
+
+	theme_frame_margin_input = theme_int_input(cfg.theme.frame_margin, 60);
+	rows[n++] = ui_row("Frame margin", theme_frame_margin_input);
+
+	theme_baseline_input =
+		theme_int_input(cfg.theme.text_baseline_offset, 60);
+	rows[n++] = ui_row("Text baseline", theme_baseline_input);
+
+	rows[n++] = ui_btn("Apply", apply_theme, NULL);
+	body = ui_vbox(rows, n);
+	return make_page(body, panel_w, panel_h);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Rebuild content / sidebar / shell                                   */
+/* ------------------------------------------------------------------ */
+
+static void clear_page_ptrs(void)
 {
 	bg_color_input = bg_path_input = NULL;
 	cursor_path_input = NULL;
 	for (int i = 0; i < MAX_SHORTCUT_ROWS; i++)
 		shortcut_inputs[i] = NULL;
-	if (!shortcut_row_count)
-		load_shortcuts_table();
 	font_size_input = NULL;
 	theme_bg_input = theme_btn_input = theme_btn_text_input = NULL;
 	theme_frame_border_input = theme_btn_border_input = NULL;
 	theme_input_border_input = theme_frame_color_input = NULL;
 	theme_focus_input = theme_focus_bg_input = theme_input_bg_input = NULL;
-	theme_highlight_input = NULL;
-	theme_margin_input = NULL;
-	theme_padding_input = NULL;
-	theme_frame_margin_input = NULL;
-	theme_baseline_input = NULL;
+	theme_highlight_input = theme_rule_color_input = NULL;
+	theme_margin_input = theme_padding_input = NULL;
+	theme_frame_margin_input = theme_baseline_input = NULL;
+}
 
-	/* Free old font cache only when leaving font page */
-	if (current_page != 3 && font_list_cache) {
-		for (int i = 0; i < font_list_count; i++)
-			free(font_list_cache[i]);
-		free(font_list_cache);
-		font_list_cache = NULL;
-		font_list_count = 0;
-	}
+/* Resize shell chrome to current theme/app size without rebuilding pages. */
+static void reflow_shell(void)
+{
+	int rpad, fmar, fbw, chrome, rule_w, panel_w, panel_h;
 
-	/* Pre-scan fonts if on font page and cache is empty */
-	if (current_page == 3 && !font_list_cache)
-		font_list_count = scan_fonts(&font_list_cache);
-
-	int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 12;
-	int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 8;
-	int fmar = ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin : 0;
-	int fbw = (int)ctx->theme.frame_border_size;
-	int chrome, rule_w, panel_w, panel_h;
-
+	if (!ctx || !root_frame)
+		return;
+	rpad = root_pad();
+	fmar = ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin : 0;
+	fbw = (int)ctx->theme.frame_border_size;
 	if (fbw < 0)
 		fbw = 0;
-	/* Root: [frame_margin][border][padding][content]… */
-	chrome = 2 * (fmar + fbw + pad);
-	rule_w = panel_rule ? panel_rule->w : (1 + mar);
-	panel_w = app_w - (sidebar ? sidebar->w : SIDEBAR_W) - rule_w - chrome -
-		  mar;
+	chrome = 2 * (fmar + fbw + rpad);
+	rule_w = panel_rule ? panel_rule->w : 1;
+	panel_w = app_w - (sidebar ? sidebar->w : SIDEBAR_W) - rule_w - chrome;
 	panel_h = app_h - chrome;
 	if (panel_w < 80)
 		panel_w = 80;
 	if (panel_h < 40)
 		panel_h = 40;
-	if (content_panel) {
-		content_panel->w = panel_w;
-		content_panel->h = panel_h;
-	}
+	root_frame->w = app_w;
+	root_frame->h = app_h;
+	root_frame->padding = rpad;
+	root_frame->margin = fmar;
 	if (sidebar) {
 		sidebar->h = panel_h;
+		sidebar->padding = panel_inset();
 		if (sidebar->h < 40)
 			sidebar->h = 40;
 	}
@@ -1434,159 +1412,58 @@ static void rebuild_content(void)
 		if (panel_rule->h < 40)
 			panel_rule->h = 40;
 	}
-
-	char *html = NULL;
-	switch (current_page) {
-	case 0: html = build_background_html(); break;
-	case 1: html = build_cursor_html(); break;
-	case 2: html = build_shortcuts_html(); break;
-	case 3: html = build_font_html(); break;
-	case 4: html = build_theme_html(); break;
+	if (content_panel) {
+		content_panel->w = panel_w;
+		content_panel->h = panel_h;
 	}
+}
 
-	struct BGTK_Widget *page = bgtk_html_parse_inline(ctx, html, panel_w, panel_h);
-	free(html);
+static void rebuild_content(void)
+{
+	int panel_w, panel_h;
+	struct BGTK_Widget *page = NULL;
+	struct BGTK_Widget *old;
 
+	clear_page_ptrs();
+	if (!shortcut_row_count)
+		load_shortcuts_table();
+
+	if (current_page != 3 && font_list_cache) {
+		for (int i = 0; i < font_list_count; i++)
+			free(font_list_cache[i]);
+		free(font_list_cache);
+		font_list_cache = NULL;
+		font_list_count = 0;
+	}
+	if (current_page == 3 && !font_list_cache)
+		font_list_count = scan_fonts(&font_list_cache);
+
+	reflow_shell();
+	panel_w = content_panel ? content_panel->w : 80;
+	panel_h = content_panel ? content_panel->h : 40;
+
+	switch (current_page) {
+	case 0: page = build_background_page(panel_w, panel_h); break;
+	case 1: page = build_cursor_page(panel_w, panel_h); break;
+	case 2: page = build_shortcuts_page(panel_w, panel_h); break;
+	case 3: page = build_font_page(panel_w, panel_h); break;
+	case 4: page = build_theme_page(panel_w, panel_h); break;
+	}
 	if (!page)
-		page = bgtk_text(ctx, "Error loading page", (BGTK_Options){.padding = 8});
+		page = ui_text("Error loading page");
 
-	/* Wire callbacks */
-	switch (current_page) {
-	case 0: { /* Background: type toggle(0), then type-dependent fields, then apply */
-		struct BGTK_Widget *b;
-		b = get_button(page, 0);
-		if (b) b->data.button.callback = toggle_bg_type;
-		if (cfg.type == BG_COLOR) {
-			/* buttons: type(0), apply(1); inputs: color(0) */
-			bg_color_input = get_input(page, 0);
-			b = get_button(page, 1);
-			if (b) b->data.button.callback = apply_background;
-		} else {
-			/* buttons: type(0), mode(1), apply(2); inputs: path(0) */
-			bg_path_input = get_input(page, 0);
-			b = get_button(page, 1);
-			if (b) b->data.button.callback = toggle_bg_mode;
-			b = get_button(page, 2);
-			if (b) b->data.button.callback = apply_background;
-		}
-		add_bg_preview(page, panel_w, panel_h);
-		break;
-	}
-	case 1: { /* Cursor: input(0)=theme, buttons=themes..., last=Apply */
-		cursor_path_input = get_input(page, 0);
-		int bi = 0;
-		while (get_button(page, bi))
-			bi++;
-		/* Theme buttons (all but last) select; last is Apply. */
-		for (int i = 0; i + 1 < bi; i++) {
-			struct BGTK_Widget *tb = get_button(page, i);
-			struct BGTK_Widget *lab;
-			if (!tb)
-				continue;
-			lab = tb->data.button.label;
-			if (lab && lab->type == BGTK_WIDGET_TEXT &&
-			    lab->data.text.text) {
-				tb->data.button.callback = pick_cursor_theme;
-				tb->data.button.cb_data = lab->data.text.text;
-			}
-		}
-		if (bi > 0) {
-			struct BGTK_Widget *ab = get_button(page, bi - 1);
-			if (ab)
-				ab->data.button.callback = apply_cursor;
-		}
-		break;
-	}
-	case 2: { /* Shortcuts: one input per row, last button = Apply */
-		for (int i = 0; i < shortcut_row_count && i < MAX_SHORTCUT_ROWS; i++)
-			shortcut_inputs[i] = get_input(page, i);
-		{
-			struct BGTK_Widget *b = get_button(page, 0);
-			if (b)
-				b->data.button.callback = apply_shortcuts;
-		}
-		break;
-	}
-	case 3: { /* Font: sans/mono/serif toggles, optional list, Apply */
-		struct BGTK_Widget *b;
-		int bi;
-
-		b = get_button(page, 0);
-		if (b) {
-			b->data.button.callback = toggle_font_dropdown;
-			b->data.button.cb_data = (void *)(intptr_t)BGTK_FONT_SANS;
-		}
-		b = get_button(page, 1);
-		if (b) {
-			b->data.button.callback = toggle_font_dropdown;
-			b->data.button.cb_data = (void *)(intptr_t)BGTK_FONT_MONO;
-		}
-		b = get_button(page, 2);
-		if (b) {
-			b->data.button.callback = toggle_font_dropdown;
-			b->data.button.cb_data = (void *)(intptr_t)BGTK_FONT_SERIF;
-		}
-		font_size_input = get_input(page, 0);
-
-		bi = 3; /* first button after the three role toggles */
-		if (font_dropdown_open) {
-			int show = font_list_count > 50 ? 50 : font_list_count;
-			for (int i = 0; i < show; i++) {
-				struct BGTK_Widget *fb = get_button(page, bi + i);
-				if (fb) {
-					fb->data.button.callback = font_select_cb;
-					fb->data.button.cb_data =
-						(void *)(intptr_t)i;
-				}
-			}
-			bi += show;
-		}
-		b = get_button(page, bi);
-		if (b)
-			b->data.button.callback = apply_font;
-		break;
-	}
-	case 4: { /* Theme — inputs in 4-col table order (see build_theme_html) */
-		theme_bg_input = get_input(page, 0);
-		theme_frame_color_input = get_input(page, 1);
-		theme_btn_input = get_input(page, 2);
-		theme_focus_input = get_input(page, 3);
-		theme_btn_text_input = get_input(page, 4);
-		theme_frame_border_input = get_input(page, 5);
-		theme_input_bg_input = get_input(page, 6);
-		theme_btn_border_input = get_input(page, 7);
-		theme_focus_bg_input = get_input(page, 8);
-		theme_input_border_input = get_input(page, 9);
-		theme_highlight_input = get_input(page, 10);
-		theme_margin_input = get_input(page, 11);
-		theme_padding_input = get_input(page, 12);
-		theme_frame_margin_input = get_input(page, 13);
-		theme_baseline_input = get_input(page, 14);
-		struct BGTK_Widget *b = get_button(page, 0);
-		if (b)
-			b->data.button.callback = apply_theme;
-		break;
-	}
-	}
-
+	old = content_panel->data.frame.child;
 	content_panel->data.frame.child = page;
+	bgtk_widget_destroy(old);
 	bgtk_draw_widgets(ctx);
 }
 
-/* ------------------------------------------------------------------ */
-/* Sidebar: rebuild with highlight on selected page                    */
-/* ------------------------------------------------------------------ */
-
-/* Scroll/list chrome eats width; buttons must fit inside the offscreen
- * scroll buffer or the right border is clipped under the panel rule. */
 static void sidebar_spacing(int *pad, int *mar, int *scroll_pad, int *btn_w)
 {
-	int p = (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 12;
+	int p = theme_outer_pad();
 	int m = (ctx && ctx->theme.margin > 0) ? ctx->theme.margin / 2 : 4;
-	int sp = p > 1 ? p / 2 : 1;
-	/* child.x = scroll.mar+scroll.pad; button.x = list.mar+list.pad */
-	int left = m + sp + m; /* scroll mar + pad + list mar (list pad 0) */
-	int bw = SIDEBAR_W - 2 * left;
+	int sp = panel_inset();
+	int bw = SIDEBAR_W - 2 * sp;
 
 	if (bw < 40)
 		bw = 40;
@@ -1600,22 +1477,19 @@ static void sidebar_spacing(int *pad, int *mar, int *scroll_pad, int *btn_w)
 		*btn_w = bw;
 }
 
-/* Selected nav: highlight fill only (no "> " prefix). */
 static struct BGTK_Widget *make_nav_button(int i, int btn_w)
 {
 	int selected = (i == current_page);
-	int pad, mar, bw;
+	int pad, bw;
 	BGTK_Options to = {.padding = 2};
-	struct BGTK_Widget *lbl;
-	struct BGTK_Widget *btn;
+	struct BGTK_Widget *lbl, *btn;
 
-	sidebar_spacing(&pad, &mar, NULL, &bw);
+	sidebar_spacing(&pad, NULL, NULL, &bw);
 	if (btn_w > 0)
 		bw = btn_w;
 	if (selected)
 		to.text_style = BGTK_TEXT_BOLD;
 	lbl = bgtk_text(ctx, (char *)page_names[i], to);
-	/* margin 0: width is the full hit/draw box; spacing is list/scroll. */
 	btn = bgtk_button(ctx, lbl, page_cb, (void *)(intptr_t)i,
 			  (BGTK_Options){.padding = pad / 2 + 2, .margin = 0});
 	btn->w = bw;
@@ -1629,60 +1503,57 @@ static struct BGTK_Widget *make_nav_button(int i, int btn_w)
 
 static void rebuild_sidebar(void)
 {
-	int mar, btn_w;
+	int btn_w, i;
 	struct BGTK_Widget **btns;
-	int i;
+	struct BGTK_Widget *old;
 
-	sidebar_spacing(NULL, &mar, NULL, &btn_w);
-	btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
+	sidebar_spacing(NULL, NULL, NULL, &btn_w);
+	btns = malloc(NUM_PAGES * sizeof(*btns));
 	if (!btns)
 		return;
 	for (i = 0; i < NUM_PAGES; i++)
 		btns[i] = make_nav_button(i, btn_w);
-
+	old = sidebar_list;
 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
-			       .margin = mar, .padding = 0});
+			       .margin = 0, .padding = 0});
 	free(btns);
-
-	/* Replace the scrollable's content */
 	sidebar->data.scrollable.items[0] = sidebar_list;
 	sidebar->data.scrollable.widget_count = 1;
+	sidebar->padding = panel_inset();
+	sidebar->margin = 0;
+	if (old && old != sidebar_list)
+		bgtk_widget_destroy(old);
 }
 
 static struct BGTK_Widget *build_sidebar(void)
 {
-	int pad, mar, scroll_pad, btn_w;
+	int pad, mar, scroll_pad, btn_w, i;
 	int bw = ctx ? (int)ctx->theme.frame_border_size : 1;
+	int fmar = ctx && ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin
+						       : 0;
+	int rpad = root_pad();
 	struct BGTK_Widget **btns;
 	struct BGTK_Widget *scroll;
-	int i;
 
 	sidebar_spacing(&pad, &mar, &scroll_pad, &btn_w);
 	if (bw < 0)
 		bw = 0;
-	btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
+	btns = malloc(NUM_PAGES * sizeof(*btns));
 	if (!btns)
 		return NULL;
 	for (i = 0; i < NUM_PAGES; i++)
 		btns[i] = make_nav_button(i, btn_w);
-
 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
-			       .margin = mar, .padding = 0});
+			       .margin = 0, .padding = 0});
 	free(btns);
-
 	scroll = bgtk_scrollable(ctx, &sidebar_list, 1,
-		(BGTK_Options){.padding = scroll_pad, .margin = mar});
+		(BGTK_Options){.padding = scroll_pad, .margin = 0});
 	scroll->w = SIDEBAR_W;
-	scroll->h = app_h - 2 * (bw + pad);
-
+	scroll->h = app_h - 2 * (fmar + bw + rpad);
 	return scroll;
 }
-
-/* ------------------------------------------------------------------ */
-/* Build the full UI                                                   */
-/* ------------------------------------------------------------------ */
 
 void settings_build_ui(struct BGTK_Context *c, struct config *config,
 		       int width, int height)
@@ -1692,63 +1563,51 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
 	app_w = width;
 	app_h = height;
 	font_dropdown_open = 0;
-	/* Keep drawing theme in sync with the config we are editing. */
 	ctx->theme = cfg.theme;
 
 	{
-		int pad = cfg.theme.padding > 0 ? cfg.theme.padding : 12;
-		int mar = cfg.theme.margin > 0 ? cfg.theme.margin : 8;
+		int rpad = root_pad();
 		int fmar = cfg.theme.frame_margin >= 0 ? cfg.theme.frame_margin
 							: 0;
 		int bw = (int)cfg.theme.frame_border_size;
-		int chrome;
+		int chrome, panel_w, panel_h;
+		struct BGTK_Widget *placeholder;
+		struct BGTK_Widget *cols[3];
+		struct BGTK_Widget *row;
 
 		if (bw < 0)
 			bw = 0;
-		chrome = 2 * (fmar + bw + pad);
-
+		chrome = 2 * (fmar + bw + rpad);
 		sidebar = build_sidebar();
-		/* Thin divider: gutter from widget margin. */
 		panel_rule = bgtk_rule(ctx, BGTK_LIST_VERTICAL, 1,
 				       (BGTK_Options){.margin = 0, .padding = 0});
-		{
-			int gutter = mar > 0 ? mar : 4;
-			panel_rule->w = 1 + gutter;
-			panel_rule->data.rule.thickness = 1;
-		}
+		panel_rule->w = 1;
+		panel_rule->data.rule.thickness = 1;
+		panel_rule->data.rule.color = 0;
 		panel_rule->h = app_h - chrome;
-
-		int panel_w = app_w - sidebar->w - panel_rule->w - chrome - mar;
-		int panel_h = app_h - chrome;
+		panel_w = app_w - sidebar->w - panel_rule->w - chrome;
+		panel_h = app_h - chrome;
 		if (panel_w < 80)
 			panel_w = 80;
-
-		struct BGTK_Widget *placeholder = bgtk_text(ctx, "Select a category",
-			(BGTK_Options){.padding = pad, .margin = 0});
-		/*
-		 * Borderless content frame; margin 0 so the page top lines up
-		 * with the sidebar (sidebar already has its own scroll pad).
-		 */
+		placeholder = bgtk_text(ctx, "Select a category",
+			(BGTK_Options){.padding = theme_outer_pad(), .margin = 0});
 		content_panel = bgtk_frame(ctx, placeholder, panel_w, panel_h,
 			(BGTK_Options){.padding = 0, .margin = 0});
 		content_panel->data.frame.border_w = 0;
-
-		struct BGTK_Widget *cols[3] = { sidebar, panel_rule, content_panel };
-		struct BGTK_Widget *row = bgtk_list(ctx, cols, 3,
+		cols[0] = sidebar;
+		cols[1] = panel_rule;
+		cols[2] = content_panel;
+		row = bgtk_list(ctx, cols, 3,
 			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
 				       .margin = 0, .padding = 0});
-
-		/* Root: frame_margin outside border, padding inside. */
 		root_frame = bgtk_frame(ctx, row, app_w, app_h,
-			(BGTK_Options){.padding = pad, .margin = fmar});
-
+			(BGTK_Options){.padding = rpad, .margin = fmar});
 		ctx->root_widget = root_frame;
 	}
 	current_page = 0;
 	rebuild_content();
 }
 
-/* Reflow chrome + page after a window resize (MSG_BUFFER_CHANGE / mock resize). */
 void settings_layout(void)
 {
 	if (!ctx || !root_frame)
@@ -1761,7 +1620,6 @@ void settings_layout(void)
 		app_h = 120;
 	root_frame->w = app_w;
 	root_frame->h = app_h;
-	/* rebuild_content resizes sidebar/content_panel and re-parses HTML. */
 	rebuild_content();
 }
 
@@ -1948,16 +1806,16 @@ int main(void)
 		}
 	}
 
-	struct BufferRequest req = { .width = 700, .height = 480 };
+	struct BufferRequest req = { .width = SETTINGS_W, .height = SETTINGS_H };
 	void *buf = bgce_get_buffer(conn, req);
 	if (!buf) {
-		bgtk_log("bgce_get_buffer 700x480 failed");
+		bgtk_log("bgce_get_buffer %dx%d failed", SETTINGS_W, SETTINGS_H);
 		bgce_disconnect(conn);
 		return 1;
 	}
 	bgtk_log("bgce_get_buffer ok %p", buf);
 
-	struct BGTK_Context *c = bgtk_init(conn, buf, 700, 480);
+	struct BGTK_Context *c = bgtk_init(conn, buf, SETTINGS_W, SETTINGS_H);
 	if (!c) {
 		bgtk_log("bgtk_init failed — check fonts / FreeType");
 		bgce_disconnect(conn);
@@ -1969,8 +1827,8 @@ int main(void)
 	bgtk_log("bgtk.conf loaded; overlaying bgce.conf");
 	/* Full BGCE file: background + cursors + shortcuts. */
 	load_bgce_config(&config);
-	bgtk_log("building UI %dx%d", 700, 480);
-	settings_build_ui(c, &config, 700, 480);
+	bgtk_log("building UI %dx%d", SETTINGS_W, SETTINGS_H);
+	settings_build_ui(c, &config, SETTINGS_W, SETTINGS_H);
 	bgtk_log("UI ready; entering main loop");
 	bgtk_log_flush();
 

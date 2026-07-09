@@ -38,6 +38,8 @@ typedef struct {
 	uint32_t input_bg;
 	/* Accent: headers, links, selected list rows. */
 	uint32_t highlight;
+	/* Horizontal/vertical rules (dividers); 0 = fall back in draw. */
+	uint32_t rule_color;
 	/* Global FreeType baseline tweak (px; added after per-widget baseline_offset). */
 	int text_baseline_offset;
 	/*
@@ -76,6 +78,9 @@ int write_config(const struct config* config);
 
 // Format a 0xAARRGGBB color as #RRGGBB (buf must be >= 8 bytes).
 void format_hex_color(uint32_t color, char *buf, int buflen);
+
+// Parse #RRGGBB or #RRGGBBAA into 0xAARRGGBB (missing/invalid → opaque black).
+uint32_t parse_hex_color(const char *str);
 
 // Initialize a config struct with built-in sane defaults (theme, font size, etc.).
 // Called by parse_config and bgtk_init so that init only loads/overrides.

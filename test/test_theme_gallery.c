@@ -14,7 +14,6 @@
 
 #include "bgtk.h"
 #include "config.h"
-#include "html.h"
 #include "internal.h"
 
 extern void settings_build_ui(struct BGTK_Context *c, struct config *config,

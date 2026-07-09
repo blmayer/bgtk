@@ -355,8 +355,9 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 
 	case BGTK_WIDGET_SCROLLABLE: {
 		/* Must match draw_scrollable layout exactly:
-		 *   child.y = current_y + margin
+		 *   child.y = current_y + margin + padding
 		 *   current_y += h + 2*margin
+		 *   content_height = cy + 2*(margin+padding)
 		 * Underestimating height caused OOB writes into the
 		 * offscreen buffer (heap corruption / SIGBUS on shm). */
 		int cy = 0;
@@ -368,7 +369,8 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 			calculate_widget_size(ctx, child);
 			cy += child->h + 2 * w->margin;
 		}
-		w->data.scrollable.content_height = cy;
+		w->data.scrollable.content_height =
+			cy + 2 * (w->margin + w->padding);
 		break;
 	}
 	case BGTK_WIDGET_LIST: {
@@ -849,7 +851,8 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 			child->x =
 			    w->margin + (w->w - 2 * w->margin - child->w) / 2;
 		}
-		child->y = current_y + w->margin;
+		/* Padding insets content on all sides (was X-only — Y ignored). */
+		child->y = current_y + w->margin + w->padding;
 		bottom = child->y + child->h;
 		/* Skip draw if entirely past buffer (defensive). */
 		if (child->y < content_height && bottom > 0)
@@ -1161,8 +1164,13 @@ static void draw_rule(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		      uint32_t *pixels)
 {
 	int t = w->data.rule.thickness;
-	uint32_t color = w->data.rule.color ? w->data.rule.color
-					   : ctx->theme.frame_border_color;
+	uint32_t color = w->data.rule.color;
+	if (!color)
+		color = ctx->theme.rule_color;
+	if (!color)
+		color = ctx->theme.button_text;
+	if (!color)
+		color = ctx->theme.frame_border_color;
 	int x0 = w->x + w->margin + w->padding;
 	int y0 = w->y + w->margin + w->padding;
 	int iw = w->w - 2 * (w->margin + w->padding);

@@ -31,22 +31,22 @@ static char *trim(char *str)
 	return str;
 }
 
-// Helper: parse hex color (#RRGGBB or #RRGGBBAA)
-static uint32_t parse_hex_color(const char *str)
+// Parse hex color (#RRGGBB or #RRGGBBAA)
+uint32_t parse_hex_color(const char *str)
 {
-	if (str[0] != '#') {
-		return 0xFF000000;	// Default to black with full opacity
-	}
-
 	unsigned int r, g, b, a = 255;
-	if (strlen(str) == 7) {	// #RRGGBB
-		sscanf(str + 1, "%02x%02x%02x", &r, &g, &b);
-	} else if (strlen(str) == 9) {	// #RRGGBBAA
-		sscanf(str + 1, "%02x%02x%02x%02x", &r, &g, &b, &a);
-	} else {
-		return 0xFF000000;	// Default to black with full opacity
-	}
 
+	if (!str || str[0] != '#')
+		return 0xFF000000;
+	if (strlen(str) == 7) {
+		if (sscanf(str + 1, "%02x%02x%02x", &r, &g, &b) != 3)
+			return 0xFF000000;
+	} else if (strlen(str) == 9) {
+		if (sscanf(str + 1, "%02x%02x%02x%02x", &r, &g, &b, &a) != 4)
+			return 0xFF000000;
+	} else {
+		return 0xFF000000;
+	}
 	return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
@@ -334,11 +334,14 @@ void init_config_defaults(struct config *config)
 	config->theme.button_border_size = 3;
 	config->theme.input_border_size = 3;
 	config->theme.frame_border_size = 6;
-	config->theme.frame_border_color = 0xFFE0A060;
+	/* Same as background — no contrasting window chrome ring. */
+	config->theme.frame_border_color = 0xFF0A0A0A;
 	config->theme.focus = 0xFFE0A060;
 	config->theme.focus_bg = 0xFF2A2018;
 	config->theme.input_bg = 0xFF1C1814;
 	config->theme.highlight = 0xFFD4B8A0;
+	/* Panel dividers (e.g. settings sidebar rule). */
+	config->theme.rule_color = 0xFFF5E6D3;
 	config->theme.text_baseline_offset = 0;
 	/*
 	 * Sowm-style floating cards:
@@ -437,6 +440,8 @@ int write_config(const struct config *config)
 	fprintf(f, "input_bg = %s\n", c);
 	format_hex_color(config->theme.highlight, c, sizeof(c));
 	fprintf(f, "highlight = %s\n", c);
+	format_hex_color(config->theme.rule_color, c, sizeof(c));
+	fprintf(f, "rule_color = %s\n", c);
 	fprintf(f, "text_baseline_offset = %d\n",
 		config->theme.text_baseline_offset);
 	fprintf(f, "margin = %d\n", config->theme.margin);
@@ -551,6 +556,8 @@ int parse_config(struct config *config)
 				config->theme.input_bg = parse_hex_color(value);
 			} else if (strcmp(key, "highlight") == 0) {
 				config->theme.highlight = parse_hex_color(value);
+			} else if (strcmp(key, "rule_color") == 0) {
+				config->theme.rule_color = parse_hex_color(value);
 			} else if (strcmp(key, "text_baseline_offset") == 0) {
 				config->theme.text_baseline_offset = atoi(value);
 			} else if (strcmp(key, "margin") == 0) {

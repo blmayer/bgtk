@@ -304,10 +304,10 @@ keys.o: bgtk.h
 html.o: html.h
 $(TEST_HTML_OBJ): html.h bgtk.h
 $(HEADLESS_OBJ): bgtk.h
-$(SETTINGS_OBJ): html.h bgtk.h config.h
-$(SETTINGS_TEST_OBJ): html.h bgtk.h config.h
-$(TEST_SETTINGS_OBJ): html.h bgtk.h config.h
-$(TEST_THEME_GALLERY_OBJ): html.h bgtk.h config.h
+$(SETTINGS_OBJ): bgtk.h config.h
+$(SETTINGS_TEST_OBJ): bgtk.h config.h
+$(TEST_SETTINGS_OBJ): bgtk.h config.h
+$(TEST_THEME_GALLERY_OBJ): bgtk.h config.h
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<

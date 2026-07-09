@@ -578,11 +578,13 @@ static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
 
 	/* Cell pad from theme (half of padding, min 2) so forms breathe
 	 * without huge empty bands between rows. */
-	int cell_pad = theme_pad(ctx, 4) / 2;
+	/* Match typical nav-button pad (theme.pad/2+2) so form rows
+	 * line up with sidebar chrome when hosts share the same inset. */
+	int cell_pad = theme_pad(ctx, 4) / 2 + 2;
 	if (cell_pad < 2)
 		cell_pad = 2;
-	if (cell_pad > 8)
-		cell_pad = 8;
+	if (cell_pad > 10)
+		cell_pad = 10;
 	struct BGTK_Widget *frame = bgtk_frame(ctx, content,
 		content->w + 2 * cell_pad, content->h + 2 * cell_pad,
 		(BGTK_Options){.padding = cell_pad, .margin = 0});

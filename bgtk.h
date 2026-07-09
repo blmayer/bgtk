@@ -343,7 +343,7 @@ struct BGTK_Widget {
 		struct {
 			enum BGTK_List_Orientation orientation;
 			int thickness;     // line width in px (>=1)
-			uint32_t color;    // 0 = theme.frame_border_color
+			uint32_t color;    // 0 = theme.rule_color
 		} rule;
 		struct {
 			uint32_t* pixels;  // Pixel buffer for image
@@ -382,6 +382,9 @@ struct BGTK_Widget {
 		} text_input;
 	} data;  // End of union
 };  // End of BGTK_Widget struct
+
+/* Free a widget subtree (safe on NULL). Clears ctx focus if it was inside. */
+void bgtk_widget_destroy(struct BGTK_Widget *w);
 
 // --- Logging (dedicated files under ~/.cache/bgtk/, not shared with BGCE) ---
 // Open $XDG_CACHE_HOME/bgtk/<app_name>.log (or ~/.cache/bgtk/...). Creates dirs.
