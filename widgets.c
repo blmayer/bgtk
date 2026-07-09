@@ -571,6 +571,76 @@ struct BGTK_Widget *bgtk_rule(struct BGTK_Context *ctx,
 	return w;
 }
 
+/* Click left of center → value 0; right → 1. */
+static int switch_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+{
+	int inside, mid, new_v;
+
+	inside = (ev.x >= widget->x && ev.x < widget->x + widget->w &&
+		  ev.y >= widget->y && ev.y < widget->y + widget->h);
+	if (ev.code != BTN_LEFT || ev.value != 1 || !inside)
+		return 0;
+
+	/* Center of content box (labels + track). */
+	mid = widget->x + widget->margin + widget->padding +
+	      (widget->w - 2 * (widget->margin + widget->padding)) / 2;
+	new_v = (ev.x >= mid) ? 1 : 0;
+	if (new_v != widget->data.switch_w.value) {
+		widget->data.switch_w.value = new_v;
+		if (widget->data.switch_w.callback)
+			widget->data.switch_w.callback(
+				widget->data.switch_w.cb_data);
+		if (widget->ctx)
+			bgtk_draw_widgets(widget->ctx);
+	}
+	return 1;
+}
+
+struct BGTK_Widget *bgtk_switch(struct BGTK_Context *ctx, const char *left,
+				const char *right, int value,
+				BGTK_Callback callback, void *cb_data,
+				BGTK_Options options)
+{
+	struct BGTK_Widget *w;
+	int lw = 0, lh = 0, rw = 0, rh = 0;
+	int track_h, gap, kn, fs;
+
+	w = widget_new(ctx, BGTK_WIDGET_SWITCH, options);
+	if (!w)
+		return NULL;
+	w->data.switch_w.left = strdup(left ? left : "");
+	w->data.switch_w.right = strdup(right ? right : "");
+	w->data.switch_w.value = value ? 1 : 0;
+	w->data.switch_w.callback = callback;
+	w->data.switch_w.cb_data = cb_data;
+	w->handle_event = switch_handle_event;
+
+	if (ctx && ctx->ft_face) {
+		FT_Set_Pixel_Sizes(ctx->ft_face, 0,
+				   ctx->font_size > 0 ? ctx->font_size : 14);
+		measure_text(ctx->ft_face, w->data.switch_w.left, &lw, &lh);
+		measure_text(ctx->ft_face, w->data.switch_w.right, &rw, &rh);
+	} else {
+		fs = (ctx && ctx->font_size > 0) ? ctx->font_size : 14;
+		lh = rh = fs;
+		lw = (int)strlen(w->data.switch_w.left) * (fs / 2 + 1);
+		rw = (int)strlen(w->data.switch_w.right) * (fs / 2 + 1);
+	}
+	if (lh < rh)
+		lh = rh;
+	/* left_label | gap | track | gap | right_label */
+	fs = (ctx && ctx->font_size > 0) ? ctx->font_size : 14;
+	kn = fs + 2;
+	if (kn < 12)
+		kn = 12;
+	gap = 8;
+	track_h = kn + 6;
+	/* Track wide enough for knob travel (≈ 2.5× knob). */
+	w->w = lw + rw + kn * 5 / 2 + gap * 2 + 2 * (w->padding + w->margin);
+	w->h = (track_h > lh ? track_h : lh) + 2 * (w->padding + w->margin);
+	return w;
+}
+
 struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,
 				struct BGTK_Widget *label,
 				BGTK_Callback callback, void *cb_data,
@@ -719,11 +789,10 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
 	widget->data.list_widget.orientation = options.orientation;
 
 	/* Content size matches draw_list:
-	 * first child at (margin+padding), gaps of 2*margin, outer inset
-	 * margin+padding on the far side. */
+	 * children at padding; gaps of 2*margin between items; outer 2*padding. */
 	int max_width = 0;
 	int max_height = 0;
-	int inset = 2 * (widget->margin + widget->padding);
+	int pad2 = 2 * widget->padding;
 	for (int i = 0; i < widget_count; i++) {
 		widget->data.list_widget.items[i] = items[i];
 		if (options.orientation == BGTK_LIST_VERTICAL) {
@@ -747,13 +816,13 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
 			widget->w -= 2 * widget->margin;
 		}
 	}
-	// Outer pad+margin on both sides + max child on the cross axis
+	/* Outer padding only; margin is inter-item gap (not side inset). */
 	if (options.orientation == BGTK_LIST_VERTICAL) {
-		widget->w = max_width + inset;
-		widget->h += inset;
+		widget->w = max_width + pad2;
+		widget->h += pad2;
 	} else {
-		widget->h = max_height + inset;
-		widget->w += inset;
+		widget->h = max_height + pad2;
+		widget->w += pad2;
 	}
 
 	// Override the default event handler with list-specific one
@@ -839,6 +908,7 @@ struct BGTK_Widget *bgtk_text_input(struct BGTK_Context *ctx,
 	widget->data.text_input.on_change = NULL;
 	widget->data.text_input.on_tab = NULL;
 	widget->data.text_input.on_enter = NULL;
+	widget->data.text_input.border_w = -1; /* theme default */
 
 	// Override the default event handler with text input-specific one
 	widget->handle_event = text_input_handle_event;

@@ -334,8 +334,10 @@ void init_config_defaults(struct config *config)
 	config->theme.button_border_size = 3;
 	config->theme.input_border_size = 3;
 	config->theme.frame_border_size = 6;
-	/* Same as background — no contrasting window chrome ring. */
+	/* Same as background — no contrasting window chrome when focused. */
 	config->theme.frame_border_color = 0xFF0A0A0A;
+	/* Dim edge so unfocused windows are still readable. */
+	config->theme.frame_border_unfocused = 0xFF3A3530;
 	config->theme.focus = 0xFFE0A060;
 	config->theme.focus_bg = 0xFF2A2018;
 	config->theme.input_bg = 0xFF1C1814;
@@ -432,6 +434,8 @@ int write_config(const struct config *config)
 	fprintf(f, "frame_border_size = %u\n", config->theme.frame_border_size);
 	format_hex_color(config->theme.frame_border_color, c, sizeof(c));
 	fprintf(f, "frame_border_color = %s\n", c);
+	format_hex_color(config->theme.frame_border_unfocused, c, sizeof(c));
+	fprintf(f, "frame_border_unfocused = %s\n", c);
 	format_hex_color(config->theme.focus, c, sizeof(c));
 	fprintf(f, "focus = %s\n", c);
 	format_hex_color(config->theme.focus_bg, c, sizeof(c));
@@ -547,6 +551,9 @@ int parse_config(struct config *config)
 				config->theme.button_border_size = atoi(value);
 			} else if (strcmp(key, "frame_border_color") == 0) {
 				config->theme.frame_border_color =
+				    parse_hex_color(value);
+			} else if (strcmp(key, "frame_border_unfocused") == 0) {
+				config->theme.frame_border_unfocused =
 				    parse_hex_color(value);
 			} else if (strcmp(key, "focus") == 0) {
 				config->theme.focus = parse_hex_color(value);

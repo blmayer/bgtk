@@ -167,7 +167,7 @@ static void rebuild_matches_ui(void)
 		int vpad = 3; /* tight file-list rows */
 		char lined[160];
 
-		/* Leading spaces = left indent inside the highlight bar. */
+		/* Indent matches search text (field pad 2 + small lead). */
 		snprintf(lined, sizeof(lined), "  %s", name);
 		lab = bgtk_text(ctx, lined,
 				(BGTK_Options){.padding = 0, .margin = 0});
@@ -184,7 +184,14 @@ static void rebuild_matches_ui(void)
 			continue;
 		}
 		row->w = row_w;
-		row->h = lab->h + 2 * vpad;
+		/* Same line height family as the slim search field. */
+		{
+			int fs = ctx->font_size > 0 ? ctx->font_size : 14;
+			int rh = fs + 2 * vpad;
+			if (rh < lab->h + 2 * vpad)
+				rh = lab->h + 2 * vpad;
+			row->h = rh;
+		}
 		row->data.button.border_w = 0;
 		if (sel)
 			row->data.button.bg_override = ctx->theme.highlight
@@ -302,39 +309,43 @@ static void on_enter_pressed(void)
 	launcher_detach();
 }
 
-/* Size input + match list to fill the current window. */
+/* Size input + match list to fill the current window (equal L/R chrome). */
 static void layout_launcher(void)
 {
-	int pad, mar, bw, inner_w, inner_h, input_h, gap;
+	int pad, mar, bw, fmar, inner_w, inner_h, input_h, gap, fs, line_h;
 
 	if (!ctx)
 		return;
 	pad = ctx->theme.padding > 0 ? ctx->theme.padding : 12;
 	mar = ctx->theme.margin > 0 ? ctx->theme.margin : 8;
 	bw = (int)ctx->theme.frame_border_size;
-	{
-		int fmar = ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin
-							: 0;
-		if (bw < 0)
-			bw = 0;
-		/* Content: [frame_margin][border][padding][…] */
-		inner_w = ctx->width - 2 * (fmar + bw + pad);
-		inner_h = ctx->height - 2 * (fmar + bw + pad);
-	}
+	fmar = ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin : 0;
+	if (bw < 0)
+		bw = 0;
+	/* Content: [frame_margin][border][padding][…] — same on all sides. */
+	inner_w = ctx->width - 2 * (fmar + bw + pad);
+	inner_h = ctx->height - 2 * (fmar + bw + pad);
 	if (inner_w < 40)
 		inner_w = 40;
 	if (inner_h < 40)
 		inner_h = 40;
-	gap = mar; /* space between search box and list */
+	/* Small gap under search line (not list.margin — that also inset X). */
+	gap = mar > 4 ? mar / 2 : 4;
+	fs = ctx->font_size > 0 ? ctx->font_size : 14;
+	/* Slim line height: font + tiny vertical pad (matches list row feel). */
+	line_h = fs + 6;
+	if (line_h < 18)
+		line_h = 18;
 
 	if (text_input) {
 		text_input->w = inner_w;
+		text_input->h = line_h;
 		text_input->margin = 0;
-		if (text_input->h < 28)
-			text_input->h = 28;
+		text_input->padding = 2;
+		text_input->data.text_input.border_w = 0;
 	}
 	if (matches_scroll) {
-		input_h = text_input ? text_input->h + gap : 36;
+		input_h = (text_input ? text_input->h : line_h) + gap;
 		matches_scroll->w = inner_w;
 		matches_scroll->h = inner_h - input_h;
 		matches_scroll->margin = 0;
@@ -343,8 +354,6 @@ static void layout_launcher(void)
 			matches_scroll->h = 40;
 	}
 	if (ctx->root_widget) {
-		int fmar = ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin
-							: 0;
 		ctx->root_widget->w = ctx->width;
 		ctx->root_widget->h = ctx->height;
 		ctx->root_widget->padding = pad;
@@ -380,8 +389,9 @@ int main(void)
 	}
 	bgtk_log("bgce_connect ok fd=%d", conn_fd);
 
-	int width = 480;
-	int height = 320;
+	/* Slightly wider card; slim search line + file list. */
+	int width = 560;
+	int height = 340;
 	struct BufferRequest req = {.width = width, .height = height};
 	void* buffer = bgce_get_buffer(conn_fd, req);
 	if (!buffer) {
@@ -396,19 +406,21 @@ int main(void)
 		bgtk_log("bgtk_init failed — check fonts / log above");
 		return 1;
 	}
-	bgtk_log("building launcher UI (goldie file-list)");
+	bgtk_log("building launcher UI (minimal search + file list)");
 
 	{
 		int pad = ctx->theme.padding > 0 ? ctx->theme.padding : 12;
-		int mar = ctx->theme.margin > 0 ? ctx->theme.margin : 8;
+		int fs = ctx->font_size > 0 ? ctx->font_size : 14;
 
+		/* Minimal field: no border, tiny pad, same font as results. */
 		text_input = bgtk_text_input(
-			ctx, "", 440, 0,
-			(BGTK_Options){.padding = pad, .margin = 0});
+			ctx, "", width, fs + 2,
+			(BGTK_Options){.padding = 2, .margin = 0});
 		if (!text_input) {
 			bgtk_log("bgtk_text_input failed");
 			return 1;
 		}
+		text_input->data.text_input.border_w = 0;
 		text_input->data.text_input.on_change = on_text_change;
 		text_input->data.text_input.on_tab = on_tab_pressed;
 		text_input->data.text_input.on_enter = on_enter_pressed;
@@ -423,12 +435,17 @@ int main(void)
 		}
 
 		{
+			/*
+			 * Vertical list margin must stay 0: list.margin also
+			 * shifts children on X, which made the right edge look
+			 * tighter than the left. Gap under search is layout gap.
+			 */
 			struct BGTK_Widget *layout_items[2] = { text_input,
 							       matches_scroll };
 			struct BGTK_Widget *layout = bgtk_list(
 				ctx, layout_items, 2,
 				(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
-					       .margin = mar,
+					       .margin = 0,
 					       .padding = 0});
 			struct BGTK_Widget *frame;
 

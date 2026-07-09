@@ -74,6 +74,12 @@ int main(void)
 	/* 00: Initial view - Background page is shown */
 	bgtk_draw_widgets(ctx);
 	take_screenshot(ctx, "settings_00_background.png");
+	/* Unfocused frame border (theme.frame_border_unfocused). */
+	bgtk_set_window_focus(ctx, 0);
+	bgtk_draw_widgets(ctx);
+	take_screenshot(ctx, "settings_00u_unfocused.png");
+	bgtk_set_window_focus(ctx, 1);
+	bgtk_draw_widgets(ctx);
 	/* Preview must be red (0xE53935), not BGR-swapped blue-ish. */
 	{
 		uint32_t *fb = (uint32_t *)ctx->shm_buffer;
@@ -213,7 +219,8 @@ int main(void)
 
 	/* Sidebar nav: first button center ~40, step ~45 (pad/2+2 chrome). */
 	#define SIDEBAR_X 70
-	#define SIDEBAR_BTN_Y(n) (40 + (n) * 45)
+	/* Nav buttons ~41px tall + 16px gap (SIDEBAR_NAV_MARGIN=8 → 2×margin). */
+	#define SIDEBAR_BTN_Y(n) (39 + (n) * 57)
 
 	/* 01: Click "Cursor" */
 	{

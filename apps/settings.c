@@ -66,6 +66,7 @@ static struct BGTK_Widget *theme_frame_border_input;
 static struct BGTK_Widget *theme_btn_border_input;
 static struct BGTK_Widget *theme_input_border_input;
 static struct BGTK_Widget *theme_frame_color_input;
+static struct BGTK_Widget *theme_frame_unfocused_input;
 static struct BGTK_Widget *theme_focus_input;
 static struct BGTK_Widget *theme_focus_bg_input;
 static struct BGTK_Widget *theme_input_bg_input;
@@ -406,28 +407,67 @@ static struct BGTK_Widget *ui_hbox(struct BGTK_Widget **items, int n)
 
 static struct BGTK_Widget *ui_vbox(struct BGTK_Widget **items, int n)
 {
+	/* List margin → 2×margin between rows. Keep small so L/R stay even
+	 * (vertical lists also use margin as a side inset when packing). */
+	int gap = 4;
+
+	if (ctx && ctx->theme.margin > 0) {
+		gap = ctx->theme.margin / 2;
+		if (gap < 4)
+			gap = 4;
+		if (gap > 8)
+			gap = 8;
+	}
 	return bgtk_list(ctx, items, n,
 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
-			       .margin = 0, .padding = 0});
+			       .margin = gap, .padding = 0});
 }
 
 #define FORM_LABEL_W 130
-#define FORM_LABEL2_W 150
+/* Wide enough for longest theme col-2 label ("Frame border unfocused"). */
+#define FORM_LABEL2_W 200
+#define FORM_FIELD_W 100 /* fixed so value columns line up */
+/* List gap = 2×margin → 48px between theme columns. */
+#define FORM_COL_GAP 24
+/* Sidebar nav: list gap = 2×margin → 16px between buttons. */
+#define SIDEBAR_NAV_MARGIN 8
+
+static void ui_force_field_w(struct BGTK_Widget *f, int width)
+{
+	if (f && width > 0)
+		f->w = width;
+}
 
 static struct BGTK_Widget *ui_row(const char *label, struct BGTK_Widget *field)
 {
+	ui_force_field_w(field, FORM_FIELD_W);
 	struct BGTK_Widget *items[2] = { ui_label(label, FORM_LABEL_W), field };
 	return ui_hbox(items, 2);
 }
 
+/* Two form columns: [lab|field] —gap— [lab|field] with fixed field widths. */
 static struct BGTK_Widget *ui_row2(const char *l0, struct BGTK_Widget *f0,
 				   const char *l1, struct BGTK_Widget *f1)
 {
-	struct BGTK_Widget *items[4] = {
-		ui_label(l0, FORM_LABEL_W), f0,
-		ui_label(l1, FORM_LABEL2_W), f1
-	};
-	return ui_hbox(items, 4);
+	struct BGTK_Widget *c1_i[2], *c2_i[2], *cols[2];
+	struct BGTK_Widget *c1, *c2;
+
+	ui_force_field_w(f0, FORM_FIELD_W);
+	ui_force_field_w(f1, FORM_FIELD_W);
+	c1_i[0] = ui_label(l0, FORM_LABEL_W);
+	c1_i[1] = f0;
+	c2_i[0] = ui_label(l1, FORM_LABEL2_W);
+	c2_i[1] = f1;
+	c1 = ui_hbox(c1_i, 2);
+	c2 = ui_hbox(c2_i, 2);
+	/* Pin column outer widths so value edges stay on a grid. */
+	ui_force_field_w(c1, FORM_LABEL_W + FORM_FIELD_W);
+	ui_force_field_w(c2, FORM_LABEL2_W + FORM_FIELD_W);
+	cols[0] = c1;
+	cols[1] = c2;
+	return bgtk_list(ctx, cols, 2,
+		(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+			       .margin = FORM_COL_GAP, .padding = 0});
 }
 
 /* Scrollable borderless page; pad matches sidebar panel_inset. */
@@ -584,17 +624,34 @@ static void apply_background(void *userdata)
 	bgtk_draw_widgets(ctx);
 }
 
+/* Switch value is already updated; sync cfg and rebuild page structure. */
+static void on_bg_type_switch(void *userdata)
+{
+	struct BGTK_Widget *sw = userdata;
+
+	if (sw && sw->type == BGTK_WIDGET_SWITCH)
+		cfg.type = sw->data.switch_w.value ? BG_IMAGE : BG_COLOR;
+	else
+		cfg.type = (cfg.type == BG_COLOR) ? BG_IMAGE : BG_COLOR;
+	rebuild_content();
+}
+
+static void on_bg_mode_switch(void *userdata)
+{
+	struct BGTK_Widget *sw = userdata;
+
+	if (sw && sw->type == BGTK_WIDGET_SWITCH)
+		cfg.mode = sw->data.switch_w.value ? IMAGE_TILED : IMAGE_SCALED;
+	else
+		cfg.mode = (cfg.mode == IMAGE_TILED) ? IMAGE_SCALED : IMAGE_TILED;
+	rebuild_content();
+}
+
+/* Test helper: flip mode without a widget. */
 static void toggle_bg_mode(void *userdata)
 {
 	(void)userdata;
 	cfg.mode = (cfg.mode == IMAGE_TILED) ? IMAGE_SCALED : IMAGE_TILED;
-	rebuild_content();
-}
-
-static void toggle_bg_type(void *userdata)
-{
-	(void)userdata;
-	cfg.type = (cfg.type == BG_COLOR) ? BG_IMAGE : BG_COLOR;
 	rebuild_content();
 }
 
@@ -856,6 +913,10 @@ static void apply_theme(void *userdata)
 	    theme_frame_color_input->data.text_input.text)
 		cfg.theme.frame_border_color = parse_color_input(
 			theme_frame_color_input->data.text_input.text);
+	if (theme_frame_unfocused_input &&
+	    theme_frame_unfocused_input->data.text_input.text)
+		cfg.theme.frame_border_unfocused = parse_color_input(
+			theme_frame_unfocused_input->data.text_input.text);
 	if (theme_focus_input && theme_focus_input->data.text_input.text)
 		cfg.theme.focus =
 			parse_color_input(theme_focus_input->data.text_input.text);
@@ -1171,22 +1232,33 @@ static struct BGTK_Widget *build_background_page(int panel_w, int panel_h)
 	int n = 0;
 	struct BGTK_Widget *body;
 	struct BGTK_Widget *page;
-	char type_lbl[32], mode_lbl[32];
+	struct BGTK_Widget *type_sw;
+	struct BGTK_Widget *mode_sw;
 
 	format_hex_color(cfg.color, color_hex, sizeof(color_hex));
-	snprintf(type_lbl, sizeof(type_lbl), "[ %s ]",
-		 cfg.type == BG_IMAGE ? "Image" : "Color");
 
-	rows[n++] = ui_row("Type", ui_btn(type_lbl, toggle_bg_type, NULL));
+	/* Pill switch: 0 = Color, 1 = Image. pad 0 so "Color" lines up with inputs. */
+	type_sw = bgtk_switch(ctx, "Color", "Image",
+			      cfg.type == BG_IMAGE ? 1 : 0, on_bg_type_switch,
+			      NULL, (BGTK_Options){.padding = 0, .margin = 0});
+	if (type_sw)
+		type_sw->data.switch_w.cb_data = type_sw;
+	rows[n++] = ui_row("Type", type_sw ? type_sw : ui_text("?"));
+
 	if (cfg.type == BG_COLOR) {
 		bg_color_input = ui_input(color_hex, 120);
 		rows[n++] = ui_row("Color", bg_color_input);
 	} else {
 		bg_path_input = ui_input(cfg.path, 280);
 		rows[n++] = ui_row("Path", bg_path_input);
-		snprintf(mode_lbl, sizeof(mode_lbl), "[ %s ]",
-			 cfg.mode == IMAGE_SCALED ? "Scaled" : "Tiled");
-		rows[n++] = ui_row("Mode", ui_btn(mode_lbl, toggle_bg_mode, NULL));
+		/* 0 = Scaled, 1 = Tiled */
+		mode_sw = bgtk_switch(ctx, "Scaled", "Tiled",
+				      cfg.mode == IMAGE_TILED ? 1 : 0,
+				      on_bg_mode_switch, NULL,
+				      (BGTK_Options){.padding = 0, .margin = 0});
+		if (mode_sw)
+			mode_sw->data.switch_w.cb_data = mode_sw;
+		rows[n++] = ui_row("Mode", mode_sw ? mode_sw : ui_text("?"));
 	}
 	rows[n++] = ui_btn("Apply", apply_background, NULL);
 	body = ui_vbox(rows, n);
@@ -1311,32 +1383,37 @@ static struct BGTK_Widget *build_theme_page(int panel_w, int panel_h)
 			    "Frame border color", theme_frame_color_input);
 
 	theme_btn_input = theme_color_input(cfg.theme.button, 90);
-	theme_rule_color_input = theme_color_input(cfg.theme.rule_color, 90);
+	theme_frame_unfocused_input =
+		theme_color_input(cfg.theme.frame_border_unfocused, 90);
 	rows[n++] = ui_row2("Button", theme_btn_input,
-			    "Rule color", theme_rule_color_input);
+			    "Frame border unfocused",
+			    theme_frame_unfocused_input);
 
 	theme_btn_text_input = theme_color_input(cfg.theme.button_text, 90);
-	theme_focus_input = theme_color_input(cfg.theme.focus, 90);
+	theme_rule_color_input = theme_color_input(cfg.theme.rule_color, 90);
 	rows[n++] = ui_row2("Button text", theme_btn_text_input,
-			    "Focus", theme_focus_input);
+			    "Rule color", theme_rule_color_input);
 
-	theme_input_bg_input = theme_color_input(cfg.theme.input_bg, 90);
+	theme_focus_input = theme_color_input(cfg.theme.focus, 90);
 	theme_frame_border_input =
 		theme_int_input((int)cfg.theme.frame_border_size, 60);
-	rows[n++] = ui_row2("Input background", theme_input_bg_input,
+	rows[n++] = ui_row2("Focus", theme_focus_input,
 			    "Frame border size", theme_frame_border_input);
 
-	theme_focus_bg_input = theme_color_input(cfg.theme.focus_bg, 90);
+	theme_input_bg_input = theme_color_input(cfg.theme.input_bg, 90);
 	theme_btn_border_input =
 		theme_int_input((int)cfg.theme.button_border_size, 60);
-	rows[n++] = ui_row2("Focus background", theme_focus_bg_input,
+	rows[n++] = ui_row2("Input background", theme_input_bg_input,
 			    "Button border size", theme_btn_border_input);
 
-	theme_highlight_input = theme_color_input(cfg.theme.highlight, 90);
+	theme_focus_bg_input = theme_color_input(cfg.theme.focus_bg, 90);
 	theme_input_border_input =
 		theme_int_input((int)cfg.theme.input_border_size, 60);
-	rows[n++] = ui_row2("Highlight", theme_highlight_input,
+	rows[n++] = ui_row2("Focus background", theme_focus_bg_input,
 			    "Input border size", theme_input_border_input);
+
+	theme_highlight_input = theme_color_input(cfg.theme.highlight, 90);
+	rows[n++] = ui_row("Highlight", theme_highlight_input);
 
 	theme_margin_input = theme_int_input(cfg.theme.margin, 60);
 	rows[n++] = ui_row("Widget margin", theme_margin_input);
@@ -1371,6 +1448,7 @@ static void clear_page_ptrs(void)
 	theme_bg_input = theme_btn_input = theme_btn_text_input = NULL;
 	theme_frame_border_input = theme_btn_border_input = NULL;
 	theme_input_border_input = theme_frame_color_input = NULL;
+	theme_frame_unfocused_input = NULL;
 	theme_focus_input = theme_focus_bg_input = theme_input_bg_input = NULL;
 	theme_highlight_input = theme_rule_color_input = NULL;
 	theme_margin_input = theme_padding_input = NULL;
@@ -1514,9 +1592,10 @@ static void rebuild_sidebar(void)
 	for (i = 0; i < NUM_PAGES; i++)
 		btns[i] = make_nav_button(i, btn_w);
 	old = sidebar_list;
+	/* SIDEBAR_NAV_MARGIN → 2× between nav buttons. */
 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
-			       .margin = 0, .padding = 0});
+			       .margin = SIDEBAR_NAV_MARGIN, .padding = 0});
 	free(btns);
 	sidebar->data.scrollable.items[0] = sidebar_list;
 	sidebar->data.scrollable.widget_count = 1;
@@ -1546,7 +1625,7 @@ static struct BGTK_Widget *build_sidebar(void)
 		btns[i] = make_nav_button(i, btn_w);
 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
-			       .margin = 0, .padding = 0});
+			       .margin = SIDEBAR_NAV_MARGIN, .padding = 0});
 	free(btns);
 	scroll = bgtk_scrollable(ctx, &sidebar_list, 1,
 		(BGTK_Options){.padding = scroll_pad, .margin = 0});

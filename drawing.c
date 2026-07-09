@@ -407,23 +407,25 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 				w->data.list_widget.content_width -=
 				    2 * w->margin;
 		}
-		/* Intrinsic outer size: content + outer pad/margin inset. */
+		/* Outer size: content + padding; margin is inter-item gap only. */
 		if (w->data.list_widget.orientation == BGTK_LIST_VERTICAL) {
 			w->data.list_widget.content_width = max_width;
-			w->w = max_width + inset;
-			w->h = w->data.list_widget.content_height + inset;
+			w->w = max_width + 2 * w->padding;
+			w->h = w->data.list_widget.content_height +
+			       2 * w->padding;
 		} else {
 			w->data.list_widget.content_height = max_height;
-			w->h = max_height + inset;
-			w->w = w->data.list_widget.content_width + inset;
+			w->h = max_height + 2 * w->padding;
+			w->w = w->data.list_widget.content_width +
+			       2 * w->padding;
 		}
+		(void)inset;
 		break;
 	}
 	case BGTK_WIDGET_IMAGE:
 	case BGTK_WIDGET_TEXT_INPUT:
-		// Text input is a fixed-size widget; its size is set by
-		// the constructor (bgtk_text_input). Do not resize
-		// based on content.
+	case BGTK_WIDGET_SWITCH:
+		// Fixed-size widgets; size set by constructor.
 		break;
 	case BGTK_WIDGET_FRAME:
 		/* Must recurse: root is usually a frame; without this,
@@ -908,21 +910,22 @@ static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		struct BGTK_Widget *child = w->data.list_widget.items[i];
 
 		if (w->data.list_widget.orientation == BGTK_LIST_VERTICAL) {
-			child->x = w->x + w->margin + w->padding;
+			/* Margin is row gap only — not a left inset (kept L/R even). */
+			child->x = w->x + w->padding;
 			if (w->flags & BGTK_FLAG_CENTER) {
 				child->x =
-				    w->x + w->margin +
-				    (w->w - 2 * w->margin - child->w) / 2;
+				    w->x +
+				    (w->w - child->w) / 2;
 			}
-			child->y = w->y + w->margin + w->padding + current_y;
+			child->y = w->y + w->padding + current_y;
 			current_y += child->h + 2 * w->margin;
 		} else {	// BGTK_LIST_HORIZONTAL
-			child->x = w->x + w->margin + w->padding + current_x;
-			child->y = w->y + w->margin + w->padding;
+			child->x = w->x + w->padding + current_x;
+			child->y = w->y + w->padding;
 			if (w->flags & BGTK_FLAG_CENTER) {
 				child->y =
-				    w->y + w->margin +
-				    (w->h - 2 * w->margin - child->h) / 2;
+				    w->y +
+				    (w->h - child->h) / 2;
 			}
 			current_x += child->w + 2 * w->margin;
 		}
@@ -965,8 +968,12 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		uint32_t border =
 			w->data.frame.border_color ? w->data.frame.border_color
 						  : ctx->theme.frame_border_color;
-		if (!ctx->window_focused)
-			border = ctx->theme.background;
+		if (!ctx->window_focused) {
+			/* Dedicated unfocused chrome; 0 falls back to bg. */
+			border = ctx->theme.frame_border_unfocused
+					 ? ctx->theme.frame_border_unfocused
+					 : ctx->theme.background;
+		}
 		draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
 			  w->w - 2 * w->margin, bw, border);
 		draw_rect(ctx, pixels, w->x + w->margin,
@@ -999,31 +1006,50 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		ctx->theme.focus_bg ? ctx->theme.focus_bg : 0xFFE8F2FF;
 	uint32_t input_bg =
 		ctx->theme.input_bg ? ctx->theme.input_bg : 0xFFFFFFFF;
-	uint32_t field_bg = focused ? focus_bg : input_bg;
-	uint32_t border = focused ? focus : 0xFF888888;
 	uint32_t text_color = ctx->theme.button_text ?
 		ctx->theme.button_text : 0xFF111111;
+	uint32_t field_bg;
+	uint32_t border;
+	int bw;
 
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
-		  w->w - 2 * w->margin, w->h - 2 * w->margin, field_bg);
-
-	int bw = (int)ctx->theme.input_border_size;
-	if (bw < 1)
-		bw = 1;
-	/* Focused fields get a visibly thicker ring so focus is obvious. */
-	if (focused && bw < 3)
+	/* Per-widget border (-1 = theme; 0 = borderless / minimal field). */
+	bw = w->data.text_input.border_w >= 0
+		     ? w->data.text_input.border_w
+		     : (int)ctx->theme.input_border_size;
+	if (bw < 0)
+		bw = 0;
+	/* Focused fields get a thicker ring only when a border is drawn. */
+	if (focused && bw > 0 && bw < 3)
 		bw = 3;
 	if (bw * 2 > w->w - 2 * w->margin)
 		bw = (w->w - 2 * w->margin) / 2;
 	if (bw * 2 > w->h - 2 * w->margin)
 		bw = (w->h - 2 * w->margin) / 2;
-	if (bw < 1)
-		bw = 1;
+	if (bw < 0)
+		bw = 0;
 
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, w->w - 2 * w->margin, bw, border);	// Top
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->h - bw - w->margin, w->w - 2 * w->margin, bw, border);	// Bottom
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, bw, w->h - 2 * w->margin, border);	// Left
-	draw_rect(ctx, pixels, w->x + w->w - bw - w->margin, w->y + w->margin, bw, w->h - 2 * w->margin, border);	// Right
+	/* Borderless: blend into window bg so only text + caret show. */
+	if (bw == 0)
+		field_bg = ctx->theme.background ? ctx->theme.background
+						 : 0xFF0A0A0A;
+	else
+		field_bg = focused ? focus_bg : input_bg;
+	border = focused ? focus : 0xFF888888;
+
+	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
+		  w->w - 2 * w->margin, w->h - 2 * w->margin, field_bg);
+
+	if (bw > 0) {
+		draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
+			  w->w - 2 * w->margin, bw, border);
+		draw_rect(ctx, pixels, w->x + w->margin,
+			  w->y + w->h - bw - w->margin, w->w - 2 * w->margin, bw,
+			  border);
+		draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, bw,
+			  w->h - 2 * w->margin, border);
+		draw_rect(ctx, pixels, w->x + w->w - bw - w->margin,
+			  w->y + w->margin, bw, w->h - 2 * w->margin, border);
+	}
 
 	int inner_x0 = w->x + w->margin + bw;
 	int inner_y0 = w->y + w->margin + bw;
@@ -1191,6 +1217,103 @@ static void draw_rule(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	}
 }
 
+/*
+ * Binary switch:  left_label  [●────]  right_label
+ * Labels sit outside a slim track; knob slides left/right.
+ */
+static void draw_switch(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+			uint32_t *pixels)
+{
+	int x0 = w->x + w->margin + w->padding;
+	int y0 = w->y + w->margin + w->padding;
+	int iw = w->w - 2 * (w->margin + w->padding);
+	int ih = w->h - 2 * (w->margin + w->padding);
+	int fs = ctx->font_size > 0 ? ctx->font_size : 14;
+	int kn = fs + 2;
+	int val = w->data.switch_w.value ? 1 : 0;
+	const char *L = w->data.switch_w.left ? w->data.switch_w.left : "";
+	const char *R = w->data.switch_w.right ? w->data.switch_w.right : "";
+	int lw = 0, lh = 0, rw = 0, rh = 0;
+	uint32_t track = ctx->theme.button ? ctx->theme.button : 0xFF1C1814;
+	uint32_t edge = ctx->theme.rule_color ? ctx->theme.rule_color
+					     : (ctx->theme.button_text
+							? ctx->theme.button_text
+							: 0xFFF5E6D3);
+	uint32_t kn_col = ctx->theme.highlight ? ctx->theme.highlight
+					       : (ctx->theme.focus
+							  ? ctx->theme.focus
+							  : 0xFFE0A060);
+	uint32_t dim = ctx->theme.button_text ? ctx->theme.button_text
+					      : 0xFFF5E6D3;
+	uint32_t active = kn_col;
+	int gap = 8;
+	int track_w, track_h, track_x, track_y, kn_x, kn_y, text_y, th;
+
+	if (iw < 16 || ih < 8)
+		return;
+	if (kn > ih - 2)
+		kn = ih - 2;
+	if (kn < 10)
+		kn = 10;
+
+	if (ctx->ft_face) {
+		FT_Set_Pixel_Sizes(ctx->ft_face, 0, fs);
+		measure_text(ctx->ft_face, L, &lw, &lh);
+		measure_text(ctx->ft_face, R, &rw, &rh);
+	} else {
+		lh = rh = fs;
+		lw = (int)strlen(L) * (fs / 2 + 1);
+		rw = (int)strlen(R) * (fs / 2 + 1);
+	}
+	th = lh > rh ? lh : rh;
+	track_h = kn + 4;
+	if (track_h > ih)
+		track_h = ih;
+	track_w = kn * 5 / 2;
+	if (track_w < kn + 16)
+		track_w = kn + 16;
+	/* Keep room for both labels. */
+	if (lw + gap + track_w + gap + rw > iw)
+		track_w = iw - lw - rw - gap * 2;
+	if (track_w < kn + 8)
+		track_w = kn + 8;
+
+	track_x = x0 + lw + gap;
+	track_y = y0 + (ih - track_h) / 2;
+	text_y = y0 + (ih - th) / 2;
+	if (text_y < y0)
+		text_y = y0;
+
+	/* Left / right labels */
+	draw_text_style(ctx, pixels, L, x0, text_y,
+			val == 0 ? active : dim,
+			val == 0 ? BGTK_TEXT_BOLD : 0);
+	draw_text_style(ctx, pixels, R, track_x + track_w + gap, text_y,
+			val == 1 ? active : dim,
+			val == 1 ? BGTK_TEXT_BOLD : 0);
+
+	/* Track */
+	draw_rect(ctx, pixels, track_x, track_y, track_w, track_h, track);
+	draw_rect(ctx, pixels, track_x, track_y, track_w, 1, edge);
+	draw_rect(ctx, pixels, track_x, track_y + track_h - 1, track_w, 1, edge);
+	draw_rect(ctx, pixels, track_x, track_y, 1, track_h, edge);
+	draw_rect(ctx, pixels, track_x + track_w - 1, track_y, 1, track_h, edge);
+
+	/* Knob */
+	if (val == 0)
+		kn_x = track_x + 2;
+	else
+		kn_x = track_x + track_w - kn - 2;
+	kn_y = track_y + (track_h - kn) / 2;
+	draw_rect(ctx, pixels, kn_x, kn_y, kn, kn, kn_col);
+	if (kn > 6) {
+		draw_rect(ctx, pixels, kn_x + 1, kn_y + 1, kn - 2, 1, edge);
+		draw_rect(ctx, pixels, kn_x + 1, kn_y + kn - 2, kn - 2, 1, edge);
+		draw_rect(ctx, pixels, kn_x + 1, kn_y + 1, 1, kn - 2, edge);
+		draw_rect(ctx, pixels, kn_x + kn - 2, kn_y + 1, 1, kn - 2, edge);
+	}
+}
+
 void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		 uint32_t *pixels)
 {
@@ -1221,6 +1344,9 @@ void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		break;
 	case BGTK_WIDGET_RULE:
 		draw_rule(ctx, w, pixels);
+		break;
+	case BGTK_WIDGET_SWITCH:
+		draw_switch(ctx, w, pixels);
 		break;
 	default:
 		puts("can't draw unknown widget");

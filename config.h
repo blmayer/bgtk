@@ -30,6 +30,8 @@ typedef struct {
 	uint32_t button_border_size;
 	uint32_t input_border_size;
 	uint32_t frame_border_color;
+	/* Root frame border when the window is unfocused (0 = use background). */
+	uint32_t frame_border_unfocused;
 	/* Focused text-input ring + caret. */
 	uint32_t focus;
 	/* Focused text-input field fill. */

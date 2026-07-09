@@ -264,6 +264,8 @@ enum BGTK_Widget_Type {
 	BGTK_WIDGET_FRAME,
 	BGTK_WIDGET_TEXT_INPUT,
 	BGTK_WIDGET_RULE,
+	/* Binary pill: left / right labels + sliding knob (0 = left, 1 = right). */
+	BGTK_WIDGET_SWITCH,
 };
 
 // Widget flags
@@ -376,10 +378,19 @@ struct BGTK_Widget {
 			int selection_start;
 			int selection_end;
 			int scroll_x;
+			/* -1 = theme.input_border_size; 0 = no border (minimal). */
+			int border_w;
 			void (*on_change)(void);
 			void (*on_tab)(void);
 			void (*on_enter)(void);
 		} text_input;
+		struct {
+			char *left;   /* owned */
+			char *right;  /* owned */
+			int value;    /* 0 = left, 1 = right */
+			BGTK_Callback callback;
+			void *cb_data;
+		} switch_w;
 	} data;  // End of union
 };  // End of BGTK_Widget struct
 
@@ -475,5 +486,12 @@ struct BGTK_Widget* bgtk_list(struct BGTK_Context* ctx, struct BGTK_Widget** ite
 struct BGTK_Widget *bgtk_rule(struct BGTK_Context *ctx,
 			      enum BGTK_List_Orientation orientation,
 			      int thickness, BGTK_Options options);
+
+/* Binary switch / pill: value 0 selects left label, 1 selects right.
+ * Click left/right half of the track; callback fires after value changes. */
+struct BGTK_Widget *bgtk_switch(struct BGTK_Context *ctx, const char *left,
+				const char *right, int value,
+				BGTK_Callback callback, void *cb_data,
+				BGTK_Options options);
 
 #endif

@@ -447,6 +447,57 @@ int main(void)
 		bgtk_destroy_mock(sctx);
 	}
 
+	/* 08: Binary switch pill (left/right labels + knob). */
+	{
+		struct BGTK_Context *sctx = bgtk_init_mock(360, 120);
+		struct BGTK_Widget *sw0, *sw1, *col, *frame;
+		struct BGTK_Widget *items[3];
+		struct InputEvent click = {0};
+
+		if (!sctx) {
+			fprintf(stderr, "headless: switch scene init failed\n");
+			return 1;
+		}
+		sw0 = bgtk_switch(sctx, "Color", "Image", 0, NULL, NULL,
+				  (BGTK_Options){.padding = 4, .margin = 4});
+		sw1 = bgtk_switch(sctx, "Scaled", "Tiled", 1, NULL, NULL,
+				  (BGTK_Options){.padding = 4, .margin = 4});
+		items[0] = bgtk_text(sctx, "switches",
+				     (BGTK_Options){.padding = 4, .margin = 2});
+		items[1] = sw0;
+		items[2] = sw1;
+		col = bgtk_list(sctx, items, 3,
+			(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+				       .margin = 4, .padding = 4});
+		frame = bgtk_frame(sctx, col, 360, 120,
+				   (BGTK_Options){.padding = 8});
+		sctx->root_widget = frame;
+		bgtk_draw_widgets(sctx);
+		take_screenshot(sctx, "headless_08_switch_left.png");
+		/* Click right half of first switch → value 1. */
+		if (sw0) {
+			click.type = EV_KEY;
+			click.code = BTN_LEFT;
+			click.value = 1;
+			click.x = sw0->x + sw0->w * 3 / 4;
+			click.y = sw0->y + sw0->h / 2;
+			/* Positions assigned during draw; re-draw positions. */
+			bgtk_draw_widgets(sctx);
+			click.x = sw0->x + sw0->w * 3 / 4;
+			click.y = sw0->y + sw0->h / 2;
+			bgtk_inject_event(sctx, click);
+			if (sw0->data.switch_w.value != 1) {
+				fprintf(stderr,
+					"headless: switch click expected 1 got %d\n",
+					sw0->data.switch_w.value);
+				bgtk_destroy_mock(sctx);
+				return 1;
+			}
+			take_screenshot(sctx, "headless_08b_switch_right.png");
+		}
+		bgtk_destroy_mock(sctx);
+	}
+
 	printf("headless test complete. PNG frames written.\n");
 	return 0;
 }

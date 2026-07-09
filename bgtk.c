@@ -884,6 +884,10 @@ static void destroy_widget(struct BGTK_Widget *w)
 	case BGTK_WIDGET_TEXT_INPUT:
 		free(w->data.text_input.text);
 		break;
+	case BGTK_WIDGET_SWITCH:
+		free(w->data.switch_w.left);
+		free(w->data.switch_w.right);
+		break;
 	case BGTK_WIDGET_IMAGE:
 		if (w->data.image.pixels) {
 			free(w->data.image.pixels);
