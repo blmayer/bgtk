@@ -11,9 +11,9 @@
 
 struct BGTK_Context;
 
-/* A single character cell */
+/* A single character cell (Unicode codepoint in ch). */
 struct Term_Cell {
-	char ch;
+	uint32_t ch;
 	int8_t fg;   /* palette index 0-15 */
 	int8_t bg;   /* palette index 0-15 */
 	int8_t bold;
@@ -37,7 +37,15 @@ struct Term_State {
 	int esc_state;
 	int csi_params[8];
 	int csi_nparam;
+	/*
+	 * CSI private/prefix: 0=none, 1='?' (DEC private / DSR),
+	 * 2='>' (secondary DA), 3=other.
+	 */
 	int csi_priv;
+
+	/* Incomplete UTF-8 sequence across term_feed() chunks. */
+	unsigned char utf8_partial[4];
+	int utf8_partial_len;
 
 	/* PTY master fd (for DSR replies; -1 if headless) */
 	int pty_fd;

@@ -340,7 +340,8 @@ int main(void)
 					int match = 1;
 					for (size_t k = 0; k < strlen(needle); k++) {
 						if ((size_t)c + k >= (size_t)cols) { match = 0; break; }
-						if (ts->cells[r * cols + c + k].ch != needle[k]) {
+						if (ts->cells[r * cols + c + k].ch !=
+						    (uint32_t)(unsigned char)needle[k]) {
 							match = 0;
 							break;
 						}
@@ -595,6 +596,76 @@ int main(void)
 			bgtk_destroy_mock(ctx);
 			return 1;
 		}
+		term_destroy(vs);
+	}
+
+	/*
+	 * vim t_u7 / DSR: write UTF-8 (▽) then CSI 6n. Cursor must advance
+	 * so CPR reports the next column — ignoring multi-byte UTF-8 made
+	 * CPR stick and broke vi redraw/scroll after DSR was implemented.
+	 */
+	{
+		struct Term_State *vs = term_create(20, 6);
+		int p[2];
+		char rep[64];
+		ssize_t rn;
+
+		if (pipe(p) != 0) {
+			bgtk_log("pipe for DSR test failed");
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		vs->pty_fd = p[1];
+		/* row 2 col 1, UTF-8 white down-pointing triangle, CPR */
+		term_feed(vs, "\033[2;1H\xe2\x96\xbd\033[6n", -1);
+		if (vs->cur_row != 1 || vs->cur_col != 1) {
+			bgtk_log("UTF-8 did not advance cursor row=%d col=%d "
+				 "(want 1,1)",
+				 vs->cur_row, vs->cur_col);
+			close(p[0]);
+			close(p[1]);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		rn = read(p[0], rep, sizeof(rep) - 1);
+		if (rn < 0)
+			rn = 0;
+		rep[rn] = '\0';
+		/* Expect ESC [ 2 ; 2 R  (1-based row 2, col 2) */
+		if (!strstr(rep, "[2;2R")) {
+			bgtk_log("DSR CPR wrong after UTF-8: '%s' (want [2;2R)",
+				 rep);
+			close(p[0]);
+			close(p[1]);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Secondary DA CSI >c */
+		term_feed(vs, "\033[>c", -1);
+		rn = read(p[0], rep, sizeof(rep) - 1);
+		if (rn < 0)
+			rn = 0;
+		rep[rn] = '\0';
+		if (!strstr(rep, "[>0;0;0c")) {
+			bgtk_log("secondary DA missing: '%s'", rep);
+			close(p[0]);
+			close(p[1]);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		close(p[0]);
+		close(p[1]);
 		term_destroy(vs);
 	}
 

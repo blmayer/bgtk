@@ -82,11 +82,6 @@ static struct BGTK_Widget *theme_frame_margin_input;
 static struct BGTK_Widget *theme_row_gap_input;
 static struct BGTK_Widget *theme_baseline_input;
 
-static int font_dropdown_open;
-static int font_pick_role;
-static char **font_list_cache;
-static int font_list_count;
-
 static char shortcut_labels[MAX_SHORTCUT_ROWS][96];
 static char shortcut_actions[MAX_SHORTCUT_ROWS][96];
 static char shortcut_keys[MAX_SHORTCUT_ROWS][64];
@@ -135,10 +130,10 @@ static void load_shortcuts_defaults(void)
 	shortcut_row_count = 6;
 }
 
-/* Ensure compositor builtins always appear even if conf omitted them. */
+/* Ensure compositor builtins always appear at the top of the list. */
 static void ensure_builtin_shortcuts(void)
 {
-	int i, has_exit = 0, has_ss = 0;
+	int i, has_exit = 0, has_ss = 0, need = 0;
 
 	for (i = 0; i < shortcut_row_count; i++) {
 		if (strcmp(shortcut_actions[i], "builtin:exit") == 0)
@@ -146,16 +141,31 @@ static void ensure_builtin_shortcuts(void)
 		if (strcmp(shortcut_actions[i], "builtin:screenshot") == 0)
 			has_ss = 1;
 	}
-	if (!has_exit && shortcut_row_count < MAX_SHORTCUT_ROWS) {
-		shortcut_set_row(shortcut_row_count, "Exit", "ctrl+alt+q",
-				 "builtin:exit");
-		shortcut_row_count++;
+	if (!has_exit)
+		need++;
+	if (!has_ss)
+		need++;
+	if (need < 1)
+		return;
+	if (shortcut_row_count + need > MAX_SHORTCUT_ROWS)
+		shortcut_row_count = MAX_SHORTCUT_ROWS - need;
+	if (shortcut_row_count < 0)
+		shortcut_row_count = 0;
+	/* Shift existing rows down so builtins stay first. */
+	for (i = shortcut_row_count - 1; i >= 0; i--) {
+		shortcut_set_row(i + need, shortcut_labels[i], shortcut_keys[i],
+				 shortcut_actions[i]);
 	}
-	if (!has_ss && shortcut_row_count < MAX_SHORTCUT_ROWS) {
-		shortcut_set_row(shortcut_row_count, "Screenshot", "sysrq",
-				 "builtin:screenshot");
-		shortcut_row_count++;
+	i = 0;
+	if (!has_exit) {
+		shortcut_set_row(i, "Exit", "ctrl+alt+q", "builtin:exit");
+		i++;
 	}
+	if (!has_ss) {
+		shortcut_set_row(i, "Screenshot", "sysrq", "builtin:screenshot");
+		i++;
+	}
+	shortcut_row_count += need;
 }
 
 static void load_shortcuts_table(void)
@@ -285,51 +295,6 @@ static int scan_dir(const char *dir, char ***out, int dirs_only)
 	return n;
 }
 
-static int scan_fonts(char ***out)
-{
-	static const char *dirs[] = {
-#ifdef __linux__
-		"/share/fonts/truetype",
-		"/share/fonts/TTF",
-		"/share/fonts/opentype",
-		"/usr/share/fonts/truetype",
-		"/usr/share/fonts/TTF",
-		"/usr/share/fonts/opentype",
-		"/usr/local/share/fonts",
-#endif
-#ifdef __APPLE__
-		"/System/Library/Fonts",
-		"/Library/Fonts",
-#endif
-		NULL
-	};
-
-	int cap = 64, n = 0;
-	char **list = malloc(cap * sizeof(char *));
-
-	for (int i = 0; dirs[i]; i++) {
-		char **sub = NULL;
-		int sn = scan_dir(dirs[i], &sub, 0);
-		for (int j = 0; j < sn; j++) {
-			int len = strlen(sub[j]);
-			if (len > 4 && (!strcasecmp(sub[j] + len - 4, ".ttf") ||
-					!strcasecmp(sub[j] + len - 4, ".otf"))) {
-				if (n >= cap) {
-					cap *= 2;
-					list = realloc(list, cap * sizeof(char *));
-				}
-				char full[1024];
-				snprintf(full, sizeof(full), "%s/%s", dirs[i], sub[j]);
-				list[n++] = strdup(full);
-			}
-			free(sub[j]);
-		}
-		free(sub);
-	}
-	*out = list;
-	return n;
-}
-
 static int scan_cursors(char ***out)
 {
 	static const char *dirs[] = {
@@ -446,25 +411,6 @@ static struct BGTK_Widget *ui_label(const char *s, int min_w)
 static struct BGTK_Widget *ui_btn(const char *s, BGTK_Callback cb, void *data)
 {
 	return bgtk_button(ctx, ui_text(s), cb, data, ctl_opts());
-}
-
-/* Compact square-ish button matching text_input height (font path pickers). */
-static struct BGTK_Widget *ui_btn_match_input(const char *s, BGTK_Callback cb,
-					     void *data, int input_h)
-{
-	int pad = 2;
-	struct BGTK_Widget *btn;
-	BGTK_Options o = {.padding = pad, .margin = 0,
-			  .text_align = BGTK_ALIGN_CENTER,
-			  .text_v_align = BGTK_VALIGN_CENTER};
-
-	btn = bgtk_button(ctx, ui_text(s), cb, data, o);
-	if (btn && input_h > 0) {
-		btn->h = input_h;
-		if (btn->w < input_h)
-			btn->w = input_h;
-	}
-	return btn;
 }
 
 static struct BGTK_Widget *ui_input(const char *val, int width)
@@ -983,6 +929,14 @@ static void apply_shortcuts(void *userdata)
 	bgtk_draw_widgets(ctx);
 }
 
+static void apply_font(void *userdata);
+
+/* text_input on_enter is void (*)(void); bridge to Apply callback. */
+static void font_path_on_enter(void)
+{
+	apply_font(NULL);
+}
+
 static void apply_font(void *userdata)
 {
 	(void)userdata;
@@ -1010,16 +964,11 @@ static void apply_font(void *userdata)
 			cfg.font_size = sz;
 	}
 	write_config(&cfg);
-	bgtk_draw_widgets(ctx);
-}
-
-static char *font_path_for_role(int role)
-{
-	if (role == BGTK_FONT_MONO)
-		return cfg.font_mono_path;
-	if (role == BGTK_FONT_SERIF)
-		return cfg.font_serif_path;
-	return cfg.font_sans_path;
+	/* Live preview: reload faces and rebuild labels with new metrics. */
+	if (ctx)
+		bgtk_reload_fonts(ctx, cfg.font_sans_path, cfg.font_mono_path,
+				  cfg.font_serif_path, cfg.font_size);
+	rebuild_content();
 }
 
 static void apply_theme(void *userdata)
@@ -1091,36 +1040,6 @@ static void apply_theme(void *userdata)
 		ctx->theme = cfg.theme;
 	reflow_shell();
 	bgtk_draw_widgets(ctx);
-}
-
-/* ------------------------------------------------------------------ */
-/* Font dropdown                                                       */
-/* ------------------------------------------------------------------ */
-
-static void font_select_cb(void *userdata)
-{
-	int idx = (int)(intptr_t)userdata;
-	char *dst = font_path_for_role(font_pick_role);
-
-	if (idx >= 0 && idx < font_list_count && dst) {
-		strncpy(dst, font_list_cache[idx], MAX_PATH_LEN - 1);
-		dst[MAX_PATH_LEN - 1] = '\0';
-	}
-	font_dropdown_open = 0;
-	rebuild_content();
-}
-
-static void toggle_font_dropdown(void *userdata)
-{
-	int role = (int)(intptr_t)userdata;
-
-	if (font_dropdown_open && font_pick_role == role)
-		font_dropdown_open = 0;
-	else {
-		font_dropdown_open = 1;
-		font_pick_role = role;
-	}
-	rebuild_content();
 }
 
 /* Wallpaper preview */
@@ -1364,7 +1283,6 @@ static void add_bg_preview(struct BGTK_Widget *page)
 static void page_cb(void *userdata)
 {
 	current_page = (int)(intptr_t)userdata;
-	font_dropdown_open = 0;
 	rebuild_sidebar();
 	rebuild_content();
 }
@@ -1446,14 +1364,20 @@ static struct BGTK_Widget *build_shortcuts_page(void)
 	int n = 0, i;
 	struct BGTK_Widget *body;
 
-	if (!shortcut_row_count)
-		load_shortcuts_table();
-	rows = calloc(shortcut_row_count + 2, sizeof(*rows));
+	/* Always reload so conf + compositor builtins stay in sync. */
+	load_shortcuts_table();
+	rows = calloc((size_t)shortcut_row_count + 4, sizeof(*rows));
 	if (!rows)
 		return ui_text("Out of memory");
+	rows[n++] = ui_text("Key combo → action (builtins first)");
 	for (i = 0; i < shortcut_row_count; i++) {
+		char lab[128];
+
 		shortcut_inputs[i] = ui_input(shortcut_keys[i], 160);
-		rows[n++] = ui_row(shortcut_labels[i], shortcut_inputs[i]);
+		/* Label shows name + action so builtin:exit is visible. */
+		snprintf(lab, sizeof(lab), "%s", shortcut_labels[i]);
+		rows[n++] = ui_row2(lab, shortcut_inputs[i], "→",
+				    ui_text(shortcut_actions[i]));
 	}
 	body = ui_vbox(rows, n);
 	free(rows);
@@ -1463,13 +1387,9 @@ static struct BGTK_Widget *build_shortcuts_page(void)
 static struct BGTK_Widget *build_font_page(void)
 {
 	char size_buf[16];
-	struct BGTK_Widget *rows[64];
-	int n = 0, i, show;
+	struct BGTK_Widget *rows[16];
+	int n = 0;
 	struct BGTK_Widget *body;
-	struct BGTK_Widget *pick_row[2];
-
-	if (!font_list_cache)
-		font_list_count = scan_fonts(&font_list_cache);
 
 	snprintf(size_buf, sizeof(size_buf), "%d", cfg.font_size);
 	font_sans_input = ui_input(cfg.font_sans_path, FORM_PATH_W);
@@ -1478,40 +1398,21 @@ static struct BGTK_Widget *build_font_page(void)
 	ui_force_field_w(font_sans_input, FORM_PATH_W);
 	ui_force_field_w(font_mono_input, FORM_PATH_W);
 	ui_force_field_w(font_serif_input, FORM_PATH_W);
+	/* Enter applies path/size and reloads FreeType for live preview. */
+	font_sans_input->data.text_input.on_enter = font_path_on_enter;
+	font_mono_input->data.text_input.on_enter = font_path_on_enter;
+	font_serif_input->data.text_input.on_enter = font_path_on_enter;
 
-	pick_row[0] = font_sans_input;
-	pick_row[1] = ui_btn_match_input(
-		"…", toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_SANS,
-		font_sans_input->h);
-	rows[n++] = ui_row("Sans (UI)", ui_hbox(pick_row, 2));
-
-	pick_row[0] = font_mono_input;
-	pick_row[1] = ui_btn_match_input(
-		"…", toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_MONO,
-		font_mono_input->h);
-	rows[n++] = ui_row("Mono", ui_hbox(pick_row, 2));
-
-	pick_row[0] = font_serif_input;
-	pick_row[1] = ui_btn_match_input(
-		"…", toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_SERIF,
-		font_serif_input->h);
-	rows[n++] = ui_row("Serif", ui_hbox(pick_row, 2));
+	rows[n++] = ui_text("Type a font path, then Enter to preview");
+	rows[n++] = ui_row("Sans (UI)", font_sans_input);
+	rows[n++] = ui_row("Mono", font_mono_input);
+	rows[n++] = ui_row("Serif", font_serif_input);
 
 	font_size_input = ui_input(size_buf, 80);
 	ui_force_field_w(font_size_input, 80);
+	font_size_input->data.text_input.on_enter = font_path_on_enter;
 	rows[n++] = ui_row("Size", font_size_input);
 
-	if (font_dropdown_open && font_list_count > 0) {
-		const char *role = font_pick_role == BGTK_FONT_MONO ? "mono"
-			: font_pick_role == BGTK_FONT_SERIF ? "serif" : "sans";
-		char hdr[64];
-		snprintf(hdr, sizeof(hdr), "Fonts (picking %s):", role);
-		rows[n++] = ui_text(hdr);
-		show = font_list_count > 50 ? 50 : font_list_count;
-		for (i = 0; i < show && n < 62; i++)
-			rows[n++] = ui_btn((char *)font_list_cache[i],
-					   font_select_cb, (void *)(intptr_t)i);
-	}
 	body = ui_vbox(rows, n);
 	return make_page(body, apply_font);
 }
@@ -1674,16 +1575,6 @@ static void rebuild_content(void)
 	if (!shortcut_row_count)
 		load_shortcuts_table();
 
-	if (current_page != 3 && font_list_cache) {
-		for (int i = 0; i < font_list_count; i++)
-			free(font_list_cache[i]);
-		free(font_list_cache);
-		font_list_cache = NULL;
-		font_list_count = 0;
-	}
-	if (current_page == 3 && !font_list_cache)
-		font_list_count = scan_fonts(&font_list_cache);
-
 	reflow_shell();
 
 	switch (current_page) {
@@ -1812,7 +1703,6 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
 	cfg = *config;
 	app_w = width;
 	app_h = height;
-	font_dropdown_open = 0;
 	ctx->theme = cfg.theme;
 
 	{

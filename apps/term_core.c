@@ -33,7 +33,8 @@ static const uint32_t default_palette[16] = {
 
 static struct Term_Cell default_cell(void)
 {
-	return (struct Term_Cell){ .ch = ' ', .fg = 7, .bg = 0, .bold = 0 };
+	return (struct Term_Cell){ .ch = (uint32_t)' ', .fg = 7, .bg = 0,
+				   .bold = 0 };
 }
 
 /* ------------------------------------------------------------------ */
@@ -330,6 +331,30 @@ static void cursor_revindex(struct Term_State *t)
 		t->cur_row--;
 }
 
+/* Put one Unicode codepoint at the cursor and advance (ambiwidth=single).
+ * Cursor advance is what vim's t_u7 / CSI 6n probe measures after UTF-8 —
+ * ignoring multi-byte chars made CPR report the same cell and broke vi. */
+static void term_put_cp(struct Term_State *t, uint32_t cp)
+{
+	struct Term_Cell *c;
+
+	if (!t || cp == 0)
+		return;
+	if (t->cur_row < 0 || t->cur_row >= t->rows ||
+	    t->cur_col < 0 || t->cur_col >= t->cols)
+		return;
+	c = cell_at(t, t->cur_col, t->cur_row);
+	c->ch = cp;
+	c->fg = (int8_t)t->cur_fg;
+	c->bg = (int8_t)t->cur_bg;
+	c->bold = (int8_t)t->cur_bold;
+	t->cur_col++;
+	if (t->cur_col >= t->cols) {
+		t->cur_col = 0;
+		cursor_index(t);
+	}
+}
+
 /* ------------------------------------------------------------------ */
 /* CSI dispatch                                                       */
 /* ------------------------------------------------------------------ */
@@ -512,20 +537,22 @@ static void csi_dispatch(struct Term_State *t, char final,
 		}
 		break;
 	case 'n':
+		/* DSR / CPR. CSI 6n → CSI r;c R; CSI ?6n → CSI ? r;c R */
 		if (p0 == 6 && t->pty_fd >= 0) {
 			char buf[32];
 			int n = snprintf(buf, sizeof(buf),
-					 t->csi_priv ? "\033[?%d;%dR"
-						     : "\033[%d;%dR",
+					 t->csi_priv == 1 ? "\033[?%d;%dR"
+							  : "\033[%d;%dR",
 					 t->cur_row + 1, t->cur_col + 1);
 			(void)write(t->pty_fd, buf, n);
 		}
 		break;
 	case 'c':
 		if (t->pty_fd >= 0) {
-			const char *resp = t->csi_priv
-				? "\033[>0;0;0c"   /* Secondary DA */
-				: "\033[?1;2c";    /* Primary DA */
+			/* CSI >c secondary DA; CSI c / CSI ?c primary-ish. */
+			const char *resp = (t->csi_priv == 2)
+						   ? "\033[>0;0;0c"
+						   : "\033[?1;2c";
 			(void)write(t->pty_fd, resp, strlen(resp));
 		}
 		break;
@@ -573,30 +600,67 @@ void term_feed(struct Term_State *t, const char *data, int len)
 		switch (t->esc_state) {
 		case 0:
 			if (ch == '\033') {
+				t->utf8_partial_len = 0;
 				t->esc_state = 1;
 			} else if (ch == '\n') {
+				t->utf8_partial_len = 0;
 				cursor_index(t);
 			} else if (ch == '\r') {
+				t->utf8_partial_len = 0;
 				t->cur_col = 0;
 			} else if (ch == '\t') {
+				t->utf8_partial_len = 0;
 				t->cur_col = (t->cur_col + 8) & ~7;
 				if (t->cur_col >= t->cols)
 					t->cur_col = t->cols - 1;
 			} else if (ch == '\b') {
+				t->utf8_partial_len = 0;
 				if (t->cur_col > 0) t->cur_col--;
 			} else if (ch == '\a') {
 				/* bell */
-			} else if (ch >= 0x20 && ch < 0x7F) {
-				struct Term_Cell *c = cell_at(t, t->cur_col, t->cur_row);
-				c->ch = ch;
-				c->fg = t->cur_fg;
-				c->bg = t->cur_bg;
-				c->bold = t->cur_bold;
-				t->cur_col++;
-				if (t->cur_col >= t->cols) {
-					t->cur_col = 0;
-					cursor_index(t);
+			} else if (ch >= 0x20 && ch < 0x7F &&
+				   t->utf8_partial_len == 0) {
+				term_put_cp(t, ch);
+			} else if (ch >= 0x80 || t->utf8_partial_len > 0) {
+				/* UTF-8 across feed chunks. Complete before
+				 * decode — incomplete leads must wait (do not
+				 * call bgtk_utf8_next_n early; it emits U+FFFD). */
+				int need;
+				unsigned char b0;
+				const char *p;
+				size_t left;
+				uint32_t cp;
+
+				if (t->utf8_partial_len < 0 ||
+				    t->utf8_partial_len >= 4)
+					t->utf8_partial_len = 0;
+				if (t->utf8_partial_len == 0 && ch < 0x80) {
+					term_put_cp(t, ch);
+					break;
 				}
+				if (t->utf8_partial_len == 0 &&
+				    (ch & 0xC0) == 0x80)
+					break; /* lone continuation */
+				t->utf8_partial[t->utf8_partial_len++] = ch;
+				b0 = t->utf8_partial[0];
+				if ((b0 & 0xE0) == 0xC0)
+					need = 2;
+				else if ((b0 & 0xF0) == 0xE0)
+					need = 3;
+				else if ((b0 & 0xF8) == 0xF0)
+					need = 4;
+				else {
+					t->utf8_partial_len = 0;
+					break;
+				}
+				if (t->utf8_partial_len < need)
+					break;
+				p = (const char *)t->utf8_partial;
+				left = (size_t)t->utf8_partial_len;
+				cp = bgtk_utf8_next_n(&p, &left);
+				t->utf8_partial_len = 0;
+				if (cp)
+					term_put_cp(t, cp);
 			}
 			break;
 		case 1:
@@ -627,6 +691,7 @@ void term_feed(struct Term_State *t, const char *data, int len)
 				t->cur_fg = 7; t->cur_bg = 0; t->cur_bold = 0;
 				t->scroll_top = 0; t->scroll_bot = t->rows - 1;
 				t->view_off = 0;
+				t->utf8_partial_len = 0;
 				t->esc_state = 0;
 			} else {
 				t->esc_state = 0;
@@ -635,6 +700,10 @@ void term_feed(struct Term_State *t, const char *data, int len)
 		case 2:
 			if (ch == '?') {
 				t->csi_priv = 1;
+			} else if (ch == '>') {
+				t->csi_priv = 2;
+			} else if (ch == '=' || ch == '<') {
+				t->csi_priv = 3;
 			} else if (ch >= '0' && ch <= '9') {
 				if (t->csi_nparam == 0) t->csi_nparam = 1;
 				t->csi_params[t->csi_nparam - 1] =
@@ -642,6 +711,8 @@ void term_feed(struct Term_State *t, const char *data, int len)
 			} else if (ch == ';') {
 				if (t->csi_nparam < MAX_CSI_PARAMS)
 					t->csi_nparam++;
+			} else if (ch >= 0x20 && ch <= 0x2F) {
+				/* CSI intermediate (e.g. '%') — ignore. */
 			} else if (ch >= 0x40 && ch <= 0x7E) {
 				csi_dispatch(t, ch, t->csi_params, t->csi_nparam);
 				t->esc_state = 0;
@@ -729,10 +800,8 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 			FT_Bitmap *bmp;
 			int gx, gy;
 			int cell_x0, cell_y0, cell_x1, cell_y1;
-			unsigned char uch;
 
-			uch = (unsigned char)cl.ch;
-			if (uch <= (unsigned char)' ')
+			if (cl.ch <= (uint32_t)' ')
 				continue;
 			fi = cl.fg;
 			if (cl.bold && fi < 8)
@@ -741,7 +810,7 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
 				fi = 7;
 			fg = t->palette[fi];
 
-			gidx = FT_Get_Char_Index(face, (FT_ULong)uch);
+			gidx = FT_Get_Char_Index(face, (FT_ULong)cl.ch);
 			if (FT_Load_Glyph(face, gidx,
 					  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT))
 				continue;

@@ -250,7 +250,7 @@ int main(void)
 	}
 	take_screenshot(ctx, "settings_02_shortcuts.png");
 
-	/* 03: Click "Font" — sans/mono/serif pickers + size */
+	/* 03: Click "Font" — path fields; Enter previews */
 	{
 		struct InputEvent click = {0};
 		click.type = EV_KEY;
@@ -282,20 +282,34 @@ int main(void)
 		}
 	}
 
-	/* Open Mono picker (second font row button, content panel). */
+	/* Font paths: Enter on size field reloads faces (no picker buttons). */
 	{
 		struct InputEvent click = {0};
+		struct InputEvent key = {0};
+		struct config *sc;
+
+		/* Focus Size field (right of "Size" label). */
 		click.type = EV_KEY;
 		click.code = BTN_LEFT;
 		click.value = 1;
-		/* Content panel ~x=200; Mono row roughly under Sans. */
 		click.x = 280;
-		click.y = 95;
+		click.y = 200;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		bgtk_inject_event(ctx, click);
+		key.type = EV_KEY;
+		key.value = 1;
+		key.code = KEY_ENTER;
+		bgtk_inject_event(ctx, key);
+		sc = settings_get_config();
+		if (!sc || !sc->font_sans_path[0]) {
+			fprintf(stderr,
+				"test_settings: font apply/enter lost path\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
 	}
-	take_screenshot(ctx, "settings_03b_font_mono_open.png");
+	take_screenshot(ctx, "settings_03b_font_after_enter.png");
 
 	/* 04: Click "Theme" */
 	{

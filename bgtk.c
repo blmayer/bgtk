@@ -571,6 +571,9 @@ static FT_Face bgtk_load_face(struct BGTK_Context *ctx, const char *path,
 	return NULL;
 }
 
+static void bgtk_free_faces(struct BGTK_Context *ctx);
+static void bgtk_load_all_faces(struct BGTK_Context *ctx);
+
 // Common resource setup (config, freetype, font) after buffer/conn/ dims are set.
 // Used by both real bgtk_init and bgtk_init_mock.
 static void bgtk_init_resources(struct BGTK_Context *ctx)
@@ -612,24 +615,7 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
 		return;
 	}
 
-	/* Load sans (UI), mono (prefer fixed-width), serif. */
-	ctx->ft_face = bgtk_load_face(ctx, ctx->font_sans_path, "sans", 0);
-	if (!ctx->ft_face)
-		bgtk_log("no usable UI/sans font; text will use placeholders");
-
-	/* Mono: never re-open the same path as sans (can hang on some TTC). */
-	if (ctx->ft_face && ctx->font_mono_path[0] &&
-	    strcmp(ctx->font_mono_path, ctx->font_sans_path) == 0) {
-		bgtk_log("mono reuses sans face (same path)");
-		ctx->ft_face_mono = ctx->ft_face;
-	} else {
-		ctx->ft_face_mono =
-			bgtk_load_face(ctx, ctx->font_mono_path, "mono", 1);
-	}
-	if (!ctx->ft_face_mono && ctx->ft_face) {
-		bgtk_log("mono fallback to sans face (terminal will look proportional)");
-		ctx->ft_face_mono = ctx->ft_face;
-	}
+	bgtk_load_all_faces(ctx);
 	if (ctx->ft_face_mono)
 		bgtk_log("mono face fixed_width=%d family='%s' style='%s'",
 			 FT_IS_FIXED_WIDTH(ctx->ft_face_mono) ? 1 : 0,
@@ -639,6 +625,46 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
 			 ctx->ft_face_mono->style_name
 				 ? ctx->ft_face_mono->style_name
 				 : "?");
+	bgtk_log_flush();
+}
+
+static void bgtk_free_faces(struct BGTK_Context *ctx)
+{
+	if (!ctx)
+		return;
+	if (ctx->ft_face_serif && ctx->ft_face_serif != ctx->ft_face &&
+	    ctx->ft_face_serif != ctx->ft_face_mono)
+		FT_Done_Face(ctx->ft_face_serif);
+	ctx->ft_face_serif = NULL;
+	if (ctx->ft_face_mono && ctx->ft_face_mono != ctx->ft_face)
+		FT_Done_Face(ctx->ft_face_mono);
+	ctx->ft_face_mono = NULL;
+	if (ctx->ft_face) {
+		FT_Done_Face(ctx->ft_face);
+		ctx->ft_face = NULL;
+	}
+}
+
+static void bgtk_load_all_faces(struct BGTK_Context *ctx)
+{
+	if (!ctx || !ctx->ft_library)
+		return;
+	ctx->ft_face = bgtk_load_face(ctx, ctx->font_sans_path, "sans", 0);
+	if (!ctx->ft_face)
+		bgtk_log("no usable UI/sans font; text will use placeholders");
+
+	if (ctx->ft_face && ctx->font_mono_path[0] &&
+	    strcmp(ctx->font_mono_path, ctx->font_sans_path) == 0) {
+		bgtk_log("mono reuses sans face (same path)");
+		ctx->ft_face_mono = ctx->ft_face;
+	} else {
+		ctx->ft_face_mono =
+			bgtk_load_face(ctx, ctx->font_mono_path, "mono", 1);
+	}
+	if (!ctx->ft_face_mono && ctx->ft_face) {
+		bgtk_log("mono fallback to sans face");
+		ctx->ft_face_mono = ctx->ft_face;
+	}
 
 	if (ctx->ft_face && ctx->font_serif_path[0] &&
 	    strcmp(ctx->font_serif_path, ctx->font_sans_path) == 0) {
@@ -661,7 +687,30 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
 	bgtk_log("font faces ready sans=%p mono=%p serif=%p",
 		 (void *)ctx->ft_face, (void *)ctx->ft_face_mono,
 		 (void *)ctx->ft_face_serif);
-	bgtk_log_flush();
+}
+
+int bgtk_reload_fonts(struct BGTK_Context *ctx, const char *sans,
+		      const char *mono, const char *serif, int size)
+{
+	if (!ctx || !ctx->ft_library)
+		return -1;
+	if (sans && sans[0]) {
+		strncpy(ctx->font_sans_path, sans, MAX_PATH_LEN - 1);
+		ctx->font_sans_path[MAX_PATH_LEN - 1] = '\0';
+	}
+	if (mono && mono[0]) {
+		strncpy(ctx->font_mono_path, mono, MAX_PATH_LEN - 1);
+		ctx->font_mono_path[MAX_PATH_LEN - 1] = '\0';
+	}
+	if (serif && serif[0]) {
+		strncpy(ctx->font_serif_path, serif, MAX_PATH_LEN - 1);
+		ctx->font_serif_path[MAX_PATH_LEN - 1] = '\0';
+	}
+	if (size > 0 && size < 200)
+		ctx->font_size = size;
+	bgtk_free_faces(ctx);
+	bgtk_load_all_faces(ctx);
+	return ctx->ft_face ? 0 : -1;
 }
 
 FT_Face bgtk_font_face(struct BGTK_Context *ctx, int role)
@@ -812,20 +861,7 @@ void bgtk_destroy(struct BGTK_Context *ctx)
 	}
 	/* Release framebuffer (mmap for real apps, malloc for mock). */
 	bgtk_release_buffer(ctx);
-	/* Faces may be aliases of each other when paths matched — free once. */
-	if (ctx->ft_face_serif && ctx->ft_face_serif != ctx->ft_face &&
-	    ctx->ft_face_serif != ctx->ft_face_mono) {
-		FT_Done_Face(ctx->ft_face_serif);
-	}
-	ctx->ft_face_serif = NULL;
-	if (ctx->ft_face_mono && ctx->ft_face_mono != ctx->ft_face) {
-		FT_Done_Face(ctx->ft_face_mono);
-	}
-	ctx->ft_face_mono = NULL;
-	if (ctx->ft_face) {
-		FT_Done_Face(ctx->ft_face);
-		ctx->ft_face = NULL;
-	}
+	bgtk_free_faces(ctx);
 	if (ctx->ft_library) {
 		FT_Done_FreeType(ctx->ft_library);
 		ctx->ft_library = NULL;
@@ -961,10 +997,22 @@ void bgtk_set_window_focus(struct BGTK_Context *ctx, int focused)
 
 void bgtk_draw_widgets(struct BGTK_Context *ctx)
 {
-	/* No full-buffer clear: widgets paint their own rects; then ask
-	 * the compositor to present the shm. */
+	/* Fill with theme background (not full clear-to-zero). After resize the
+	 * new shm is zeroed — without a fill, gaps outside widget paint stay
+	 * pure black. Widgets still paint their own rects on top. */
 	if (!ctx)
 		return;
+	if (ctx->shm_buffer && ctx->width > 0 && ctx->height > 0) {
+		uint32_t bg = ctx->theme.background ? ctx->theme.background
+						    : 0xFF0A0A0Au;
+		uint32_t *p = (uint32_t *)ctx->shm_buffer;
+		int n = ctx->width * ctx->height;
+		int i;
+
+		bg |= 0xFF000000u;
+		for (i = 0; i < n; i++)
+			p[i] = bg;
+	}
 	if (ctx->root_widget) {
 		calculate_widget_size(ctx, ctx->root_widget);
 		draw_widget(ctx, ctx->root_widget, ctx->shm_buffer);

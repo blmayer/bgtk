@@ -49,17 +49,17 @@ static void rebuild_content_from_gemtext(const char *body);
 static void load_url(const char *url);
 static void navigate(const char *url, int push_hist);
 
-/* Line chrome: body stays fairly dense; headers/paragraphs add extra vspace. */
+/* Line chrome: modest pad; structure spacing via GEM_V_* on height. */
 static BGTK_Options line_opts(void)
 {
-	return (BGTK_Options){.padding = 1, .margin = 1};
+	return (BGTK_Options){.padding = 2, .margin = 1};
 }
 
-/* Extra vertical space (px) around gemtext structure. */
-#define GEM_V_BEFORE_HEADER 18
-#define GEM_V_AFTER_HEADER  12
-#define GEM_V_AFTER_PARA    14
-#define GEM_V_EMPTY_LINE    12
+/* Extra vertical space (px) around gemtext structure (kept across redraw). */
+#define GEM_V_BEFORE_HEADER 28
+#define GEM_V_AFTER_HEADER  20
+#define GEM_V_AFTER_PARA    22
+#define GEM_V_EMPTY_LINE    16
 
 /* Keep content_height in sync with items (scroll keys need this before draw). */
 static void gemini_recompute_scroll_height(void)
@@ -418,6 +418,11 @@ static void gemini_on_resize(void)
 	gemini_layout_chrome();
 	if (last_body)
 		rebuild_content_from_gemtext(last_body);
+	else
+		gemini_recompute_scroll_height();
+	/* Keep j/k/wheel on the scroll surface after geometry change. */
+	if (ctx && content_scroll)
+		ctx->focused_widget = content_scroll;
 }
 
 /* libtls returns these when the underlying socket would block; they are
@@ -774,18 +779,20 @@ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta,
 	return 0;
 }
 
-/* click handler for link text widgets */
-static int gemini_link_handler(struct BGTK_Widget *w, struct InputEvent ev)
+/* Content line click: open link, else focus scroll (so j/k/wheel keep working). */
+static int gemini_line_handler(struct BGTK_Widget *w, struct InputEvent ev)
 {
-	if (ev.code == BTN_LEFT && ev.value == 1) {
-		for (int i = 0; i < num_page_links; i++) {
-			if (link_target_widgets[i] == w) {
-				navigate(link_targets[i], 1);
-				return 1;
-			}
+	if (ev.code != BTN_LEFT || ev.value != 1)
+		return 0;
+	for (int i = 0; i < num_page_links; i++) {
+		if (link_target_widgets[i] == w) {
+			navigate(link_targets[i], 1);
+			return 1;
 		}
 	}
-	return 0;
+	if (w && w->ctx && content_scroll)
+		bgtk_set_focus(w->ctx, content_scroll);
+	return 1;
 }
 
 /* Simple word-wrap for long paragraphs and link labels. Returns malloc'ed array of lines (caller frees). */
@@ -951,9 +958,8 @@ static void rebuild_content_from_gemtext(const char *body)
 			else
 				strncpy(disp, tgt, sizeof(disp) - 1);
 
-			/* Numbered like ereandel so g + N can jump. */
-			snprintf(vis, sizeof(vis), "[%d] %s",
-				 num_page_links + 1, disp);
+			/* ereandel-style label; g+N still uses link index. */
+			snprintf(vis, sizeof(vis), "=> %s", disp);
 			strncpy(link_to, tgt, sizeof(link_to) - 1);
 			is_link = 1;
 			item_color = 10;
@@ -1010,9 +1016,8 @@ static void rebuild_content_from_gemtext(const char *body)
 							sizeof(link_targets[0]) -
 								1);
 						num_page_links++;
-						tw->handle_event =
-							gemini_link_handler;
 					}
+					tw->handle_event = gemini_line_handler;
 					if (header_level > 0)
 						tw->h += GEM_V_AFTER_HEADER;
 					else if (!vis[0])
@@ -1053,8 +1058,8 @@ static void rebuild_content_from_gemtext(const char *body)
 					link_target_widgets[num_page_links] = tw;
 					strncpy(link_targets[num_page_links], resolved, sizeof(link_targets[0]) - 1);
 					num_page_links++;
-					tw->handle_event = gemini_link_handler;
 				}
+				tw->handle_event = gemini_line_handler;
 				if (s < nsubs - 1) {
 					/* tighter leading between wraps of same block */
 					if (tw->h > 4)
@@ -1082,6 +1087,7 @@ static void rebuild_content_from_gemtext(const char *body)
 			struct BGTK_Widget *tw = bgtk_text(ctx, vis, line_opts());
 			if (tw) {
 				tw->h += 4;  /* space after pre block */
+				tw->handle_event = gemini_line_handler;
 				if (cnt >= cap) {
 					cap = cap ? cap * 2 : 32;
 					struct BGTK_Widget **ni = realloc(new_items, (size_t)cap * sizeof(*ni));

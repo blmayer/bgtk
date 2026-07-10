@@ -310,7 +310,9 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 			int nh = th + 2 * (w->padding + w->margin);
 			if (w->w < nw)
 				w->w = nw;
-			w->h = nh;
+			/* Grow only — keep app-added vspace (gemini headers). */
+			if (w->h < nh)
+				w->h = nh;
 		}
 		break;
 	case BGTK_WIDGET_RULE: {

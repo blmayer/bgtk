@@ -475,6 +475,11 @@ int bgtk_handle_buffer_change(struct BGTK_Context *ctx,
 // the root widget. Returns 0 on success.
 int bgtk_resize_mock(struct BGTK_Context *ctx, int width, int height);
 
+/* Reload FreeType faces from paths (NULL path = keep current for that role).
+ * size <= 0 keeps current font_size. Returns 0 if at least sans loaded. */
+int bgtk_reload_fonts(struct BGTK_Context *ctx, const char *sans,
+		      const char *mono, const char *serif, int size);
+
 // --- Widget Creation Functions ---
 // Creates a label widget.
 struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text, BGTK_Options options);

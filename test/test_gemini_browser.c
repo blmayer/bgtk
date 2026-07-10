@@ -40,13 +40,13 @@ static int num_page_links = 0;
 
 static BGTK_Options line_opts(void)
 {
-	return (BGTK_Options){.padding = 1, .margin = 1};
+	return (BGTK_Options){.padding = 2, .margin = 1};
 }
 
-#define GEM_V_BEFORE_HEADER 18
-#define GEM_V_AFTER_HEADER  12
-#define GEM_V_AFTER_PARA    14
-#define GEM_V_EMPTY_LINE    12
+#define GEM_V_BEFORE_HEADER 28
+#define GEM_V_AFTER_HEADER  20
+#define GEM_V_AFTER_PARA    22
+#define GEM_V_EMPTY_LINE    16
 
 static void gemini_recompute_scroll_height(void)
 {
@@ -161,6 +161,10 @@ static void gemini_on_resize(void)
 	gemini_layout_chrome();
 	if (last_body)
 		rebuild_content_from_gemtext(last_body);
+	else
+		gemini_recompute_scroll_height();
+	if (ctx && content_scroll)
+		ctx->focused_widget = content_scroll;
 }
 
 /* --- Real Gemini client (must retry TLS_WANT_POLLIN/POLLOUT; n<=0 is wrong) --- */
@@ -479,7 +483,7 @@ static char **wrap_text(FT_Face face, const char *text, int max_width, int *nlin
 }
 
 /* Rebuild scrollable content from real gemtext body (same logic as the main app) */
-static int gemini_link_handler(struct BGTK_Widget *w, struct InputEvent ev);
+static int gemini_line_handler(struct BGTK_Widget *w, struct InputEvent ev);
 
 static void rebuild_content_from_gemtext(const char *body)
 {
@@ -602,8 +606,8 @@ static void rebuild_content_from_gemtext(const char *body)
 					link_target_widgets[num_page_links] = tw;
 					strncpy(link_targets[num_page_links], resolved, sizeof(link_targets[0])-1);
 					num_page_links++;
-					tw->handle_event = gemini_link_handler;
 				}
+				tw->handle_event = gemini_line_handler;
 				if (s < nsubs - 1) {
 					if (tw->h > 4)
 						tw->h -= 2;
@@ -628,6 +632,7 @@ static void rebuild_content_from_gemtext(const char *body)
 			struct BGTK_Widget *tw = bgtk_text(ctx, vis, line_opts());
 			if (tw) {
 				tw->h += 4;  /* space after pre block */
+				tw->handle_event = gemini_line_handler;
 				if (cnt >= cap) {
 					cap = cap ? cap*2 : 32;
 					struct BGTK_Widget **ni = realloc(new_items, (size_t)cap * sizeof(*ni));
@@ -655,17 +660,19 @@ static void rebuild_content_from_gemtext(const char *body)
 /* Real navigation using live capsule */
 static void load_real_url(const char *url);
 
-static int gemini_link_handler(struct BGTK_Widget *w, struct InputEvent ev)
+static int gemini_line_handler(struct BGTK_Widget *w, struct InputEvent ev)
 {
-	if (ev.code == BTN_LEFT && ev.value == 1) {
-		for (int i = 0; i < num_page_links; i++) {
-			if (link_target_widgets[i] == w) {
-				load_real_url(link_targets[i]);
-				return 1;
-			}
+	if (ev.code != BTN_LEFT || ev.value != 1)
+		return 0;
+	for (int i = 0; i < num_page_links; i++) {
+		if (link_target_widgets[i] == w) {
+			load_real_url(link_targets[i]);
+			return 1;
 		}
 	}
-	return 0;
+	if (w && w->ctx && content_scroll)
+		bgtk_set_focus(w->ctx, content_scroll);
+	return 1;
 }
 
 static void load_real_url(const char *url)
@@ -855,6 +862,25 @@ int main(void)
 		lines_narrow = content_scroll->data.scrollable.widget_count;
 		printf("reflow: %d line widgets @640 -> %d @360\n",
 		       lines_wide, lines_narrow);
+		/* Resize must paint theme bg + content, not pure black shm. */
+		{
+			uint32_t *px = (uint32_t *)ctx->shm_buffer;
+			int n = ctx->width * ctx->height, i, bright = 0;
+			uint32_t bg = ctx->theme.background | 0xFF000000u;
+
+			for (i = 0; i < n; i++) {
+				if (px[i] != 0 && px[i] != bg)
+					bright++;
+			}
+			if (bright < 50) {
+				fprintf(stderr,
+					"test_gemini_browser: resize narrow "
+					"looks empty (non-bg px=%d)\n",
+					bright);
+				bgtk_destroy_mock(ctx);
+				return 1;
+			}
+		}
 
 		if (bgtk_resize_mock(ctx, 800, 520) != 0) {
 			fprintf(stderr, "test_gemini_browser: resize wide failed\n");
@@ -940,6 +966,88 @@ int main(void)
 			}
 		}
 		take_screenshot(ctx, "gemini_browser_00b_scrolled.png");
+
+		/* Click a body line, redraw, then wheel still scrolls (focus
+		 * must return to the scrollable — not stick on the text). */
+		{
+			struct InputEvent c = {0};
+			struct InputEvent wh = {0};
+			int y0, y1;
+			struct BGTK_Widget *line =
+				content_scroll->data.scrollable.items
+					? content_scroll->data.scrollable.items[0]
+					: NULL;
+
+			if (line && line->data.text.text &&
+			    strstr(line->data.text.text, "[")) {
+				fprintf(stderr,
+					"test_gemini_browser: link label "
+					"regressed to numbered form: '%s'\n",
+					line->data.text.text);
+				bgtk_destroy_mock(ctx);
+				return 1;
+			}
+			/* Prefer a non-link line for the click-focus test. */
+			for (int i = 0;
+			     i < content_scroll->data.scrollable.widget_count;
+			     i++) {
+				struct BGTK_Widget *tw =
+					content_scroll->data.scrollable.items[i];
+				int is_lnk = 0;
+				for (int L = 0; L < num_page_links; L++) {
+					if (link_target_widgets[L] == tw) {
+						is_lnk = 1;
+						break;
+					}
+				}
+				if (tw && !is_lnk) {
+					line = tw;
+					break;
+				}
+			}
+			c.type = EV_KEY;
+			c.code = BTN_LEFT;
+			c.value = 1;
+			c.x = content_scroll->x + 20;
+			c.y = content_scroll->y + 30;
+			bgtk_inject_event(ctx, c);
+			if (ctx->focused_widget != content_scroll) {
+				fprintf(stderr,
+					"test_gemini_browser: click did not "
+					"focus scrollable\n");
+				bgtk_destroy_mock(ctx);
+				return 1;
+			}
+			/* Spacing must survive calculate_widget_size on redraw. */
+			bgtk_draw_widgets(ctx);
+			gemini_recompute_scroll_height();
+			y0 = content_scroll->data.scrollable.scroll_y;
+			wh.type = EV_REL;
+			wh.code = REL_WHEEL;
+			wh.value = -2;
+			wh.x = content_scroll->x + 20;
+			wh.y = content_scroll->y + 40;
+			if (!bgtk_inject_event(ctx, wh)) {
+				fprintf(stderr,
+					"test_gemini_browser: wheel after click "
+					"not handled\n");
+				bgtk_destroy_mock(ctx);
+				return 1;
+			}
+			y1 = content_scroll->data.scrollable.scroll_y;
+			if (y1 <= y0) {
+				fprintf(stderr,
+					"test_gemini_browser: no scroll after "
+					"click (%d -> %d, content_h=%d)\n",
+					y0, y1,
+					content_scroll->data.scrollable
+						.content_height);
+				bgtk_destroy_mock(ctx);
+				return 1;
+			}
+			take_screenshot(ctx, "gemini_browser_00c_after_click_scroll.png");
+		}
+
 		/* Restore full height for the rest of the suite. */
 		content_scroll->h = full_h > 0 ? full_h : content_scroll->h;
 		if (content_scroll->data.scrollable.tmp) {
