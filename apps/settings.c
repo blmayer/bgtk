@@ -26,8 +26,9 @@
 static struct BGTK_Context *ctx;
 static struct config cfg;
 
-#define SETTINGS_W 900
-#define SETTINGS_H 560
+/* Wide enough for dual theme columns (colors | sizes); tall enough for ~10 rows. */
+#define SETTINGS_W 920
+#define SETTINGS_H 640
 
 static int app_w = SETTINGS_W;
 static int app_h = SETTINGS_H;
@@ -366,7 +367,7 @@ static int root_pad(void)
 	return outer > pin ? outer - pin : 0;
 }
 
-/* One side of window chrome: frame_margin + border + root padding.
+/* One side of window chrome: border + frame_margin + root padding.
  * Matches content→window-edge distance (top/bottom/left). */
 static int edge_inset(void)
 {
@@ -447,12 +448,14 @@ static struct BGTK_Widget *ui_vbox(struct BGTK_Widget **items, int n)
 }
 
 #define FORM_LABEL_W 130
-/* Wide enough for longest theme col-2 label ("Frame border unfocused"). */
-#define FORM_LABEL2_W 200
+/* Theme page: color column (long names) and size column. */
+#define FORM_THEME_COLOR_LAB 180
+#define FORM_THEME_SIZE_LAB 160
 #define FORM_FIELD_W 100 /* fixed so value columns line up */
+#define FORM_THEME_SIZE_FIELD 72
 #define FORM_PATH_W 420  /* bg/cursor/font path fields */
-/* List gap = 2×margin → 48px between theme columns. */
-#define FORM_COL_GAP 24
+/* List gap = 2×margin between the two theme columns. */
+#define FORM_COL_GAP 16
 /* Sidebar nav: list gap = 2×margin → 16px between buttons. */
 #define SIDEBAR_NAV_MARGIN 8
 
@@ -471,15 +474,6 @@ static struct BGTK_Widget *ui_row(const char *label, struct BGTK_Widget *field)
 	return ui_hbox(items, 2);
 }
 
-/* Single form field forced to FORM_FIELD_W (theme value column). */
-static struct BGTK_Widget *ui_row_field(const char *label,
-					struct BGTK_Widget *field)
-{
-	ui_force_field_w(field, FORM_FIELD_W);
-	struct BGTK_Widget *items[2] = { ui_label(label, FORM_LABEL_W), field };
-	return ui_hbox(items, 2);
-}
-
 /* Two form columns: [lab|field] —gap— [lab|field] with fixed field widths. */
 static struct BGTK_Widget *ui_row2(const char *l0, struct BGTK_Widget *f0,
 				   const char *l1, struct BGTK_Widget *f1)
@@ -491,18 +485,30 @@ static struct BGTK_Widget *ui_row2(const char *l0, struct BGTK_Widget *f0,
 	ui_force_field_w(f1, FORM_FIELD_W);
 	c1_i[0] = ui_label(l0, FORM_LABEL_W);
 	c1_i[1] = f0;
-	c2_i[0] = ui_label(l1, FORM_LABEL2_W);
+	c2_i[0] = ui_label(l1, FORM_THEME_COLOR_LAB);
 	c2_i[1] = f1;
 	c1 = ui_hbox(c1_i, 2);
 	c2 = ui_hbox(c2_i, 2);
 	/* Pin column outer widths so value edges stay on a grid. */
 	ui_force_field_w(c1, FORM_LABEL_W + FORM_FIELD_W);
-	ui_force_field_w(c2, FORM_LABEL2_W + FORM_FIELD_W);
+	ui_force_field_w(c2, FORM_THEME_COLOR_LAB + FORM_FIELD_W);
 	cols[0] = c1;
 	cols[1] = c2;
 	return bgtk_list(ctx, cols, 2,
 		(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
 			       .margin = FORM_COL_GAP, .padding = 0});
+}
+
+/* One theme form row: fixed label width + field. */
+static struct BGTK_Widget *ui_theme_row(const char *label, int lab_w,
+					struct BGTK_Widget *field, int field_w)
+{
+	struct BGTK_Widget *items[2];
+
+	ui_force_field_w(field, field_w);
+	items[0] = ui_label(label, lab_w);
+	items[1] = field;
+	return ui_hbox(items, 2);
 }
 
 /* Content size after reflow (panel filled by shell EXPAND). */
@@ -539,7 +545,8 @@ static struct BGTK_Widget *make_page(struct BGTK_Widget *form,
 	scroll = bgtk_scrollable(ctx, &form, 1,
 		(BGTK_Options){.padding = pin, .margin = 0});
 	scroll->w = pw > 0 ? pw : 80;
-	scroll->h = ph > 60 ? ph - 48 : 40;
+	/* Leave room for Apply + list gap so the last form row is not clipped. */
+	scroll->h = ph > 80 ? ph - 56 : 40;
 	scroll->flags |= BGTK_FLAG_EXPAND_Y | BGTK_FLAG_EXPAND_X;
 
 	apply = ui_btn("Apply", apply_cb, NULL);
@@ -1433,64 +1440,92 @@ static struct BGTK_Widget *theme_int_input(int v, int w)
 
 static struct BGTK_Widget *build_theme_page(void)
 {
-	struct BGTK_Widget *rows[16];
-	int n = 0;
-	struct BGTK_Widget *body;
+	struct BGTK_Widget *color_rows[12];
+	struct BGTK_Widget *size_rows[12];
+	struct BGTK_Widget *cols[2];
+	struct BGTK_Widget *color_col, *size_col, *body;
+	int nc = 0, ns = 0;
+	int clab = FORM_THEME_COLOR_LAB;
+	int slab = FORM_THEME_SIZE_LAB;
+	int cfw = FORM_FIELD_W;
+	int sfw = FORM_THEME_SIZE_FIELD;
 
-	theme_bg_input = theme_color_input(cfg.theme.background, 90);
+	/* Left column: colors only. */
+	theme_bg_input = theme_color_input(cfg.theme.background, cfw);
+	color_rows[nc++] =
+		ui_theme_row("Background", clab, theme_bg_input, cfw);
+	theme_btn_input = theme_color_input(cfg.theme.button, cfw);
+	color_rows[nc++] = ui_theme_row("Button", clab, theme_btn_input, cfw);
+	theme_btn_text_input = theme_color_input(cfg.theme.button_text, cfw);
+	color_rows[nc++] =
+		ui_theme_row("Button text", clab, theme_btn_text_input, cfw);
+	theme_focus_input = theme_color_input(cfg.theme.focus, cfw);
+	color_rows[nc++] = ui_theme_row("Focus", clab, theme_focus_input, cfw);
+	theme_focus_bg_input = theme_color_input(cfg.theme.focus_bg, cfw);
+	color_rows[nc++] =
+		ui_theme_row("Focus background", clab, theme_focus_bg_input, cfw);
+	theme_input_bg_input = theme_color_input(cfg.theme.input_bg, cfw);
+	color_rows[nc++] =
+		ui_theme_row("Input background", clab, theme_input_bg_input, cfw);
+	theme_highlight_input = theme_color_input(cfg.theme.highlight, cfw);
+	color_rows[nc++] =
+		ui_theme_row("Highlight", clab, theme_highlight_input, cfw);
+	theme_rule_color_input = theme_color_input(cfg.theme.rule_color, cfw);
+	color_rows[nc++] =
+		ui_theme_row("Rule color", clab, theme_rule_color_input, cfw);
 	theme_frame_color_input =
-		theme_color_input(cfg.theme.frame_border_color, 90);
-	rows[n++] = ui_row2("Background", theme_bg_input,
-			    "Frame border color", theme_frame_color_input);
-
-	theme_btn_input = theme_color_input(cfg.theme.button, 90);
+		theme_color_input(cfg.theme.frame_border_color, cfw);
+	color_rows[nc++] = ui_theme_row("Frame border color", clab,
+					theme_frame_color_input, cfw);
 	theme_frame_unfocused_input =
-		theme_color_input(cfg.theme.frame_border_unfocused, 90);
-	rows[n++] = ui_row2("Button", theme_btn_input,
-			    "Frame border unfocused",
-			    theme_frame_unfocused_input);
+		theme_color_input(cfg.theme.frame_border_unfocused, cfw);
+	color_rows[nc++] = ui_theme_row("Frame border unfocused", clab,
+					theme_frame_unfocused_input, cfw);
 
-	theme_btn_text_input = theme_color_input(cfg.theme.button_text, 90);
-	theme_rule_color_input = theme_color_input(cfg.theme.rule_color, 90);
-	rows[n++] = ui_row2("Button text", theme_btn_text_input,
-			    "Rule color", theme_rule_color_input);
-
-	theme_focus_input = theme_color_input(cfg.theme.focus, 90);
+	/* Right column: sizes only. */
 	theme_frame_border_input =
-		theme_int_input((int)cfg.theme.frame_border_size, 60);
-	rows[n++] = ui_row2("Focus", theme_focus_input,
-			    "Frame border size", theme_frame_border_input);
-
-	theme_input_bg_input = theme_color_input(cfg.theme.input_bg, 90);
+		theme_int_input((int)cfg.theme.frame_border_size, sfw);
+	size_rows[ns++] = ui_theme_row("Frame border size", slab,
+				       theme_frame_border_input, sfw);
 	theme_btn_border_input =
-		theme_int_input((int)cfg.theme.button_border_size, 60);
-	rows[n++] = ui_row2("Input background", theme_input_bg_input,
-			    "Button border size", theme_btn_border_input);
-
-	theme_focus_bg_input = theme_color_input(cfg.theme.focus_bg, 90);
+		theme_int_input((int)cfg.theme.button_border_size, sfw);
+	size_rows[ns++] = ui_theme_row("Button border size", slab,
+				       theme_btn_border_input, sfw);
 	theme_input_border_input =
-		theme_int_input((int)cfg.theme.input_border_size, 60);
-	rows[n++] = ui_row2("Focus background", theme_focus_bg_input,
-			    "Input border size", theme_input_border_input);
-
-	theme_highlight_input = theme_color_input(cfg.theme.highlight, 90);
-	rows[n++] = ui_row_field("Highlight", theme_highlight_input);
-
-	theme_margin_input = theme_int_input(cfg.theme.margin, 60);
-	theme_row_gap_input = theme_int_input(cfg.theme.row_gap, 60);
-	rows[n++] = ui_row2("Widget margin", theme_margin_input,
-			    "Row gap", theme_row_gap_input);
-
-	theme_padding_input = theme_int_input(cfg.theme.padding, 60);
-	theme_frame_margin_input = theme_int_input(cfg.theme.frame_margin, 60);
-	rows[n++] = ui_row2("Frame padding", theme_padding_input,
-			    "Frame margin", theme_frame_margin_input);
-
+		theme_int_input((int)cfg.theme.input_border_size, sfw);
+	size_rows[ns++] = ui_theme_row("Input border size", slab,
+				       theme_input_border_input, sfw);
+	theme_margin_input = theme_int_input(cfg.theme.margin, sfw);
+	size_rows[ns++] =
+		ui_theme_row("Widget margin", slab, theme_margin_input, sfw);
+	theme_padding_input = theme_int_input(cfg.theme.padding, sfw);
+	size_rows[ns++] =
+		ui_theme_row("Frame padding", slab, theme_padding_input, sfw);
+	theme_frame_margin_input = theme_int_input(cfg.theme.frame_margin, sfw);
+	size_rows[ns++] =
+		ui_theme_row("Frame margin", slab, theme_frame_margin_input, sfw);
+	theme_row_gap_input = theme_int_input(cfg.theme.row_gap, sfw);
+	size_rows[ns++] =
+		ui_theme_row("Row gap", slab, theme_row_gap_input, sfw);
 	theme_baseline_input =
-		theme_int_input(cfg.theme.text_baseline_offset, 60);
-	rows[n++] = ui_row_field("Text baseline", theme_baseline_input);
+		theme_int_input(cfg.theme.text_baseline_offset, sfw);
+	size_rows[ns++] =
+		ui_theme_row("Text baseline", slab, theme_baseline_input, sfw);
 
-	body = ui_vbox(rows, n);
+	color_col = ui_vbox(color_rows, nc);
+	size_col = ui_vbox(size_rows, ns);
+	if (color_col)
+		color_col->flags |= BGTK_FLAG_EXPAND_Y;
+	if (size_col)
+		size_col->flags |= BGTK_FLAG_EXPAND_Y;
+	cols[0] = color_col;
+	cols[1] = size_col;
+	body = bgtk_list(ctx, cols, 2,
+			 (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+					.margin = FORM_COL_GAP,
+					.padding = 0});
+	if (body)
+		body->flags |= BGTK_FLAG_EXPAND_X;
 	return make_page(body, apply_theme);
 }
 

@@ -1080,16 +1080,20 @@ static void draw_image_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		       uint32_t *pixels)
 {
-	// Draw frame background
-	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
-		  w->w - 2 * w->margin, w->h - 2 * w->margin,
-		  ctx->theme.background);
-
-	/* border_w 0 = no border (used for HTML cells / borderless panels). */
+	/*
+	 * Chrome: focus/unfocus border is always outermost on the widget rect.
+	 * margin (theme frame_margin on root frames) is air *inside* the border,
+	 * then padding, then content — so apps can keep using frame_margin
+	 * without a black ring outside the border.
+	 */
 	int bw = w->data.frame.border_w;
 	if (bw < 0)
 		bw = 0;
 
+	/* Full card fill (includes inner margin band). */
+	draw_rect(ctx, pixels, w->x, w->y, w->w, w->h, ctx->theme.background);
+
+	/* border_w 0 = no border (HTML cells / borderless panels). */
 	if (bw > 0) {
 		uint32_t border =
 			w->data.frame.border_color ? w->data.frame.border_color
@@ -1100,15 +1104,10 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 					 ? ctx->theme.frame_border_unfocused
 					 : ctx->theme.background;
 		}
-		draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
-			  w->w - 2 * w->margin, bw, border);
-		draw_rect(ctx, pixels, w->x + w->margin,
-			  w->y + w->h - w->margin - bw, w->w - 2 * w->margin, bw,
-			  border);
-		draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin, bw,
-			  w->h - 2 * w->margin, border);
-		draw_rect(ctx, pixels, w->x + w->w - w->margin - bw,
-			  w->y + w->margin, bw, w->h - 2 * w->margin, border);
+		draw_rect(ctx, pixels, w->x, w->y, w->w, bw, border);
+		draw_rect(ctx, pixels, w->x, w->y + w->h - bw, w->w, bw, border);
+		draw_rect(ctx, pixels, w->x, w->y, bw, w->h, border);
+		draw_rect(ctx, pixels, w->x + w->w - bw, w->y, bw, w->h, border);
 	}
 
 	// Draw child widget inside the frame

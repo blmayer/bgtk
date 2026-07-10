@@ -53,9 +53,9 @@ static int write_pattern_ppm(const char *path)
 
 int main(void)
 {
-	/* Match settings app request — dual-col theme needs ~900 wide. */
-	int width = 900;
-	int height = 560;
+	/* Match settings app request — dual-col theme (colors | sizes). */
+	int width = 920;
+	int height = 640;
 
 	struct BGTK_Context *ctx = bgtk_init_mock(width, height);
 	if (!ctx) {
@@ -107,8 +107,8 @@ int main(void)
 		click.code = BTN_LEFT;
 		click.value = 1;
 		/* Apply sits under the aspect-correct preview (fills leftover). */
-		click.x = 180;
-		click.y = 512;
+		click.x = 220;
+		click.y = height - 48;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		if (!bgtk_inject_event(ctx, click)) {
@@ -335,9 +335,9 @@ int main(void)
 		click.type = EV_KEY;
 		click.code = BTN_LEFT;
 		click.value = 1;
-		/* First theme color field (Background) under Goldie chrome. */
-		click.x = 320;
-		click.y = 40;
+		/* First theme color field (Background) — left column. */
+		click.x = 400;
+		click.y = 55;
 		bgtk_inject_event(ctx, click);
 		click.value = 0;
 		bgtk_inject_event(ctx, click);

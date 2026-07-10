@@ -708,9 +708,11 @@ static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *fram
 	int row_p = 0;
 	int list_m = ss_list_m(c);
 	int list_p = 4;
-	int frame_p = pad, bw;
+	int frame_p = pad, frame_m, bw;
 	int row_w, row_h, list_w, list_h;
 	int text_chrome = 2 * (text_p + text_m);
+
+	frame_m = (c && c->theme.frame_margin >= 0) ? c->theme.frame_margin : 0;
 
 	if (!c || !frame || !root_list)
 		return;
@@ -775,8 +777,11 @@ static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *fram
 	bw = frame->data.frame.border_w;
 	if (bw < 1)
 		bw = 1;
-	frame->w = list_w + 2 * (frame_p + bw);
-	frame->h = list_h + 2 * (frame_p + bw);
+	/* border outermost; frame_m + pad inside (matches other apps). */
+	frame->w = list_w + 2 * (frame_p + frame_m + bw);
+	frame->h = list_h + 2 * (frame_p + frame_m + bw);
+	frame->margin = frame_m;
+	frame->padding = frame_p;
 	if (frame->w < 1)
 		frame->w = 1;
 	if (frame->h < 1)
@@ -837,8 +842,12 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
 			 });
 	root_list = list;
 	/* Temporary size; sys_status_fit_size sets the real one. */
-	frame = bgtk_frame(c, list, 1, 1,
-			   (BGTK_Options){.padding = pad, .margin = 0});
+	{
+		int fmar = (c && c->theme.frame_margin >= 0) ? c->theme.frame_margin
+							      : 0;
+		frame = bgtk_frame(c, list, 1, 1,
+				   (BGTK_Options){.padding = pad, .margin = fmar});
+	}
 
 	/* Prime CPU sample, then full fill (weather may block once). */
 	sys_status_refresh(REFRESH_ALL & ~REFRESH_WEATHER);

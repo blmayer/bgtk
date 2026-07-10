@@ -322,7 +322,7 @@ static void layout_launcher(void)
 	fmar = ctx->theme.frame_margin >= 0 ? ctx->theme.frame_margin : 0;
 	if (bw < 0)
 		bw = 0;
-	/* Content: [frame_margin][border][padding][…] — same on all sides. */
+	/* Content: [border][frame_margin][padding][…] — same on all sides. */
 	inner_w = ctx->width - 2 * (fmar + bw + pad);
 	inner_h = ctx->height - 2 * (fmar + bw + pad);
 	if (inner_w < 40)
@@ -453,7 +453,7 @@ int main(void)
 				bgtk_log("bgtk_list failed");
 				return 1;
 			}
-			/* Root chrome from theme (frame_margin + padding). */
+			/* Root chrome from theme (border outer; margin + pad in). */
 			frame = bgtk_frame(
 				ctx, layout, width, height,
 				(BGTK_Options){

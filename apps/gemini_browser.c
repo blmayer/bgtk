@@ -321,7 +321,7 @@ static void go_link_index(int idx)
 	navigate(link_targets[idx - 1], 1);
 }
 
-/* Root chrome: [frame_margin][border][padding][content]… (from theme). */
+/* Root chrome: [border][frame_margin][padding][content]… (from theme). */
 static void gemini_chrome(int *pad, int *fmar, int *bw)
 {
 	int p = (ctx && ctx->theme.padding > 0) ? ctx->theme.padding : 12;

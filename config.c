@@ -347,10 +347,11 @@ void init_config_defaults(struct config *config)
 	config->theme.text_baseline_offset = 0;
 	/*
 	 * Sowm-style floating cards:
-	 *   frame_margin = 0  → border is the window edge
-	 *   padding           → air inside the border
-	 *   margin            → gap between sibling widgets
-	 *   row_gap           → vertical space between stacked rows (px)
+	 *   border is always the outermost chrome (focus/unfocus color)
+	 *   frame_margin → air inside border (before padding); 0 = tight
+	 *   padding      → air inside that, around content
+	 *   margin       → gap between sibling widgets
+	 *   row_gap      → vertical space between stacked rows (px)
 	 */
 	config->theme.margin = 8;
 	config->theme.padding = 12;

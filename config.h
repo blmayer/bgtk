@@ -48,7 +48,8 @@ typedef struct {
 	 * Spacing (px). Apps should prefer these over magic constants:
 	 *   margin       — gap between sibling widgets (lists, rows)
 	 *   padding      — air inside the frame border (content inset)
-	 *   frame_margin — air outside the frame border (sowm cards: 0)
+	 *   frame_margin — extra air inside the border before padding
+	 *                  (root frames: border is always outermost)
 	 *   row_gap      — preferred vertical gap between stacked rows
 	 *                  (e.g. status lines); list widgets use 2×margin
 	 *                  as inter-item space, so margin ≈ row_gap/2

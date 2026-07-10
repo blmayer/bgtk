@@ -131,8 +131,8 @@ static void pty_set_winsize(int master_fd, int cols, int rows)
 }
 
 /*
- * Root chrome from theme: [frame_margin][border][padding][cells]…
- * Sowm default frame_margin=0 so the border is the window edge.
+ * Root chrome from theme: [border][frame_margin][padding][cells]…
+ * Focus/unfocus border is always outermost (see draw_frame).
  */
 static void term_chrome(struct BGTK_Context *ctx, int *pad, int *fmar, int *bw)
 {
