@@ -529,21 +529,23 @@ static void content_size(int *out_w, int *out_h)
 
 /*
  * Page chrome: scrollable form on top (EXPAND_Y) + Apply pinned at bottom.
- * Uses bgtk_spacer if you need mid-form flex; here the scroll itself expands.
+ * No left/right pad here — shell_row margin already matches the gap on both
+ * sides of the vertical rule (sidebar↔rule = rule↔content). Extra pad made
+ * the content side look wider than the left.
  */
 static struct BGTK_Widget *make_page(struct BGTK_Widget *form,
 				    BGTK_Callback apply_cb)
 {
 	struct BGTK_Widget *scroll, *apply, *outer, *frame;
 	struct BGTK_Widget *items[2];
-	int pin = panel_inset();
 	int pw, ph;
+	int apply_gap = 4;
 
 	content_size(&pw, &ph);
 	if (form)
 		form->flags |= BGTK_FLAG_EXPAND_X;
 	scroll = bgtk_scrollable(ctx, &form, 1,
-		(BGTK_Options){.padding = pin, .margin = 0});
+		(BGTK_Options){.padding = 0, .margin = 0});
 	scroll->w = pw > 0 ? pw : 80;
 	/* Leave room for Apply + list gap so the last form row is not clipped. */
 	scroll->h = ph > 80 ? ph - 56 : 40;
@@ -554,7 +556,7 @@ static struct BGTK_Widget *make_page(struct BGTK_Widget *form,
 	items[1] = apply;
 	outer = bgtk_list(ctx, items, 2,
 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
-			       .margin = 4, .padding = pin});
+			       .margin = apply_gap, .padding = 0});
 	if (outer) {
 		outer->w = pw;
 		outer->h = ph;

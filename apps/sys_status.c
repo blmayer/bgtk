@@ -971,13 +971,15 @@ int main(void)
 			}
 			if (msg.type == MSG_INPUT_EVENT) {
 				struct InputEvent *ev = &msg.data.input_event;
-				if (ev->type == EV_REL || ev->type == EV_ABS)
-					continue;
-				bgtk_update_modifiers(ctx, *ev);
-				if (bgtk_is_app_quit_event(ctx, *ev))
-					break;
-				if (bgtk_handle_input_event(ctx, *ev))
-					need_draw = 1;
+				/* Ignore motion; do not continue the loop —
+				 * that skipped refresh/draw under hover. */
+				if (ev->type != EV_REL && ev->type != EV_ABS) {
+					bgtk_update_modifiers(ctx, *ev);
+					if (bgtk_is_app_quit_event(ctx, *ev))
+						break;
+					if (bgtk_handle_input_event(ctx, *ev))
+						need_draw = 1;
+				}
 			} else if (msg.type == MSG_FOCUS_CHANGE) {
 				bgtk_set_window_focus(ctx,
 						      msg.data.focus_event.state);
