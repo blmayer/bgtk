@@ -350,19 +350,52 @@ void bgtk_log_die(int status, const char *fmt, ...)
 	_exit(status);
 }
 
+/* Create every parent component of path (mkdir -p). path is a file path. */
+static void bgtk_mkdir_parents(const char *path)
+{
+	char dir[512];
+	size_t n;
+	char *p;
+
+	if (!path)
+		return;
+	n = strlen(path);
+	if (n == 0 || n >= sizeof(dir))
+		return;
+	memcpy(dir, path, n + 1);
+	p = strrchr(dir, '/');
+	if (!p || p == dir)
+		return;
+	*p = '\0';
+	for (p = dir + 1; *p; p++) {
+		if (*p != '/')
+			continue;
+		*p = '\0';
+		mkdir(dir, 0755);
+		*p = '/';
+	}
+	mkdir(dir, 0755);
+}
+
 int take_screenshot(struct BGTK_Context *ctx, const char *path)
 {
 	if (!ctx || !ctx->shm_buffer) {
 		return -1;
 	}
-	char filename[256];
+	char filename[512];
 	const char *out_path = path;
 	if (!out_path) {
-		// Timestamped name for SYSRQ / convenience
+		/* Timestamped under test/screenshots (SYSRQ / convenience). */
 		struct timeval tv;
 		gettimeofday(&tv, NULL);
-		snprintf(filename, sizeof(filename), "screenshot_%ld_%06d.png",
+		snprintf(filename, sizeof(filename),
+			 BGTK_TEST_SCREENSHOT_DIR "/screenshot_%ld_%06d.png",
 			 (long)tv.tv_sec, (int)tv.tv_usec);
+		out_path = filename;
+	} else if (!strchr(path, '/')) {
+		/* Bare basename → keep the tree clean. */
+		snprintf(filename, sizeof(filename),
+			 BGTK_TEST_SCREENSHOT_DIR "/%s", path);
 		out_path = filename;
 	}
 
@@ -384,6 +417,7 @@ int take_screenshot(struct BGTK_Context *ctx, const char *path)
 		rgba[i*4 + 3] = 0xFF;             // force opaque
 	}
 
+	bgtk_mkdir_parents(out_path);
 	int result = stbi_write_png(out_path, ctx->width, ctx->height,
 				    4, rgba, ctx->width * 4);
 	free(rgba);

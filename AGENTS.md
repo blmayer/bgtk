@@ -31,12 +31,13 @@ works on Linux and macOS without BGCE.
 │   ├── terminal.c / terminal.h / term_core.c
 │   └── gemini_browser.c
 ├── compat/           - Stubs/headers so headless builds work off Linux (bgce, input.h)
-├── test/             - Headless/mock tests (produce PNG screenshots)
+├── test/             - Headless/mock tests
 │   ├── headless.c
 │   ├── test_terminal.c
 │   ├── test_html.c
 │   ├── test_gemini_browser.c
-│   └── server_client.sh
+│   ├── server_client.sh
+│   └── screenshots/  - PNG output from headless tests (gitignored)
 └── www/              - Sample HTML for html tests
 ```
 
@@ -161,7 +162,8 @@ BGTK is primarily validated visually, not via pixel-diff assertions. The flow:
    set `ctx->root_widget`.
 3. **Draw** — `bgtk_draw_widgets(ctx)`.
 4. **Screenshot** — `take_screenshot(ctx, "descriptive_name.png")` writes the
-   current buffer as PNG (pass `NULL` for a timestamped name).
+   current buffer as PNG under `test/screenshots/` (bare basenames; pass `NULL`
+   for a timestamped name there).
 5. **Simulate input** (when relevant) — build a `struct InputEvent` (mouse
    click, key press, etc.) and call `bgtk_inject_event(ctx, ev)`, then draw
    and screenshot again.
@@ -198,7 +200,7 @@ bgtk_destroy_mock(ctx);
 | `bgtk_init_mock(w, h)` | Headless context with owned framebuffer |
 | `bgtk_destroy_mock(ctx)` | Free mock context and its buffer |
 | `bgtk_draw_widgets(ctx)` | Render the widget tree into the buffer |
-| `take_screenshot(ctx, path)` | Dump buffer to PNG (`NULL` = timestamped name) |
+| `take_screenshot(ctx, path)` | Dump buffer to PNG under `test/screenshots/` |
 | `bgtk_inject_event(ctx, ev)` | Synthetic mouse/keyboard input |
 | `bgtk_set_focus(ctx, widget)` | Focus (e.g. text input) before key events |
 
@@ -208,11 +210,11 @@ Build/run examples (on macOS, `make` defaults to headless targets):
 
 | Target | Source | What to inspect |
 |--------|--------|-----------------|
-| `make headless && ./headless` | `test/headless.c` | Basic widgets, click, focus, typing (`headless_*.png`) |
-| `make test_terminal && ./test_terminal` | `test/test_terminal.c` | Terminal/ANSI rendering (`term_*.png`) |
-| `make test_html && ./test_html` | `test/test_html.c` | HTML → widget tree (`test_html_*.png`) |
-| `make test_gemini_browser && ./test_gemini_browser` | `test/test_gemini_browser.c` | Gemini browser UI flow (`gemini_browser_*.png`) |
-| `make test_sys_status && ./test_sys_status` | `test/test_sys_status.c` | System status dashboard (`sys_status_*.png`) |
+| `make headless && ./headless` | `test/headless.c` | Basic widgets (`test/screenshots/headless_*.png`) |
+| `make test_terminal && ./test_terminal` | `test/test_terminal.c` | Terminal/ANSI (`test/screenshots/term_*.png`) |
+| `make test_html && ./test_html` | `test/test_html.c` | HTML → widgets (`test/screenshots/test_html_*.png`) |
+| `make test_gemini_browser && ./test_gemini_browser` | `test/test_gemini_browser.c` | Gemini browser (`test/screenshots/gemini_browser_*.png`) |
+| `make test_sys_status && ./test_sys_status` | `test/test_sys_status.c` | System status (`test/screenshots/sys_status_*.png`) |
 
 Headless binaries link `compat/bgce_stub.c` and use `-Icompat` so they compile
 on non-Linux machines. Real apps (`test_app`, `terminal`, `gemini_browser`,

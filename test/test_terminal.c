@@ -6,7 +6,7 @@
  *
  * Build:  make test_terminal
  * Run:    ./test_terminal
- * Output: term_*.png screenshots
+ * Output: test/screenshots/term_*.png screenshots
  */
 
 #include <errno.h>
@@ -445,16 +445,108 @@ int main(void)
 			bgtk_destroy_mock(ctx);
 			return 1;
 		}
-		/* With scroll region, CUD stops at bottom margin (no scroll). */
+		/* CUD does not scroll; it may leave the scroll region
+		 * (status line sits below DECSTBM). */
 		term_feed(vs, "\033[1;4r\033[4;1H\033[B", -1);
-		if (vs->cur_row != 3) {
-			bgtk_log("CUD past margin cur_row=%d want 3",
+		if (vs->cur_row != 4) {
+			bgtk_log("CUD past margin cur_row=%d want 4",
 				 vs->cur_row);
 			term_destroy(vs);
 			free(img->data.image.pixels);
 			term_destroy(ts);
 			bgtk_destroy_mock(ctx);
 			return 1;
+		}
+		if (vs->cells[0].ch != 'A' || vs->cells[20].ch != 'B') {
+			bgtk_log("CUD at margin scrolled buffer");
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		term_destroy(vs);
+	}
+
+	/*
+	 * Scrollback view_off must not hide live output. If the user wheel-
+	 * scrolled then a fullscreen app (vim) redraws, top rows must show
+	 * the live buffer — not history.
+	 */
+	{
+		struct Term_State *vs = term_create(20, 6);
+		int r, c;
+		char row0[24];
+
+		/* Fill live screen and push a few rows into scrollback. */
+		for (r = 0; r < 6; r++) {
+			char b[48];
+			snprintf(b, sizeof(b), "\033[%d;1Hold-%02d", r + 1, r);
+			term_feed(vs, b, -1);
+		}
+		for (r = 0; r < 4; r++)
+			term_feed(vs, "\033[6;1H\n", -1);
+		if (vs->sb_len < 1) {
+			bgtk_log("expected scrollback after full LF");
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* User scrolls up into history. */
+		if (!term_view_scroll(vs, vs->sb_len) || vs->view_off < 1) {
+			bgtk_log("view_scroll up failed off=%d sb=%d",
+				 vs->view_off, vs->sb_len);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Vim-like: enter alt screen + clear + draw first line. */
+		term_feed(vs,
+			  "\033[?1049h\033[2J\033[H"
+			  "line 01 content here\r\nline 02 content here",
+			  -1);
+		if (vs->view_off != 0) {
+			bgtk_log("view_off stuck at %d after live feed",
+				 vs->view_off);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		for (c = 0; c < 20; c++) {
+			char ch = vs->cells[c].ch;
+			row0[c] = (ch >= 32 && ch < 127) ? ch : '.';
+		}
+		row0[20] = '\0';
+		if (!strstr(row0, "line 01")) {
+			bgtk_log("first live line hidden row0='%s'", row0);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Visual: paint into main test surface for screenshot inspect. */
+		{
+			int rr, cc;
+			for (rr = 0; rr < ts->rows * ts->cols; rr++)
+				ts->cells[rr] = (struct Term_Cell){
+					.ch = ' ', .fg = 7, .bg = 0, .bold = 0
+				};
+			for (rr = 0; rr < ts->rows && rr < vs->rows; rr++)
+				for (cc = 0; cc < ts->cols && cc < vs->cols; cc++)
+					ts->cells[rr * ts->cols + cc] =
+						vs->cells[rr * vs->cols + cc];
+			ts->view_off = 0;
+			term_render(ts, ctx, img->data.image.pixels, inner_w,
+				    inner_h);
+			bgtk_draw_widgets(ctx);
+			take_screenshot(ctx, "term_10_vim_live_first_line.png");
 		}
 		term_destroy(vs);
 	}

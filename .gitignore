@@ -1,0 +1,20 @@
+# Objects / libs
+*.o
+libbgtk.so
+
+# Built test binaries (repo root)
+/headless
+/test_terminal
+/test_html
+/test_settings
+/test_theme_gallery
+/test_sys_status
+/test_gemini_browser
+
+# Headless test screenshots (regenerated on run)
+test/screenshots/*.png
+
+# Local junk
+.DS_Store
+.tai
+.codebase-memory/

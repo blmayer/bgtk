@@ -79,6 +79,7 @@ static struct BGTK_Widget *theme_rule_color_input;
 static struct BGTK_Widget *theme_margin_input;
 static struct BGTK_Widget *theme_padding_input;
 static struct BGTK_Widget *theme_frame_margin_input;
+static struct BGTK_Widget *theme_row_gap_input;
 static struct BGTK_Widget *theme_baseline_input;
 
 static int font_dropdown_open;
@@ -1079,6 +1080,9 @@ static void apply_theme(void *userdata)
 	    theme_frame_margin_input->data.text_input.text)
 		cfg.theme.frame_margin =
 			atoi(theme_frame_margin_input->data.text_input.text);
+	if (theme_row_gap_input && theme_row_gap_input->data.text_input.text)
+		cfg.theme.row_gap =
+			atoi(theme_row_gap_input->data.text_input.text);
 	if (theme_baseline_input && theme_baseline_input->data.text_input.text)
 		cfg.theme.text_baseline_offset =
 			atoi(theme_baseline_input->data.text_input.text);
@@ -1572,13 +1576,14 @@ static struct BGTK_Widget *build_theme_page(void)
 	rows[n++] = ui_row_field("Highlight", theme_highlight_input);
 
 	theme_margin_input = theme_int_input(cfg.theme.margin, 60);
-	rows[n++] = ui_row_field("Widget margin", theme_margin_input);
+	theme_row_gap_input = theme_int_input(cfg.theme.row_gap, 60);
+	rows[n++] = ui_row2("Widget margin", theme_margin_input,
+			    "Row gap", theme_row_gap_input);
 
 	theme_padding_input = theme_int_input(cfg.theme.padding, 60);
-	rows[n++] = ui_row_field("Frame padding", theme_padding_input);
-
 	theme_frame_margin_input = theme_int_input(cfg.theme.frame_margin, 60);
-	rows[n++] = ui_row_field("Frame margin", theme_frame_margin_input);
+	rows[n++] = ui_row2("Frame padding", theme_padding_input,
+			    "Frame margin", theme_frame_margin_input);
 
 	theme_baseline_input =
 		theme_int_input(cfg.theme.text_baseline_offset, 60);
@@ -1608,7 +1613,8 @@ static void clear_page_ptrs(void)
 	theme_focus_input = theme_focus_bg_input = theme_input_bg_input = NULL;
 	theme_highlight_input = theme_rule_color_input = NULL;
 	theme_margin_input = theme_padding_input = NULL;
-	theme_frame_margin_input = theme_baseline_input = NULL;
+	theme_frame_margin_input = theme_row_gap_input = NULL;
+	theme_baseline_input = NULL;
 }
 
 /* Size root + shell_row; EXPAND fills content_panel / sidebar height. */

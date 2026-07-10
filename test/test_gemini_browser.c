@@ -11,7 +11,7 @@
  *
  * Build: make test_gemini_browser
  * Run:   ./test_gemini_browser
- * Output: gemini_browser_*.png files
+ * Output: test/screenshots/gemini_browser_*.png files
  */
 
 #include <stdio.h>

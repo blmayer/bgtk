@@ -5,7 +5,7 @@
  * Build:  make test_settings
  * Run:    ./test_settings
  *
- * Produces settings_*.png screenshots for visual inspection.
+ * Produces test/screenshots/settings_*.png screenshots for visual inspection.
  * Exercises the sidebar navigation, page content, text input, and apply flow.
  */
 

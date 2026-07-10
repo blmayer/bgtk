@@ -3,7 +3,7 @@
  * Build:  make test_html
  * Run:    ./test_html
  *
- * Produces test_html_*.png screenshots for visual inspection.
+ * Produces test/screenshots/test_html_*.png screenshots for visual inspection.
  */
 
 #include <stdio.h>

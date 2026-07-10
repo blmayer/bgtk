@@ -679,6 +679,20 @@ static int ss_mar(struct BGTK_Context *c)
 	return (c && c->theme.margin > 0) ? c->theme.margin : 8;
 }
 
+/* Vertical gap between status rows (px). List packing uses 2×margin. */
+static int ss_row_gap(struct BGTK_Context *c)
+{
+	if (c && c->theme.row_gap > 0)
+		return c->theme.row_gap;
+	return 8;
+}
+
+static int ss_list_m(struct BGTK_Context *c)
+{
+	int m = (ss_row_gap(c) + 1) / 2;
+	return m > 0 ? m : 1;
+}
+
 /* Size root frame from label text (call after metrics are filled). */
 static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *frame)
 {
@@ -687,10 +701,13 @@ static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *fram
 	int pad = ss_pad(c);
 	int mar = ss_mar(c);
 	int half = mar > 1 ? mar / 2 : 1;
-	int text_p = pad > 2 ? pad / 2 : 2;
-	int text_m = half > 0 ? half : 1;
-	int row_m = half, row_p = half;
-	int list_m = mar, list_p = pad > 2 ? pad / 2 : 2;
+	/* Tight chrome: 2px text pad; row gap from theme.row_gap. */
+	int text_p = 2;
+	int text_m = 0;
+	int row_m = half > 2 ? half / 2 : 2; /* name|value gap = 2×row_m */
+	int row_p = 0;
+	int list_m = ss_list_m(c);
+	int list_p = 4;
 	int frame_p = pad, bw;
 	int row_w, row_h, list_w, list_h;
 	int text_chrome = 2 * (text_p + text_m);
@@ -736,21 +753,24 @@ static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *fram
 			value_labels[i]->w = val_w;
 			value_labels[i]->h = text_h;
 		}
-		/* horizontal list: content = sum(w) + 2*m*(n-1), plus pad/margin */
-		row_w = name_w + val_w + 2 * row_m + 2 * (row_p + row_m);
-		row_h = text_h + 2 * (row_p + row_m);
+		/* h-list: sum(w) + 2*m between items + 2*padding (margin ≠ side). */
+		row_w = name_w + val_w + 2 * row_m + 2 * row_p;
+		row_h = text_h + 2 * row_p;
 		if (row_widgets[i]) {
 			row_widgets[i]->w = row_w;
 			row_widgets[i]->h = row_h;
+			row_widgets[i]->margin = row_m;
+			row_widgets[i]->padding = row_p;
 		}
 	}
 
-	/* vertical list of N rows */
-	list_w = row_w + 2 * (list_p + list_m);
-	list_h = N_ROWS * row_h + 2 * list_m * (N_ROWS - 1) +
-		 2 * (list_p + list_m);
+	/* v-list: sum(h) + 2*m*(n-1) + 2*padding */
+	list_w = row_w + 2 * list_p;
+	list_h = N_ROWS * row_h + 2 * list_m * (N_ROWS - 1) + 2 * list_p;
 	root_list->w = list_w;
 	root_list->h = list_h;
+	root_list->margin = list_m;
+	root_list->padding = list_p;
 
 	bw = frame->data.frame.border_w;
 	if (bw < 1)
@@ -771,9 +791,10 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
 	int pad = ss_pad(c);
 	int mar = ss_mar(c);
 	int half = mar > 1 ? mar / 2 : 1;
-	int text_p = pad > 2 ? pad / 2 : 2;
-	int text_m = half > 0 ? half : 1;
-	int list_p = pad > 2 ? pad / 2 : 2;
+	int text_p = 2;
+	int row_m = half > 2 ? half / 2 : 2;
+	int list_m = ss_list_m(c);
+	int list_p = 4;
 
 	ctx = c;
 	for (i = 0; i < N_ROWS; i++) {
@@ -786,22 +807,23 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
 	for (i = 0; i < N_ROWS; i++) {
 		struct BGTK_Widget *name =
 			bgtk_text(c, (char *)row_names[i],
-				  (BGTK_Options){.padding = text_p,
-						 .margin = text_m});
+				  (BGTK_Options){.padding = text_p, .margin = 0});
 		struct BGTK_Widget *val =
 			bgtk_text(c, "…",
-				  (BGTK_Options){.padding = text_p,
-						 .margin = text_m});
+				  (BGTK_Options){.padding = text_p, .margin = 0});
 		struct BGTK_Widget *pair[2] = { name, val };
 		struct BGTK_Widget *row;
 
+		/* Keys use theme.highlight (header_level 10 = accent). */
+		if (name)
+			name->data.text.header_level = 10;
 		name_labels[i] = name;
 		value_labels[i] = val;
 		row = bgtk_list(c, pair, 2,
 				(BGTK_Options){
 					.orientation = BGTK_LIST_HORIZONTAL,
-					.padding = half,
-					.margin = half,
+					.padding = 0,
+					.margin = row_m,
 				});
 		row_widgets[i] = row;
 		rows[i] = row;
@@ -811,7 +833,7 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
 			 (BGTK_Options){
 				 .orientation = BGTK_LIST_VERTICAL,
 				 .padding = list_p,
-				 .margin = mar,
+				 .margin = list_m,
 			 });
 	root_list = list;
 	/* Temporary size; sys_status_fit_size sets the real one. */

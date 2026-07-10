@@ -26,7 +26,7 @@ create graphical user interfaces by directly writing to a shared graphical buffe
 When using mocks, the following functions are the primary tools:
 
 - `bgtk_init_mock(width, height)` — create a context with its own in-memory framebuffer.
-- `take_screenshot(ctx, "name.png")` — dump the current buffer to a PNG (pass `NULL` for a timestamped name).
+- `take_screenshot(ctx, "name.png")` — dump the buffer to `test/screenshots/name.png` (pass `NULL` for a timestamped name there).
 - `bgtk_inject_event(ctx, ev)` — feed synthetic mouse/keyboard events.
 - `bgtk_destroy_mock(ctx)` — clean up a mock context (frees the internal buffer).
 
@@ -68,7 +68,7 @@ make headless
 ./headless
 ```
 
-This builds `test/headless.c` and generates several `headless_*.png` files demonstrating:
+This builds `test/headless.c` and writes several `test/screenshots/headless_*.png` files demonstrating:
 - Layout and widget sizing
 - Button press / callback
 - Text input focus + typing (via injected key events)
@@ -201,7 +201,7 @@ make headless
 ./headless
 ```
 
-This produces `headless_*.png` files you can open to visually inspect the rendered UI at each step (layout, interaction, text input, etc.).
+This produces `test/screenshots/headless_*.png` files you can open to visually inspect the rendered UI at each step (layout, interaction, text input, etc.).
 
 See the "Testing with Mocks" section above for how to integrate this style of testing into your own code.
 

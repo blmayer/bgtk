@@ -166,12 +166,13 @@ help:
 	@echo "  test_terminal        Terminal/ANSI (+ optional real PTY) screenshots"
 	@echo "  test_html            HTML → widget tree screenshots"
 	@echo "  test_settings        Settings UI screenshots"
-	@echo "  test_theme_gallery   Settings under candidate themes (settings_theme_*.png)"
+	@echo "  test_theme_gallery   Settings under candidate themes"
 	@echo "  test_gemini_browser  Gemini browser flow screenshots (libtls for live fetch)"
+	@echo "  (PNGs land in test/screenshots/)"
 	@echo ""
 	@echo "  Maintenance"
 	@echo "  install              Install lib, header, and built apps"
-	@echo "  clean                Remove binaries and objects"
+	@echo "  clean                Remove binaries, objects, and test PNGs"
 	@echo "  test                 Smoke-run test_app + image_viewer under bgce"
 	@echo "  snapshot             Regenerate www/bgtk.tar.gz from HEAD"
 	@echo ""
@@ -319,6 +320,7 @@ clean:
 		$(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) \
 		$(TEST_HTML_OBJ) $(SETTINGS_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) \
 		$(SYS_STATUS_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) libbgtk.so
+	rm -f test/screenshots/*.png
 
 # Rebuild core apps before install. After BGTK_Context layout changes, a
 # lib-only install leaves blank windows (apps write root_widget at wrong offset).

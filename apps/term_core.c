@@ -342,17 +342,17 @@ static void csi_dispatch(struct Term_State *t, char final,
 	int p1 = nparam > 1 ? params[1] : 0;
 
 	switch (final) {
-	case 'A': /* CUU — stay inside scroll region (no auto-scroll) */
+	case 'A': /* CUU — move only; never scroll. Screen edges (not
+		   * DECSTBM): origin mode is not implemented, so the
+		   * cursor may leave the scroll region (vim status line). */
 		t->cur_row -= p0 ? p0 : 1;
-		if (t->cur_row < t->scroll_top)
-			t->cur_row = t->scroll_top;
 		if (t->cur_row < 0)
 			t->cur_row = 0;
 		break;
-	case 'B': /* CUD — clamp to scroll_bot; do not scroll content */
+	case 'B': /* CUD — move only; never scroll. Do not clamp to
+		   * scroll_bot (that trapped the cursor off the status
+		   * line and pulled it back into the region). */
 		t->cur_row += p0 ? p0 : 1;
-		if (t->cur_row > t->scroll_bot)
-			t->cur_row = t->scroll_bot;
 		if (t->cur_row >= t->rows)
 			t->cur_row = t->rows - 1;
 		break;
@@ -382,9 +382,16 @@ static void csi_dispatch(struct Term_State *t, char final,
 			for (int i = 0;
 			     i <= t->cur_row * t->cols + t->cur_col; i++)
 				t->cells[i] = default_cell();
-		} else if (p0 == 2) {
+		} else if (p0 == 2 || p0 == 3) {
 			for (int i = 0; i < t->rows * t->cols; i++)
 				t->cells[i] = default_cell();
+			/* Full clear (vim/fullscreen apps): pin live view so
+			 * scrollback view_off cannot hide the first rows. */
+			t->view_off = 0;
+			if (p0 == 3) {
+				t->sb_len = 0;
+				t->sb_start = 0;
+			}
 		}
 		break;
 	case 'K':
@@ -406,7 +413,10 @@ static void csi_dispatch(struct Term_State *t, char final,
 		for (int i = 0; i < (p0 ? p0 : 1); i++) scroll_down(t);
 		break;
 	case 'L': {
+		/* IL — only inside the scrolling region. */
 		int n = p0 ? p0 : 1;
+		if (t->cur_row < t->scroll_top || t->cur_row > t->scroll_bot)
+			break;
 		for (int i = 0; i < n && t->cur_row <= t->scroll_bot; i++) {
 			memmove(&t->cells[(t->cur_row + 1) * t->cols],
 				&t->cells[t->cur_row * t->cols],
@@ -418,7 +428,10 @@ static void csi_dispatch(struct Term_State *t, char final,
 		break;
 	}
 	case 'M': {
+		/* DL — only inside the scrolling region. */
 		int n = p0 ? p0 : 1;
+		if (t->cur_row < t->scroll_top || t->cur_row > t->scroll_bot)
+			break;
 		for (int i = 0; i < n && t->cur_row <= t->scroll_bot; i++) {
 			memmove(&t->cells[t->cur_row * t->cols],
 				&t->cells[(t->cur_row + 1) * t->cols],
@@ -518,6 +531,20 @@ static void csi_dispatch(struct Term_State *t, char final,
 		break;
 	case 'h':
 	case 'l':
+		/* Private modes we care about: alt screen enters a clean
+		 * live view (vim). Others ignored. */
+		if (t->csi_priv && (p0 == 1049 || p0 == 1047 || p0 == 47)) {
+			if (final == 'h') {
+				t->view_off = 0;
+				for (int i = 0; i < t->rows * t->cols; i++)
+					t->cells[i] = default_cell();
+				t->cur_row = t->cur_col = 0;
+				t->scroll_top = 0;
+				t->scroll_bot = t->rows - 1;
+			} else {
+				t->view_off = 0;
+			}
+		}
 		break;
 	default:
 		break;
@@ -530,7 +557,16 @@ static void csi_dispatch(struct Term_State *t, char final,
 
 void term_feed(struct Term_State *t, const char *data, int len)
 {
+	if (!t || !data)
+		return;
 	if (len < 0) len = (int)strlen(data);
+	if (len <= 0)
+		return;
+	/* Live PTY/app output always follows the bottom. Leaving view_off>0
+	 * after the user wheel-scrolled made fullscreen apps (vim) paint the
+	 * live buffer while the top rows still showed history — "first line
+	 * missing" with the scrollback still active. */
+	t->view_off = 0;
 	for (int i = 0; i < len; i++) {
 		unsigned char ch = (unsigned char)data[i];
 
@@ -569,7 +605,10 @@ void term_feed(struct Term_State *t, const char *data, int len)
 				t->csi_nparam = 0;
 				memset(t->csi_params, 0, sizeof(t->csi_params));
 				t->csi_priv = 0;
-			} else if (ch == ']') {
+			} else if (ch == ']' || ch == 'P') {
+				/* OSC (]) or DCS (P): ignore until BEL/ST.
+				 * vim probes with DCS; without this, payload
+				 * chars (e.g. "zz") corrupt the cell grid. */
 				t->esc_state = 4;
 			} else if (ch == '(' || ch == ')') {
 				t->esc_state = 5;
@@ -587,6 +626,7 @@ void term_feed(struct Term_State *t, const char *data, int len)
 				t->cur_row = t->cur_col = 0;
 				t->cur_fg = 7; t->cur_bg = 0; t->cur_bold = 0;
 				t->scroll_top = 0; t->scroll_bot = t->rows - 1;
+				t->view_off = 0;
 				t->esc_state = 0;
 			} else {
 				t->esc_state = 0;

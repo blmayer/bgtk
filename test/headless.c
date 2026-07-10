@@ -4,11 +4,11 @@
  *     make headless
  *     ./headless
  *
- * Produces headless_*.png files you can open to visually inspect the UI.
+ * Produces test/screenshots/headless_*.png files you can open to visually inspect the UI.
  *
  * Key APIs demonstrated:
  *   - bgtk_init_mock(w, h)          : create a context with an owned in-memory buffer
- *   - take_screenshot(ctx, "foo.png") or take_screenshot(ctx, NULL)
+ *   - take_screenshot(ctx, "foo.png") → test/screenshots/foo.png
  *   - bgtk_inject_event(ctx, ev)    : simulate clicks and key presses
  *   - bgtk_destroy_mock(ctx)
  *   - BGTK_Options.text_align       : left / center / right within widget bounds

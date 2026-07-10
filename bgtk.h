@@ -446,14 +446,18 @@ void bgtk_destroy_mock(struct BGTK_Context* ctx);
 struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width, int height);
 
 // Initializes BGTK in mock/headless mode for testing. Owns an internal framebuffer.
-// Use take_screenshot(ctx, "foo.png") after draws to inspect rendered output as an image.
+// Use take_screenshot(ctx, "foo.png") after draws (writes under test/screenshots/).
 struct BGTK_Context* bgtk_init_mock(int width, int height);
 
 // Handles a single event and returns whether a redraw is needed.
 int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev);
 
 // Take a screenshot of the current framebuffer to a PNG file.
-// If path is NULL, a timestamped name is generated automatically (for KEY_SYSRQ).
+// If path is NULL, a timestamped name is written under BGTK_TEST_SCREENSHOT_DIR
+// (for KEY_SYSRQ / convenience). A bare basename (no '/') is also placed there so
+// headless tests do not drop PNGs in the repo root. Paths with '/' are used as-is.
+// Parent directories are created as needed.
+#define BGTK_TEST_SCREENSHOT_DIR "test/screenshots"
 int take_screenshot(struct BGTK_Context* ctx, const char* path);
 
 // Inject a synthetic input event (for testing). Coordinates are absolute widget coords.

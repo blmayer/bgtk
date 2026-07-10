@@ -350,10 +350,12 @@ void init_config_defaults(struct config *config)
 	 *   frame_margin = 0  → border is the window edge
 	 *   padding           → air inside the border
 	 *   margin            → gap between sibling widgets
+	 *   row_gap           → vertical space between stacked rows (px)
 	 */
 	config->theme.margin = 8;
 	config->theme.padding = 12;
 	config->theme.frame_margin = 0;
+	config->theme.row_gap = 8;
 
 	/* Font defaults under [font]: sans, mono, serif, size. */
 	config->font_sans_path[0] = '\0';
@@ -451,6 +453,7 @@ int write_config(const struct config *config)
 	fprintf(f, "margin = %d\n", config->theme.margin);
 	fprintf(f, "padding = %d\n", config->theme.padding);
 	fprintf(f, "frame_margin = %d\n", config->theme.frame_margin);
+	fprintf(f, "row_gap = %d\n", config->theme.row_gap);
 
 	fprintf(f, "\n[font]\n");
 	if (config->font_sans_path[0])
@@ -573,6 +576,8 @@ int parse_config(struct config *config)
 				config->theme.padding = atoi(value);
 			} else if (strcmp(key, "frame_margin") == 0) {
 				config->theme.frame_margin = atoi(value);
+			} else if (strcmp(key, "row_gap") == 0) {
+				config->theme.row_gap = atoi(value);
 			}
 		} else if (strcmp(current_section, "font") == 0) {
 			if (strcmp(key, "sans") == 0) {

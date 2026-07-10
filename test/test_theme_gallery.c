@@ -5,7 +5,7 @@
  *
  * Build:  make test_theme_gallery
  * Run:    ./test_theme_gallery
- * Output: settings_theme_*.png
+ * Output: test/screenshots/settings_theme_*.png
  */
 
 #include <stdio.h>
