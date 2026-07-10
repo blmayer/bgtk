@@ -247,7 +247,8 @@ etc.) still need BGCE on Linux.
 8. **Layout flags** (optional; default is legacy absolute placement):
    - `BGTK_FLAG_EXPAND_X` / `BGTK_FLAG_EXPAND_Y` / `BGTK_FLAG_FILL` — grow into free space in a parent list (main axis shared among expanders; cross axis fills content box). Parent list needs a fixed/pre-set size larger than content (e.g. filled by a frame).
    - `BGTK_FLAG_RELATIVE` — `x`/`y` are parent-relative; `abs_x`/`abs_y` are screen (or scroll content) coords after layout. Set on a container to opt a subtree in; children inherit during place.
-   - `bgtk_widget_screen_pos()`, `bgtk_widget_hit()`, `bgtk_widget_set_parent()`.
+   - `bgtk_spacer(ctx, min_w, min_h, opts)` — empty flex cell; combine with EXPAND_* to push siblings (e.g. Apply to bottom).
+   - `bgtk_widget_screen_pos()`, `bgtk_widget_hit()`, `bgtk_widget_set_parent()`, `bgtk_list_layout_expand()`.
 
 ## Useful Functions
 

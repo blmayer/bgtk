@@ -664,9 +664,21 @@ struct BGTK_Widget *bgtk_switch(struct BGTK_Context *ctx, const char *left,
 		kn = 12;
 	gap = 8;
 	track_h = kn + 6;
-	/* Track ≈ 4.5× knob so the pill reads clearly between labels. */
-	w->w = lw + rw + kn * 9 / 2 + gap * 2 + 2 * (w->padding + w->margin);
+	/* Track ≈ 3× knob — readable without dominating the row. */
+	w->w = lw + rw + kn * 3 + gap * 2 + 2 * (w->padding + w->margin);
 	w->h = (track_h > lh ? track_h : lh) + 2 * (w->padding + w->margin);
+	return w;
+}
+
+struct BGTK_Widget *bgtk_spacer(struct BGTK_Context *ctx, int min_w, int min_h,
+				BGTK_Options options)
+{
+	struct BGTK_Widget *w = widget_new(ctx, BGTK_WIDGET_SPACER, options);
+
+	if (!w)
+		return NULL;
+	w->w = min_w > 0 ? min_w : 0;
+	w->h = min_h > 0 ? min_h : 0;
 	return w;
 }
 

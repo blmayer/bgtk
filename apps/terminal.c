@@ -467,25 +467,27 @@ int main(void)
 						      BGTK_KEY_TTY, out,
 						      sizeof(out));
 				/*
-				 * Stuck-Ctrl safety: Ctrl+J/K are LF/VT (0x0A/
-				 * 0x0B). In vi that scrolls/corrupts the buffer
-				 * ("bottom lines jump up"). If we would emit a
-				 * C0 letter but only one mod side bit is set
-				 * from a single press that never got a matching
-				 * release pattern, still send it — the real
-				 * fix is focus/ESC clear. Log for diagnosis.
+				 * Stuck-Ctrl safety: Ctrl+J/K are LF/VT. In vi
+				 * that scrolls the region ("cursor down but
+				 * every line jumps up"). Prefer plain j/k and
+				 * clear sticky ctrl — intentional Ctrl+J is
+				 * rare interactively.
 				 */
 				if (n == 1 && (unsigned char)out[0] < 0x20 &&
-				    (ev->code == KEY_J || ev->code == KEY_K))
-					bgtk_log("TTY C0 for key %u mod=ctrl — "
-						 "if vi misbehaves, mod was stuck",
-						 ev->code);
+				    (ev->code == KEY_J || ev->code == KEY_K)) {
+					bgtk_log("demote Ctrl+%c -> '%c' "
+						 "(clear stuck mods)",
+						 ev->code == KEY_J ? 'J' : 'K',
+						 ev->code == KEY_J ? 'j' : 'k');
+					out[0] = (ev->code == KEY_J) ? 'j'
+								     : 'k';
+					bgtk_clear_modifiers(ctx);
+				}
 				if (n > 0) {
 					if (write(master_fd, out, (size_t)n) < 0)
 						bgtk_log_errno("PTY write key");
 				}
-				/* Esc is a natural "reset" in vi — drop any
-				 * sticky mod so the next j/k is a plain letter. */
+				/* Esc resets sticky mods for the next motion. */
 				if (ev->code == KEY_ESC)
 					bgtk_clear_modifiers(ctx);
 				if (need_draw) {

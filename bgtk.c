@@ -927,12 +927,16 @@ void bgtk_set_window_focus(struct BGTK_Context *ctx, int focused)
 
 void bgtk_draw_widgets(struct BGTK_Context *ctx)
 {
-	clear_buffer(ctx);
-	calculate_widget_size(ctx, ctx->root_widget);
-	draw_widget(ctx, ctx->root_widget, ctx->shm_buffer);
-	if (ctx && ctx->conn_fd >= 0) {
-		bgce_draw(ctx->conn_fd);
+	/* No full-buffer clear: widgets paint their own rects; then ask
+	 * the compositor to present the shm. */
+	if (!ctx)
+		return;
+	if (ctx->root_widget) {
+		calculate_widget_size(ctx, ctx->root_widget);
+		draw_widget(ctx, ctx->root_widget, ctx->shm_buffer);
 	}
+	if (ctx->conn_fd >= 0)
+		bgce_draw(ctx->conn_fd);
 }
 
 // Handles a single event and returns whether a redraw is needed.

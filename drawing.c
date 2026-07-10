@@ -432,7 +432,8 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 	case BGTK_WIDGET_IMAGE:
 	case BGTK_WIDGET_TEXT_INPUT:
 	case BGTK_WIDGET_SWITCH:
-		// Fixed-size widgets; size set by constructor.
+	case BGTK_WIDGET_SPACER:
+		// Fixed-size widgets; size set by constructor (expand may grow).
 		break;
 	case BGTK_WIDGET_FRAME:
 		/* Must recurse: root is usually a frame; without this,
@@ -1399,15 +1400,15 @@ static void draw_switch(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	track_h = kn + 4;
 	if (track_h > ih)
 		track_h = ih;
-	/* Wider pill (≈ 4.5× knob); matches bgtk_switch sizing. */
-	track_w = kn * 9 / 2;
-	if (track_w < kn + 40)
-		track_w = kn + 40;
+	/* Pill ≈ 3× knob; matches bgtk_switch sizing. */
+	track_w = kn * 3;
+	if (track_w < kn + 20)
+		track_w = kn + 20;
 	/* Keep room for both labels. */
 	if (lw + gap + track_w + gap + rw > iw)
 		track_w = iw - lw - rw - gap * 2;
-	if (track_w < kn + 16)
-		track_w = kn + 16;
+	if (track_w < kn + 10)
+		track_w = kn + 10;
 
 	track_x = x0 + lw + gap;
 	track_y = y0 + (ih - track_h) / 2;
@@ -1496,6 +1497,8 @@ void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		break;
 	case BGTK_WIDGET_SWITCH:
 		draw_switch(ctx, w, pixels);
+		break;
+	case BGTK_WIDGET_SPACER:
 		break;
 	default:
 		puts("can't draw unknown widget");

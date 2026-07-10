@@ -266,6 +266,8 @@ enum BGTK_Widget_Type {
 	BGTK_WIDGET_RULE,
 	/* Binary pill: left / right labels + sliding knob (0 = left, 1 = right). */
 	BGTK_WIDGET_SWITCH,
+	/* Empty flex space; pair with BGTK_FLAG_EXPAND_* to push siblings. */
+	BGTK_WIDGET_SPACER,
 };
 
 // Widget flags
@@ -511,6 +513,10 @@ struct BGTK_Widget *bgtk_rule(struct BGTK_Context *ctx,
 struct BGTK_Widget *bgtk_switch(struct BGTK_Context *ctx, const char *left,
 				const char *right, int value,
 				BGTK_Callback callback, void *cb_data,
+				BGTK_Options options);
+
+/* Invisible box of at least min_w × min_h; use EXPAND_X/Y/FILL to stretch. */
+struct BGTK_Widget *bgtk_spacer(struct BGTK_Context *ctx, int min_w, int min_h,
 				BGTK_Options options);
 
 #endif

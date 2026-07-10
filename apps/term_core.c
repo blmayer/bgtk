@@ -292,6 +292,44 @@ static void scroll_down(struct Term_State *t)
 		t->cells[top * t->cols + c] = default_cell();
 }
 
+/*
+ * IND / LF: move down one line. Scroll the DECSTBM region only when the
+ * cursor is *inside* that region and already on the bottom margin.
+ * Outside the region (vim status line is below scroll_bot) never scroll —
+ * that was "j moves cursor and every line jumps up" in vi.
+ */
+static void cursor_index(struct Term_State *t)
+{
+	if (t->cur_row < t->scroll_top) {
+		if (t->cur_row < t->rows - 1)
+			t->cur_row++;
+		return;
+	}
+	if (t->cur_row > t->scroll_bot) {
+		if (t->cur_row < t->rows - 1)
+			t->cur_row++;
+		return;
+	}
+	if (t->cur_row >= t->scroll_bot)
+		scroll_up(t);
+	else
+		t->cur_row++;
+}
+
+/* RI: move up one line; scroll only inside region on top margin. */
+static void cursor_revindex(struct Term_State *t)
+{
+	if (t->cur_row < t->scroll_top || t->cur_row > t->scroll_bot) {
+		if (t->cur_row > 0)
+			t->cur_row--;
+		return;
+	}
+	if (t->cur_row <= t->scroll_top)
+		scroll_down(t);
+	else
+		t->cur_row--;
+}
+
 /* ------------------------------------------------------------------ */
 /* CSI dispatch                                                       */
 /* ------------------------------------------------------------------ */
@@ -304,13 +342,19 @@ static void csi_dispatch(struct Term_State *t, char final,
 	int p1 = nparam > 1 ? params[1] : 0;
 
 	switch (final) {
-	case 'A':
+	case 'A': /* CUU — stay inside scroll region (no auto-scroll) */
 		t->cur_row -= p0 ? p0 : 1;
-		if (t->cur_row < 0) t->cur_row = 0;
+		if (t->cur_row < t->scroll_top)
+			t->cur_row = t->scroll_top;
+		if (t->cur_row < 0)
+			t->cur_row = 0;
 		break;
-	case 'B':
+	case 'B': /* CUD — clamp to scroll_bot; do not scroll content */
 		t->cur_row += p0 ? p0 : 1;
-		if (t->cur_row >= t->rows) t->cur_row = t->rows - 1;
+		if (t->cur_row > t->scroll_bot)
+			t->cur_row = t->scroll_bot;
+		if (t->cur_row >= t->rows)
+			t->cur_row = t->rows - 1;
 		break;
 	case 'C':
 		t->cur_col += p0 ? p0 : 1;
@@ -495,11 +539,7 @@ void term_feed(struct Term_State *t, const char *data, int len)
 			if (ch == '\033') {
 				t->esc_state = 1;
 			} else if (ch == '\n') {
-				t->cur_row++;
-				if (t->cur_row > t->scroll_bot) {
-					t->cur_row = t->scroll_bot;
-					scroll_up(t);
-				}
+				cursor_index(t);
 			} else if (ch == '\r') {
 				t->cur_col = 0;
 			} else if (ch == '\t') {
@@ -519,11 +559,7 @@ void term_feed(struct Term_State *t, const char *data, int len)
 				t->cur_col++;
 				if (t->cur_col >= t->cols) {
 					t->cur_col = 0;
-					t->cur_row++;
-					if (t->cur_row > t->scroll_bot) {
-						t->cur_row = t->scroll_bot;
-						scroll_up(t);
-					}
+					cursor_index(t);
 				}
 			}
 			break;
@@ -538,18 +574,12 @@ void term_feed(struct Term_State *t, const char *data, int len)
 			} else if (ch == '(' || ch == ')') {
 				t->esc_state = 5;
 			} else if (ch == 'D') {
-				t->cur_row++;
-				if (t->cur_row > t->scroll_bot) {
-					t->cur_row = t->scroll_bot;
-					scroll_up(t);
-				}
+				/* IND */
+				cursor_index(t);
 				t->esc_state = 0;
 			} else if (ch == 'M') {
-				t->cur_row--;
-				if (t->cur_row < t->scroll_top) {
-					t->cur_row = t->scroll_top;
-					scroll_down(t);
-				}
+				/* RI */
+				cursor_revindex(t);
 				t->esc_state = 0;
 			} else if (ch == 'c') {
 				for (int j = 0; j < t->rows * t->cols; j++)

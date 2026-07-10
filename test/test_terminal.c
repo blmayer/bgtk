@@ -415,6 +415,97 @@ int main(void)
 		term_destroy(vs);
 	}
 
+	/* CSI B (cursor down) must not scroll the buffer — only move cursor. */
+	{
+		struct Term_State *vs = term_create(20, 6);
+		char row0[24], row1[24];
+		int c;
+
+		term_feed(vs, "\033[1;1HAAAA\033[2;1HBBBB\033[3;1HCCCC", -1);
+		term_feed(vs, "\033[1;1H\033[B", -1); /* CUD once from row 0 */
+		if (vs->cur_row != 1) {
+			bgtk_log("CUD failed cur_row=%d want 1", vs->cur_row);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		for (c = 0; c < 4; c++) {
+			row0[c] = vs->cells[c].ch;
+			row1[c] = vs->cells[20 + c].ch;
+		}
+		row0[4] = row1[4] = '\0';
+		if (strcmp(row0, "AAAA") != 0 || strcmp(row1, "BBBB") != 0) {
+			bgtk_log("CUD scrolled content row0='%s' row1='%s'",
+				 row0, row1);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* With scroll region, CUD stops at bottom margin (no scroll). */
+		term_feed(vs, "\033[1;4r\033[4;1H\033[B", -1);
+		if (vs->cur_row != 3) {
+			bgtk_log("CUD past margin cur_row=%d want 3",
+				 vs->cur_row);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		term_destroy(vs);
+	}
+
+	/*
+	 * Vim status line sits *below* the DECSTBM region. LF/IND there must
+	 * not scroll the text region (that made j look like every line jumped).
+	 */
+	{
+		struct Term_State *vs = term_create(20, 5);
+		char before[24], after[24];
+		int c;
+
+		/* rows 0..3 scroll region, row 4 = status */
+		term_feed(vs, "\033[1;4r", -1);
+		term_feed(vs, "\033[1;1HL0\033[2;1HL1\033[3;1HL2\033[4;1HL3",
+			  -1);
+		term_feed(vs, "\033[5;1HSTATUS", -1);
+		for (c = 0; c < 8; c++)
+			before[c] = vs->cells[c].ch ? vs->cells[c].ch : '.';
+		before[8] = '\0';
+		/* LF while on status line */
+		term_feed(vs, "\033[5;1H\n", -1);
+		for (c = 0; c < 8; c++)
+			after[c] = vs->cells[c].ch ? vs->cells[c].ch : '.';
+		after[8] = '\0';
+		if (strcmp(before, after) != 0 || vs->cells[1 * 20].ch != 'L' ||
+		    vs->cells[1 * 20 + 1].ch != '1') {
+			bgtk_log("LF on status scrolled region before='%s' "
+				 "after='%s' r1=%c%c",
+				 before, after, vs->cells[20].ch,
+				 vs->cells[21].ch);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* IND on status must not scroll either */
+		term_feed(vs, "\033[5;1H\033D", -1);
+		if (vs->cells[0].ch != 'L' || vs->cells[1].ch != '0') {
+			bgtk_log("IND on status scrolled region");
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		term_destroy(vs);
+	}
+
 	printf("test_terminal complete. PNG frames written.\n");
 
 	free(img->data.image.pixels);
