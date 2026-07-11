@@ -33,6 +33,11 @@ struct Term_State {
 	/* Scroll region (DECSTBM); full-screen scrolls feed scrollback */
 	int scroll_top, scroll_bot;
 
+	/* DECAWM (CSI ?7 h/l): autowrap. Default on. wrap_pending is the
+	 * xterm delayed-wrap latch after writing the last column. */
+	int autowrap;
+	int wrap_pending;
+
 	/* Escape sequence parser state */
 	int esc_state;
 	int csi_params[8];
@@ -63,6 +68,24 @@ struct Term_State {
 	int sb_len;	      /* 0..sb_cap */
 	int sb_start;	      /* ring index of oldest row */
 	int view_off;	      /* lines above live bottom (0..sb_len) */
+
+	/*
+	 * Alternate screen (CSI ?1049/1047/47 h/l). While active, cells is
+	 * the alt buffer; main_cells holds the primary screen for restore.
+	 * Scrolls on the alt screen do not feed scrollback.
+	 */
+	struct Term_Cell *main_cells; /* primary grid while alt_screen==1 */
+	int alt_screen;		      /* 1 = showing alternate buffer */
+	/* Cursor/attrs saved at 1049 enter (separate from DECSC). */
+	int alt_cur_row, alt_cur_col;
+	int alt_fg, alt_bg, alt_bold;
+	int alt_has_cursor;
+
+	/* DECSC/DECRC (ESC 7 / ESC 8); not mixed with 1049 save. */
+	int saved_cur_row, saved_cur_col;
+	int saved_fg, saved_bg, saved_bold;
+	int saved_scroll_top, saved_scroll_bot;
+	int has_saved_cursor;
 };
 
 /* Create / destroy terminal state */

@@ -62,6 +62,8 @@ struct Term_State *term_create(int cols, int rows)
 	t->cur_fg = 7;
 	t->scroll_top = 0;
 	t->scroll_bot = rows - 1;
+	t->autowrap = 1;
+	t->wrap_pending = 0;
 	t->pty_fd = -1;
 	memcpy(t->palette, default_palette, sizeof(default_palette));
 	t->sb_cap = TERM_SCROLLBACK_LINES;
@@ -73,6 +75,9 @@ struct Term_State *term_create(int cols, int rows)
 	t->sb_len = 0;
 	t->sb_start = 0;
 	t->view_off = 0;
+	t->main_cells = NULL;
+	t->alt_screen = 0;
+	t->has_saved_cursor = 0;
 	return t;
 }
 
@@ -95,14 +100,38 @@ void term_destroy(struct Term_State *t)
 	if (!t)
 		return;
 	free(t->cells);
+	free(t->main_cells);
 	free(t->sb);
 	free(t);
 }
 
+/* Resize one cell grid (preserve overlap); returns new buffer or NULL. */
+static struct Term_Cell *resize_grid(struct Term_Cell *old, int old_cols,
+				     int old_rows, int cols, int rows)
+{
+	struct Term_Cell *nc;
+	int copy_c, copy_r, r, c;
+
+	nc = calloc((size_t)cols * (size_t)rows, sizeof(*nc));
+	if (!nc)
+		return NULL;
+	copy_c = cols < old_cols ? cols : old_cols;
+	copy_r = rows < old_rows ? rows : old_rows;
+	for (r = 0; r < rows; r++) {
+		for (c = 0; c < cols; c++) {
+			if (old && r < copy_r && c < copy_c)
+				nc[r * cols + c] = old[r * old_cols + c];
+			else
+				nc[r * cols + c] = default_cell();
+		}
+	}
+	return nc;
+}
+
 int term_resize(struct Term_State *t, int cols, int rows)
 {
-	struct Term_Cell *nc, *nsb = NULL;
-	int copy_c, copy_r, r, c, i;
+	struct Term_Cell *nc, *nm = NULL, *nsb = NULL;
+	int old_cols, old_rows, i, c;
 
 	if (!t)
 		return -1;
@@ -113,28 +142,30 @@ int term_resize(struct Term_State *t, int cols, int rows)
 	if (cols == t->cols && rows == t->rows)
 		return 0;
 
-	nc = calloc((size_t)cols * (size_t)rows, sizeof(*nc));
+	old_cols = t->cols;
+	old_rows = t->rows;
+	nc = resize_grid(t->cells, old_cols, old_rows, cols, rows);
 	if (!nc)
 		return -1;
-
-	copy_c = cols < t->cols ? cols : t->cols;
-	copy_r = rows < t->rows ? rows : t->rows;
-	for (r = 0; r < rows; r++) {
-		for (c = 0; c < cols; c++) {
-			if (r < copy_r && c < copy_c)
-				nc[r * cols + c] = t->cells[r * t->cols + c];
-			else
-				nc[r * cols + c] = default_cell();
+	if (t->main_cells) {
+		nm = resize_grid(t->main_cells, old_cols, old_rows, cols, rows);
+		if (!nm) {
+			free(nc);
+			return -1;
 		}
 	}
+
 	free(t->cells);
 	t->cells = nc;
+	if (t->main_cells) {
+		free(t->main_cells);
+		t->main_cells = nm;
+	}
 
 	/* Rebuild scrollback ring for the new column width. */
 	if (t->sb_cap > 0) {
 		nsb = calloc((size_t)t->sb_cap * (size_t)cols, sizeof(*nsb));
 		if (nsb) {
-			int old_cols = t->cols;
 			for (i = 0; i < t->sb_len; i++) {
 				int src = (t->sb_start + i) % t->sb_cap;
 				struct Term_Cell *srow =
@@ -166,6 +197,14 @@ int term_resize(struct Term_State *t, int cols, int rows)
 		t->cur_col = cols - 1;
 	if (t->cur_row >= rows)
 		t->cur_row = rows - 1;
+	if (t->saved_cur_col >= cols)
+		t->saved_cur_col = cols - 1;
+	if (t->saved_cur_row >= rows)
+		t->saved_cur_row = rows - 1;
+	if (t->alt_cur_col >= cols)
+		t->alt_cur_col = cols - 1;
+	if (t->alt_cur_row >= rows)
+		t->alt_cur_row = rows - 1;
 	t->scroll_top = 0;
 	t->scroll_bot = rows - 1;
 	if (t->view_off > t->sb_len)
@@ -273,8 +312,9 @@ static void scroll_up(struct Term_State *t)
 		bot = t->rows - 1;
 	if (top >= bot)
 		return;
-	/* Full primary screen scroll: line leaving the top goes to history. */
-	if (top == 0 && bot == t->rows - 1)
+	/* Full primary screen scroll: line leaving the top goes to history.
+	 * Alternate screen scrolls never feed scrollback (xterm/vim). */
+	if (!t->alt_screen && top == 0 && bot == t->rows - 1)
 		sb_push_row(t, &t->cells[0]);
 	/* Move rows top+1..bot → top..bot-1; clear bot. Overlap-safe. */
 	row_bytes = (size_t)(bot - top) * (size_t)t->cols * sizeof(struct Term_Cell);
@@ -333,13 +373,24 @@ static void cursor_revindex(struct Term_State *t)
 
 /* Put one Unicode codepoint at the cursor and advance (ambiwidth=single).
  * Cursor advance is what vim's t_u7 / CSI 6n probe measures after UTF-8 —
- * ignoring multi-byte chars made CPR report the same cell and broke vi. */
+ * ignoring multi-byte chars made CPR report the same cell and broke vi.
+ *
+ * DECAWM: with autowrap on, writing the last column sets wrap_pending;
+ * the next graphic wraps first (xterm). With autowrap off (top uses
+ * CSI ?7l), the last column is overwritten — never wrap/scroll. Always
+ * wrapping made full-width top lines double-advance and scrolled the
+ * summary header off the screen. */
 static void term_put_cp(struct Term_State *t, uint32_t cp)
 {
 	struct Term_Cell *c;
 
 	if (!t || cp == 0)
 		return;
+	if (t->wrap_pending) {
+		t->wrap_pending = 0;
+		t->cur_col = 0;
+		cursor_index(t);
+	}
 	if (t->cur_row < 0 || t->cur_row >= t->rows ||
 	    t->cur_col < 0 || t->cur_col >= t->cols)
 		return;
@@ -348,11 +399,136 @@ static void term_put_cp(struct Term_State *t, uint32_t cp)
 	c->fg = (int8_t)t->cur_fg;
 	c->bg = (int8_t)t->cur_bg;
 	c->bold = (int8_t)t->cur_bold;
-	t->cur_col++;
-	if (t->cur_col >= t->cols) {
-		t->cur_col = 0;
-		cursor_index(t);
+	if (t->cur_col >= t->cols - 1) {
+		if (t->autowrap)
+			t->wrap_pending = 1;
+		t->cur_col = t->cols - 1;
+	} else {
+		t->cur_col++;
 	}
+}
+
+/* ------------------------------------------------------------------ */
+/* Cursor save / alternate screen                                     */
+/* ------------------------------------------------------------------ */
+
+static void term_save_cursor(struct Term_State *t)
+{
+	if (!t)
+		return;
+	t->saved_cur_row = t->cur_row;
+	t->saved_cur_col = t->cur_col;
+	t->saved_fg = t->cur_fg;
+	t->saved_bg = t->cur_bg;
+	t->saved_bold = t->cur_bold;
+	t->saved_scroll_top = t->scroll_top;
+	t->saved_scroll_bot = t->scroll_bot;
+	t->has_saved_cursor = 1;
+}
+
+static void term_restore_cursor(struct Term_State *t)
+{
+	if (!t || !t->has_saved_cursor)
+		return;
+	t->cur_row = t->saved_cur_row;
+	t->cur_col = t->saved_cur_col;
+	if (t->cur_row < 0)
+		t->cur_row = 0;
+	if (t->cur_row >= t->rows)
+		t->cur_row = t->rows - 1;
+	if (t->cur_col < 0)
+		t->cur_col = 0;
+	if (t->cur_col >= t->cols)
+		t->cur_col = t->cols - 1;
+	t->cur_fg = t->saved_fg;
+	t->cur_bg = t->saved_bg;
+	t->cur_bold = t->saved_bold;
+	t->scroll_top = t->saved_scroll_top;
+	t->scroll_bot = t->saved_scroll_bot;
+	if (t->scroll_top < 0)
+		t->scroll_top = 0;
+	if (t->scroll_bot >= t->rows)
+		t->scroll_bot = t->rows - 1;
+	if (t->scroll_top > t->scroll_bot) {
+		t->scroll_top = 0;
+		t->scroll_bot = t->rows - 1;
+	}
+}
+
+/*
+ * CSI ?1049 h/l — save cursor + switch buffers (vim smcup/rmcup).
+ * CSI ?1047/47 — switch buffers without cursor save (still restore grid).
+ * Enter: stash primary in main_cells, clear live grid.
+ * Leave: restore primary from main_cells so the shell is not blank.
+ * Cursor for 1049 is stored in alt_* (not DECSC slots — vim uses ESC 7).
+ */
+static void alt_screen_set(struct Term_State *t, int enter, int save_cursor)
+{
+	int n, i;
+
+	if (!t)
+		return;
+	n = t->rows * t->cols;
+	if (enter) {
+		if (t->alt_screen)
+			return;
+		if (!t->main_cells) {
+			t->main_cells = malloc((size_t)n * sizeof(*t->main_cells));
+			if (!t->main_cells)
+				return;
+		}
+		memcpy(t->main_cells, t->cells, (size_t)n * sizeof(*t->cells));
+		if (save_cursor) {
+			t->alt_cur_row = t->cur_row;
+			t->alt_cur_col = t->cur_col;
+			t->alt_fg = t->cur_fg;
+			t->alt_bg = t->cur_bg;
+			t->alt_bold = t->cur_bold;
+			t->alt_has_cursor = 1;
+		} else {
+			t->alt_has_cursor = 0;
+		}
+		for (i = 0; i < n; i++)
+			t->cells[i] = default_cell();
+		t->cur_row = t->cur_col = 0;
+		t->scroll_top = 0;
+		t->scroll_bot = t->rows - 1;
+		t->view_off = 0;
+		t->wrap_pending = 0;
+		t->alt_screen = 1;
+		return;
+	}
+	/* leave */
+	if (!t->alt_screen)
+		return;
+	if (t->main_cells) {
+		memcpy(t->cells, t->main_cells, (size_t)n * sizeof(*t->cells));
+		free(t->main_cells);
+		t->main_cells = NULL;
+	}
+	t->alt_screen = 0;
+	t->view_off = 0;
+	t->wrap_pending = 0;
+	t->scroll_top = 0;
+	t->scroll_bot = t->rows - 1;
+	if (save_cursor && t->alt_has_cursor) {
+		t->cur_row = t->alt_cur_row;
+		t->cur_col = t->alt_cur_col;
+		if (t->cur_row < 0)
+			t->cur_row = 0;
+		if (t->cur_row >= t->rows)
+			t->cur_row = t->rows - 1;
+		if (t->cur_col < 0)
+			t->cur_col = 0;
+		if (t->cur_col >= t->cols)
+			t->cur_col = t->cols - 1;
+		t->cur_fg = t->alt_fg;
+		t->cur_bg = t->alt_bg;
+		t->cur_bold = t->alt_bold;
+	} else {
+		t->cur_row = t->cur_col = 0;
+	}
+	t->alt_has_cursor = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -370,6 +546,7 @@ static void csi_dispatch(struct Term_State *t, char final,
 	case 'A': /* CUU — move only; never scroll. Screen edges (not
 		   * DECSTBM): origin mode is not implemented, so the
 		   * cursor may leave the scroll region (vim status line). */
+		t->wrap_pending = 0;
 		t->cur_row -= p0 ? p0 : 1;
 		if (t->cur_row < 0)
 			t->cur_row = 0;
@@ -377,20 +554,24 @@ static void csi_dispatch(struct Term_State *t, char final,
 	case 'B': /* CUD — move only; never scroll. Do not clamp to
 		   * scroll_bot (that trapped the cursor off the status
 		   * line and pulled it back into the region). */
+		t->wrap_pending = 0;
 		t->cur_row += p0 ? p0 : 1;
 		if (t->cur_row >= t->rows)
 			t->cur_row = t->rows - 1;
 		break;
 	case 'C':
+		t->wrap_pending = 0;
 		t->cur_col += p0 ? p0 : 1;
 		if (t->cur_col >= t->cols) t->cur_col = t->cols - 1;
 		break;
 	case 'D':
+		t->wrap_pending = 0;
 		t->cur_col -= p0 ? p0 : 1;
 		if (t->cur_col < 0) t->cur_col = 0;
 		break;
 	case 'H':
 	case 'f':
+		t->wrap_pending = 0;
 		t->cur_row = (p0 ? p0 : 1) - 1;
 		t->cur_col = (p1 ? p1 : 1) - 1;
 		if (t->cur_row >= t->rows) t->cur_row = t->rows - 1;
@@ -491,11 +672,13 @@ static void csi_dispatch(struct Term_State *t, char final,
 		break;
 	}
 	case 'd':
+		t->wrap_pending = 0;
 		t->cur_row = (p0 ? p0 : 1) - 1;
 		if (t->cur_row >= t->rows) t->cur_row = t->rows - 1;
 		if (t->cur_row < 0) t->cur_row = 0;
 		break;
 	case 'G':
+		t->wrap_pending = 0;
 		t->cur_col = (p0 ? p0 : 1) - 1;
 		if (t->cur_col >= t->cols) t->cur_col = t->cols - 1;
 		if (t->cur_col < 0) t->cur_col = 0;
@@ -503,6 +686,7 @@ static void csi_dispatch(struct Term_State *t, char final,
 	case 'r':
 		/* DECSTBM — vim uses e.g. ESC[1;9r then LF to scroll the
 		 * text region while the status line stays put. */
+		t->wrap_pending = 0;
 		t->scroll_top = (p0 ? p0 : 1) - 1;
 		t->scroll_bot = (p1 ? p1 : t->rows) - 1;
 		if (t->scroll_top < 0)
@@ -557,21 +741,37 @@ static void csi_dispatch(struct Term_State *t, char final,
 		}
 		break;
 	case 'h':
-	case 'l':
-		/* Private modes we care about: alt screen enters a clean
-		 * live view (vim). Others ignored. */
-		if (t->csi_priv && (p0 == 1049 || p0 == 1047 || p0 == 47)) {
-			if (final == 'h') {
-				t->view_off = 0;
-				for (int i = 0; i < t->rows * t->cols; i++)
-					t->cells[i] = default_cell();
-				t->cur_row = t->cur_col = 0;
-				t->scroll_top = 0;
-				t->scroll_bot = t->rows - 1;
-			} else {
-				t->view_off = 0;
+	case 'l': {
+		/* Private modes: scan all params (e.g. ?1;1049h). */
+		int enter = (final == 'h');
+		int n = nparam > 0 ? nparam : 1;
+		int i;
+
+		if (!t->csi_priv)
+			break;
+		for (i = 0; i < n; i++) {
+			int p = (nparam > 0) ? params[i] : 0;
+
+			if (p == 1049)
+				alt_screen_set(t, enter, 1);
+			else if (p == 1047 || p == 47)
+				alt_screen_set(t, enter, 0);
+			else if (p == 7) {
+				/* DECAWM — top disables wrap so full-width
+				 * lines do not scroll the summary away. */
+				t->autowrap = enter ? 1 : 0;
+				if (!t->autowrap)
+					t->wrap_pending = 0;
 			}
 		}
+		break;
+	}
+	case 's':
+		/* ANSI.SYS / SCO save cursor */
+		term_save_cursor(t);
+		break;
+	case 'u':
+		term_restore_cursor(t);
 		break;
 	default:
 		break;
@@ -604,17 +804,21 @@ void term_feed(struct Term_State *t, const char *data, int len)
 				t->esc_state = 1;
 			} else if (ch == '\n') {
 				t->utf8_partial_len = 0;
+				t->wrap_pending = 0;
 				cursor_index(t);
 			} else if (ch == '\r') {
 				t->utf8_partial_len = 0;
+				t->wrap_pending = 0;
 				t->cur_col = 0;
 			} else if (ch == '\t') {
 				t->utf8_partial_len = 0;
+				t->wrap_pending = 0;
 				t->cur_col = (t->cur_col + 8) & ~7;
 				if (t->cur_col >= t->cols)
 					t->cur_col = t->cols - 1;
 			} else if (ch == '\b') {
 				t->utf8_partial_len = 0;
+				t->wrap_pending = 0;
 				if (t->cur_col > 0) t->cur_col--;
 			} else if (ch == '\a') {
 				/* bell */
@@ -678,19 +882,36 @@ void term_feed(struct Term_State *t, const char *data, int len)
 				t->esc_state = 5;
 			} else if (ch == 'D') {
 				/* IND */
+				t->wrap_pending = 0;
 				cursor_index(t);
 				t->esc_state = 0;
 			} else if (ch == 'M') {
 				/* RI */
+				t->wrap_pending = 0;
 				cursor_revindex(t);
 				t->esc_state = 0;
+			} else if (ch == '7') {
+				/* DECSC */
+				term_save_cursor(t);
+				t->esc_state = 0;
+			} else if (ch == '8') {
+				/* DECRC */
+				term_restore_cursor(t);
+				t->wrap_pending = 0;
+				t->esc_state = 0;
 			} else if (ch == 'c') {
+				/* RIS — full reset; leave alt screen if active */
+				if (t->alt_screen)
+					alt_screen_set(t, 0, 0);
 				for (int j = 0; j < t->rows * t->cols; j++)
 					t->cells[j] = default_cell();
 				t->cur_row = t->cur_col = 0;
 				t->cur_fg = 7; t->cur_bg = 0; t->cur_bold = 0;
 				t->scroll_top = 0; t->scroll_bot = t->rows - 1;
+				t->autowrap = 1;
+				t->wrap_pending = 0;
 				t->view_off = 0;
+				t->has_saved_cursor = 0;
 				t->utf8_partial_len = 0;
 				t->esc_state = 0;
 			} else {

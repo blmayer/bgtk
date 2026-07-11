@@ -669,6 +669,210 @@ int main(void)
 		term_destroy(vs);
 	}
 
+	/*
+	 * Alt screen 1049: main buffer must be restored on leave (shell after
+	 * vim). Multi-param ?1;1049h must enter. Alt scrolls must not feed
+	 * scrollback. DECSC/DECRC must restore cursor.
+	 */
+	{
+		struct Term_State *vs = term_create(20, 6);
+		int c, sb_before;
+		char row0[24];
+
+		term_feed(vs, "\033[H\033[2JSHELL PROMPT $ ", -1);
+		/* Multi-param private modes: application cursor + alt screen */
+		term_feed(vs, "\033[?1;1049h", -1);
+		if (!vs->alt_screen) {
+			bgtk_log("alt screen not active after ?1;1049h");
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		term_feed(vs, "\033[H\033[2JVIM BUFFER LINE", -1);
+		for (c = 0; c < 15; c++) {
+			char ch = vs->cells[c].ch;
+			row0[c] = (ch >= 32 && ch < 127) ? ch : '.';
+		}
+		row0[15] = '\0';
+		if (!strstr(row0, "VIM BUFFER")) {
+			bgtk_log("alt paint missing row0='%s'", row0);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Full-screen LF on alt must not grow scrollback */
+		sb_before = vs->sb_len;
+		term_feed(vs, "\033[6;1H\n\n\n", -1);
+		if (vs->sb_len != sb_before) {
+			bgtk_log("alt screen fed scrollback sb %d->%d",
+				 sb_before, vs->sb_len);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* DECSC mid-alt must not clobber 1049 cursor save */
+		term_feed(vs, "\033[4;8H\0337", -1);
+		/* Leave alt — shell prompt returns; cursor after prompt */
+		term_feed(vs, "\033[?1049l", -1);
+		if (vs->alt_screen) {
+			bgtk_log("alt screen stuck after 1049l");
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		for (c = 0; c < 16; c++) {
+			char ch = vs->cells[c].ch;
+			row0[c] = (ch >= 32 && ch < 127) ? ch : '.';
+		}
+		row0[16] = '\0';
+		if (!strstr(row0, "SHELL PROMPT")) {
+			bgtk_log("main not restored after 1049l row0='%s'",
+				 row0);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* "SHELL PROMPT $ " is 15 chars → cursor col 15 row 0 */
+		if (vs->cur_row != 0 || vs->cur_col != 15) {
+			bgtk_log("1049 cursor restore wrong row=%d col=%d "
+				 "(want 0,15; DECSC must not override)",
+				 vs->cur_row, vs->cur_col);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* DECSC / DECRC on primary */
+		term_feed(vs, "\033[3;5H\0337\033[1;1H\0338", -1);
+		if (vs->cur_row != 2 || vs->cur_col != 4) {
+			bgtk_log("DECRC failed row=%d col=%d want 2,4",
+				 vs->cur_row, vs->cur_col);
+			term_destroy(vs);
+			free(img->data.image.pixels);
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Visual: restored shell after alt leave */
+		{
+			int rr, cc;
+			for (rr = 0; rr < ts->rows * ts->cols; rr++)
+				ts->cells[rr] = (struct Term_Cell){
+					.ch = ' ', .fg = 7, .bg = 0, .bold = 0
+				};
+			for (rr = 0; rr < ts->rows && rr < vs->rows; rr++)
+				for (cc = 0; cc < ts->cols && cc < vs->cols;
+				     cc++)
+					ts->cells[rr * ts->cols + cc] =
+						vs->cells[rr * vs->cols + cc];
+			ts->view_off = 0;
+			term_render(ts, ctx, img->data.image.pixels, inner_w,
+				    inner_h);
+			bgtk_draw_widgets(ctx);
+			take_screenshot(ctx, "term_11_alt_restore_shell.png");
+		}
+		term_destroy(vs);
+	}
+
+	/*
+	 * top (procps): CSI ?7l disables autowrap, then writes full-width
+	 * lines with newlines. Immediate wrap on last-col made each line
+	 * double-advance and scrolled the summary header off — only the
+	 * process list remained visible.
+	 */
+	{
+		struct Term_State *vs = term_create(40, 10);
+		char line[48];
+		int c, r;
+		int scrolled_header = 0;
+
+		/* Fill a full-width line pattern */
+		memset(line, 'A', 40);
+		line[40] = '\0';
+
+		term_feed(vs, "\033[?1049h\033[H\033[2J\033[?7l", -1);
+		/* Summary header (must stay on row 0). Real PTY ONLCR → CR LF. */
+		term_feed(vs, "top - summary header line HERE\033[K\r\n", -1);
+		term_feed(vs, "Tasks: 1 total\033[K\r\n", -1);
+		/* Full-width lines like process rows — must not scroll header */
+		for (r = 0; r < 6; r++) {
+			char buf[64];
+			/* 40 cols + CR LF; wrap-off must not double-advance */
+			snprintf(buf, sizeof(buf), "%s\r\n", line);
+			buf[0] = '0' + (r % 10);
+			term_feed(vs, buf, -1);
+		}
+		/* Header still on row 0? */
+		for (c = 0; c < 40; c++) {
+			char ch = vs->cells[c].ch;
+			line[c] = (ch >= 32 && ch < 127) ? ch : '.';
+		}
+		line[40] = '\0';
+		if (!strstr(line, "summary header")) {
+			scrolled_header = 1;
+			bgtk_log("top header scrolled away row0='%s'", line);
+		}
+		if (vs->autowrap != 0) {
+			bgtk_log("DECAWM still on after ?7l");
+			scrolled_header = 1;
+		}
+		/* Pending wrap: wrap on, fill last col, next char wraps once */
+		term_feed(vs, "\033[?7h\033[8;1H", -1);
+		for (c = 0; c < 40; c++)
+			term_feed(vs, "X", 1);
+		if (vs->cur_row != 7 || vs->cur_col != 39 || !vs->wrap_pending) {
+			bgtk_log("pending wrap latch fail row=%d col=%d pend=%d",
+				 vs->cur_row, vs->cur_col, vs->wrap_pending);
+			scrolled_header = 1;
+		}
+		term_feed(vs, "Y", 1);
+		/* After wrap: write Y at (8,0) then advance to col 1 */
+		if (vs->cur_row != 8 || vs->cur_col != 1 ||
+		    vs->cells[8 * 40].ch != 'Y') {
+			bgtk_log("pending wrap advance fail row=%d col=%d ch=%c",
+				 vs->cur_row, vs->cur_col,
+				 (char)vs->cells[8 * 40].ch);
+			scrolled_header = 1;
+		}
+		/* Visual */
+		{
+			int rr, cc;
+			for (rr = 0; rr < ts->rows * ts->cols; rr++)
+				ts->cells[rr] = (struct Term_Cell){
+					.ch = ' ', .fg = 7, .bg = 0, .bold = 0
+				};
+			for (rr = 0; rr < ts->rows && rr < vs->rows; rr++)
+				for (cc = 0; cc < ts->cols && cc < vs->cols;
+				     cc++)
+					ts->cells[rr * ts->cols + cc] =
+						vs->cells[rr * vs->cols + cc];
+			ts->view_off = 0;
+			term_render(ts, ctx, img->data.image.pixels, inner_w,
+				    inner_h);
+			bgtk_draw_widgets(ctx);
+			take_screenshot(ctx, "term_12_top_header_nowrap.png");
+		}
+		term_destroy(vs);
+		if (scrolled_header) {
+			free(img->data.image.pixels);
+			img->data.image.pixels = NULL;
+			term_destroy(ts);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+	}
+
 	printf("test_terminal complete. PNG frames written.\n");
 
 	free(img->data.image.pixels);
