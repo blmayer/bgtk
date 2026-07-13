@@ -371,10 +371,16 @@ struct BGTK_Widget {
 		struct {
 			struct BGTK_Widget** items;  // List of child widgets
 			int widget_count;
-			int widget_capacity;
+			int widget_capacity; /* pixel count of tmp, not item slots */
 			int scroll_y;	     // Current scroll position
 			int content_height;  // Total height of all child widgets
 			uint32_t* tmp;	     // off-screen buffer
+			/* Identity of content last painted into tmp — if items
+			 * are swapped (settings sidebar) without freeing tmp,
+			 * cache must not be reused (buttons would not hit). */
+			struct BGTK_Widget **tmp_items;
+			struct BGTK_Widget *tmp_item0;
+			int tmp_nitems;
 		} scrollable;
 		struct {
 			struct BGTK_Widget** items;  // List of child widgets

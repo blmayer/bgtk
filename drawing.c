@@ -821,9 +821,11 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	if (content_height > 100000)
 		content_height = 100000;
 
-	/* Offscreen cache: rebuild only when missing or size changed.
-	 * Scrolling only changes scroll_y — reusing tmp avoids a full page
-	 * clear+redraw every wheel/j/k tick (looked like black blinks). */
+	/* Offscreen cache: rebuild when size or content identity changes.
+	 * Scroll only changes scroll_y — reusing tmp avoids a full page
+	 * clear+redraw every wheel/j/k tick (black blinks). Settings replaces
+	 * items[0] (sidebar list) in place; that must bust the cache so new
+	 * nav buttons get layout and hit-test coords. */
 	need = (size_t)w->w * (size_t)content_height;
 	if (need == 0)
 		return;
@@ -832,77 +834,106 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		free(w->data.scrollable.tmp);
 		w->data.scrollable.tmp = NULL;
 		w->data.scrollable.widget_capacity = 0;
+		w->data.scrollable.tmp_items = NULL;
+		w->data.scrollable.tmp_item0 = NULL;
+		w->data.scrollable.tmp_nitems = 0;
 	}
-	if (!w->data.scrollable.tmp) {
-		w->data.scrollable.tmp = calloc(need, sizeof(uint32_t));
+	{
+		int nch = w->data.scrollable.widget_count;
+		struct BGTK_Widget **its = w->data.scrollable.items;
+		struct BGTK_Widget *i0 = (its && nch > 0) ? its[0] : NULL;
+		int content_same =
+			w->data.scrollable.tmp &&
+			w->data.scrollable.tmp_items == its &&
+			w->data.scrollable.tmp_nitems == nch &&
+			w->data.scrollable.tmp_item0 == i0;
+
+		if (!content_same && w->data.scrollable.tmp) {
+			free(w->data.scrollable.tmp);
+			w->data.scrollable.tmp = NULL;
+			w->data.scrollable.widget_capacity = 0;
+		}
+
 		if (!w->data.scrollable.tmp) {
-			fprintf(stderr,
-				"Failed to allocate off-screen buffer (%dx%d)\n",
-				w->w, content_height);
-			return;
-		}
-		/* Pixel count (fits: w*h capped above). */
-		w->data.scrollable.widget_capacity = (int)need;
-
-		tmp_ctx = *ctx;
-		tmp_ctx.width = w->w;
-		tmp_ctx.height = content_height;
-		tmp_ctx.shm_buffer = w->data.scrollable.tmp;
-
-		draw_rect(&tmp_ctx, w->data.scrollable.tmp, 0, 0, w->w,
-			  content_height, ctx->theme.background);
-
-		current_y = 0;
-		for (i = 0; i < w->data.scrollable.widget_count; i++) {
-			struct BGTK_Widget *child = w->data.scrollable.items[i];
-			int bottom;
-			int inner_w = w->w - 2 * (w->margin + w->padding);
-
-			if (!child)
-				continue;
-			/* EXPAND_X: fill content width (scroll body). */
-			if ((child->flags & BGTK_FLAG_EXPAND_X) && inner_w > 0)
-				child->w = inner_w;
-			child->x = w->margin + w->padding;
-			if (w->flags & BGTK_FLAG_CENTER) {
-				child->x = w->margin +
-					   (w->w - 2 * w->margin - child->w) /
-						   2;
+			w->data.scrollable.tmp = calloc(need, sizeof(uint32_t));
+			if (!w->data.scrollable.tmp) {
+				fprintf(stderr,
+					"Failed to allocate off-screen buffer "
+					"(%dx%d)\n",
+					w->w, content_height);
+				return;
 			}
-			/* Padding insets content on all sides. */
-			child->y = current_y + w->margin + w->padding;
-			/* Content-space coords (events transform into this). */
-			child->abs_x = child->x;
-			child->abs_y = child->y;
-			child->parent = w;
-			bottom = child->y + child->h;
-			if (child->y < content_height && bottom > 0)
-				draw_widget(&tmp_ctx, child,
-					    w->data.scrollable.tmp);
-			current_y += child->h + 2 * w->margin;
-		}
-	} else {
-		/* Cache hit: still refresh layout coords for hit-testing. */
-		current_y = 0;
-		for (i = 0; i < w->data.scrollable.widget_count; i++) {
-			struct BGTK_Widget *child = w->data.scrollable.items[i];
-			int inner_w = w->w - 2 * (w->margin + w->padding);
+			/* Pixel count (fits: w*h capped above). */
+			w->data.scrollable.widget_capacity = (int)need;
+			w->data.scrollable.tmp_items = its;
+			w->data.scrollable.tmp_item0 = i0;
+			w->data.scrollable.tmp_nitems = nch;
 
-			if (!child)
-				continue;
-			if ((child->flags & BGTK_FLAG_EXPAND_X) && inner_w > 0)
-				child->w = inner_w;
-			child->x = w->margin + w->padding;
-			if (w->flags & BGTK_FLAG_CENTER) {
-				child->x = w->margin +
-					   (w->w - 2 * w->margin - child->w) /
-						   2;
+			tmp_ctx = *ctx;
+			tmp_ctx.width = w->w;
+			tmp_ctx.height = content_height;
+			tmp_ctx.shm_buffer = w->data.scrollable.tmp;
+
+			draw_rect(&tmp_ctx, w->data.scrollable.tmp, 0, 0, w->w,
+				  content_height, ctx->theme.background);
+
+			current_y = 0;
+			for (i = 0; i < nch; i++) {
+				struct BGTK_Widget *child = its ? its[i] : NULL;
+				int bottom;
+				int inner_w =
+					w->w - 2 * (w->margin + w->padding);
+
+				if (!child)
+					continue;
+				if ((child->flags & BGTK_FLAG_EXPAND_X) &&
+				    inner_w > 0)
+					child->w = inner_w;
+				child->x = w->margin + w->padding;
+				if (w->flags & BGTK_FLAG_CENTER) {
+					child->x =
+						w->margin +
+						(w->w - 2 * w->margin -
+						 child->w) /
+							2;
+				}
+				child->y = current_y + w->margin + w->padding;
+				child->abs_x = child->x;
+				child->abs_y = child->y;
+				child->parent = w;
+				bottom = child->y + child->h;
+				if (child->y < content_height && bottom > 0)
+					draw_widget(&tmp_ctx, child,
+						    w->data.scrollable.tmp);
+				current_y += child->h + 2 * w->margin;
 			}
-			child->y = current_y + w->margin + w->padding;
-			child->abs_x = child->x;
-			child->abs_y = child->y;
-			child->parent = w;
-			current_y += child->h + 2 * w->margin;
+		} else {
+			/* Cache hit: refresh top-level layout for hit-testing. */
+			current_y = 0;
+			for (i = 0; i < nch; i++) {
+				struct BGTK_Widget *child = its ? its[i] : NULL;
+				int inner_w =
+					w->w - 2 * (w->margin + w->padding);
+
+				if (!child)
+					continue;
+				if ((child->flags & BGTK_FLAG_EXPAND_X) &&
+				    inner_w > 0)
+					child->w = inner_w;
+				child->x = w->margin + w->padding;
+				if (w->flags & BGTK_FLAG_CENTER) {
+					child->x =
+						w->margin +
+						(w->w - 2 * w->margin -
+						 child->w) /
+							2;
+				}
+				child->y = current_y + w->margin + w->padding;
+				child->abs_x = child->x;
+				child->abs_y = child->y;
+				child->parent = w;
+				current_y += child->h + 2 * w->margin;
+			}
 		}
 	}
 

@@ -311,6 +311,76 @@ int main(void)
 	}
 	take_screenshot(ctx, "settings_03b_font_after_enter.png");
 
+	/*
+	 * After leaving Background, sidebar nav must keep working (scroll
+	 * cache used to keep old buttons painted without layout — dead hits).
+	 * Theme → Background → Theme again.
+	 */
+	{
+		struct InputEvent click = {0};
+		struct config *sc;
+		int i;
+
+		click.type = EV_KEY;
+		click.code = BTN_LEFT;
+		/* Theme */
+		click.value = 1;
+		click.x = SIDEBAR_X;
+		click.y = SIDEBAR_BTN_Y(4);
+		bgtk_inject_event(ctx, click);
+		click.value = 0;
+		if (!bgtk_inject_event(ctx, click)) {
+			fprintf(stderr,
+				"test_settings: Theme nav click not handled\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Background again */
+		click.value = 1;
+		click.y = SIDEBAR_BTN_Y(0);
+		bgtk_inject_event(ctx, click);
+		click.value = 0;
+		if (!bgtk_inject_event(ctx, click)) {
+			fprintf(stderr,
+				"test_settings: Background nav after page "
+				"change not handled\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Theme again — second rebuild must still hit */
+		click.value = 1;
+		click.y = SIDEBAR_BTN_Y(4);
+		bgtk_inject_event(ctx, click);
+		click.value = 0;
+		if (!bgtk_inject_event(ctx, click)) {
+			fprintf(stderr,
+				"test_settings: second Theme nav not handled\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Content should show theme labels (sample non-bg pixels). */
+		sc = settings_get_config();
+		(void)sc;
+		{
+			uint32_t *fb = (uint32_t *)ctx->shm_buffer;
+			uint32_t bg = ctx->theme.background | 0xFF000000u;
+			int bright = 0;
+			for (i = 0; i < width * height; i++) {
+				if (fb[i] != 0 && fb[i] != bg)
+					bright++;
+			}
+			if (bright < 200) {
+				fprintf(stderr,
+					"test_settings: after nav Theme page "
+					"looks empty (bright=%d)\n",
+					bright);
+				bgtk_destroy_mock(ctx);
+				return 1;
+			}
+		}
+		take_screenshot(ctx, "settings_03c_nav_after_rebuild.png");
+	}
+
 	/* 04: Click "Theme" */
 	{
 		struct InputEvent click = {0};

@@ -29,13 +29,15 @@ works on Linux and macOS without BGCE.
 │   ├── image_viewer.c
 │   ├── launcher.c
 │   ├── terminal.c / terminal.h / term_core.c
-│   └── gemini_browser.c
+│   ├── gemini_browser.c
+│   └── labyrinth.c   - Labyrinth web browser (HTML shell, bottom URL bar)
 ├── compat/           - Stubs/headers so headless builds work off Linux (bgce, input.h)
 ├── test/             - Headless/mock tests
 │   ├── headless.c
 │   ├── test_terminal.c
 │   ├── test_html.c
 │   ├── test_gemini_browser.c
+│   ├── test_labyrinth.c
 │   ├── server_client.sh
 │   └── screenshots/  - PNG output from headless tests (gitignored)
 └── www/              - Sample HTML for html tests
@@ -77,9 +79,12 @@ works on Linux and macOS without BGCE.
 - `html.c` / `html.h` parse HTML (file or inline string) into a widget tree
 - Entry points: `bgtk_html_parse()`, `bgtk_html_parse_inline()`
 - Returns a frame widget; assign to `ctx->root_widget` before drawing
+- **Labyrinth** (`apps/labyrinth.c`) is the HTML browser shell (gemini-like
+  chrome: content + bottom URL bar). Fetches `https://` via **libtls** (same
+  stack as gemini_browser). CSS/JS/`<a href>` click remain planned hooks.
 
 ### 6. Apps
-- Real BGCE apps live under `apps/` (terminal, gemini_browser, launcher, image_viewer, sys_status, test_app)
+- Real BGCE apps live under `apps/` (terminal, gemini_browser, labyrinth, launcher, image_viewer, sys_status, test_app)
 - Terminal logic is split: `term_core.c` (shared) + `terminal.c` (real main) + `test/test_terminal.c` (headless main)
 
 ## Development Guidelines
@@ -215,6 +220,7 @@ Build/run examples (on macOS, `make` defaults to headless targets):
 | `make test_html && ./test_html` | `test/test_html.c` | HTML → widgets (`test/screenshots/test_html_*.png`) |
 | `make test_gemini_browser && ./test_gemini_browser` | `test/test_gemini_browser.c` | Gemini browser (`test/screenshots/gemini_browser_*.png`) |
 | `make test_sys_status && ./test_sys_status` | `test/test_sys_status.c` | System status (`test/screenshots/sys_status_*.png`) |
+| `make test_labyrinth && ./test_labyrinth` | `test/test_labyrinth.c` | Labyrinth web browser (`test/screenshots/labyrinth_*.png`) |
 
 Headless binaries link `compat/bgce_stub.c` and use `-Icompat` so they compile
 on non-Linux machines. Real apps (`test_app`, `terminal`, `gemini_browser`,

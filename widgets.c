@@ -741,10 +741,12 @@ struct BGTK_Widget *bgtk_scrollable(struct BGTK_Context *ctx,
 		widget->data.scrollable.content_height += items[i]->h + 5 + 2 * widget->margin;	// 5px spacing + margin
 	}
 
-	// Initialize tmp buffer to NULL, it will be allocated during drawing
+	/* Offscreen cache (filled on first draw; busted when items change). */
 	widget->data.scrollable.tmp = NULL;
 	widget->data.scrollable.widget_capacity = 0;
-	// Override the default event handler with scrollable-specific one
+	widget->data.scrollable.tmp_items = NULL;
+	widget->data.scrollable.tmp_item0 = NULL;
+	widget->data.scrollable.tmp_nitems = 0;
 	widget->handle_event = scrollable_handle_event;
 
 	return widget;

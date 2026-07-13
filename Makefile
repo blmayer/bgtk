@@ -87,17 +87,17 @@ endif
 # leave stale binaries against a newer libbgtk.so / struct layout).
 # gemini_browser needs libtls — built last and optional on install.
 CORE_APPS = test_app image_viewer launcher terminal settings sys_status
-ALL_APPS = $(CORE_APPS) gemini_browser
+# Apps that need libtls (built last so a missing TLS lib does not skip CORE_APPS).
+TLS_APPS = labyrinth gemini_browser
+ALL_APPS = $(CORE_APPS) $(TLS_APPS)
 
-# Default `make` builds the library and core apps. settings is intentionally
-# before gemini_browser so a missing libtls does not skip it.
-# gemini_browser needs libtls; build it last (or: make gemini_browser).
+# Default `make` builds the library and core apps. TLS apps last.
 TARGET = libbgtk.so $(ALL_APPS)
 # On macOS (Darwin), plain `make` will try to build libbgtk.so and real
 # apps which require the bgce library (Linux-specific). Default to
 # headless/test targets so `make` succeeds for development on mac.
 ifeq ($(UNAME_S),Darwin)
-  TARGET = headless test_terminal test_html test_settings test_theme_gallery test_sys_status
+  TARGET = headless test_terminal test_html test_settings test_theme_gallery test_sys_status test_labyrinth
 endif
 
 # Install layout. Empty PREFIX → flat root (/lib, /include, /bin) for lin0.
@@ -115,6 +115,7 @@ LAUNCHER_OBJ = apps/launcher.o
 TERMINAL_OBJ = apps/terminal.o
 TERM_CORE_OBJ = apps/term_core.o
 GEMINI_BROWSER_OBJ = apps/gemini_browser.o
+LABYRINTH_OBJ = apps/labyrinth.o
 
 # ---------- Headless / mock testing support ----------
 # Headless links the bgce stub and does not need a running server.
@@ -132,6 +133,8 @@ SETTINGS_TEST_OBJ := apps/settings_test.o
 SYS_STATUS_OBJ := apps/sys_status.o
 TEST_SYS_STATUS_OBJ := test/test_sys_status.o
 SYS_STATUS_TEST_OBJ := apps/sys_status_test.o
+TEST_LABYRINTH_OBJ := test/test_labyrinth.o
+LABYRINTH_TEST_OBJ := apps/labyrinth_test.o
 
 .PHONY: all clean test install help snapshot
 
@@ -159,6 +162,7 @@ help:
 	@echo "  terminal             Terminal emulator (PTY)"
 	@echo "  settings             Theme/font/background settings UI"
 	@echo "  sys_status           System status (CPU/mem/disk/net/weather)"
+	@echo "  labyrinth            Labyrinth web browser (HTML; HTTPS via libtls)"
 	@echo "  gemini_browser       Gemini browser (needs libtls)"
 	@echo ""
 	@echo "  Headless / mock tests (no BGCE server; produce PNGs)"
@@ -168,6 +172,7 @@ help:
 	@echo "  test_settings        Settings UI screenshots"
 	@echo "  test_theme_gallery   Settings under candidate themes"
 	@echo "  test_gemini_browser  Gemini browser flow screenshots (libtls for live fetch)"
+	@echo "  test_labyrinth       Labyrinth web browser screenshots"
 	@echo "  (PNGs land in test/screenshots/)"
 	@echo ""
 	@echo "  Maintenance"
@@ -229,10 +234,16 @@ settings: $(SETTINGS_OBJ) libbgtk.so
 sys_status: $(SYS_STATUS_OBJ) libbgtk.so
 	$(CC) -o $@ $(SYS_STATUS_OBJ) $(APP_LDFLAGS)
 
+labyrinth: $(LABYRINTH_OBJ) libbgtk.so
+	$(CC) -o $@ $(LABYRINTH_OBJ) $(APP_LDFLAGS) $(LIBTLS_LIBS)
+
+$(LABYRINTH_OBJ): CFLAGS += $(LIBTLS_CFLAGS)
+$(LABYRINTH_TEST_OBJ): CFLAGS += $(LIBTLS_CFLAGS)
+
 # Headless targets still link LIB_OBJS + stub directly (no libbgce).
 # Rebuild lib objs with -Icompat only for those units when on Linux so
 # mock/stub headers are available; on Darwin CFLAGS already has -Icompat.
-$(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ): CFLAGS += -I$(COMPAT_DIR)
+$(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) $(TEST_LABYRINTH_OBJ) $(LABYRINTH_TEST_OBJ): CFLAGS += -I$(COMPAT_DIR)
 
 $(HEADLESS_STUB): $(COMPAT_DIR)/bgce_stub.c
 	$(CC) $(HEADLESS_CFLAGS) -c -o $@ $<
@@ -297,6 +308,15 @@ $(TEST_SYS_STATUS_OBJ): test/test_sys_status.c
 test_sys_status: $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
 	$(CC) -o $@ $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS)
 
+# Labyrinth headless: apps/labyrinth.c with LABYRINTH_TEST_MODE (no main).
+$(LABYRINTH_TEST_OBJ): apps/labyrinth.c
+	$(CC) $(CFLAGS) -DLABYRINTH_TEST_MODE -c -o $@ $<
+
+$(TEST_LABYRINTH_OBJ): test/test_labyrinth.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+test_labyrinth: $(TEST_LABYRINTH_OBJ) $(LABYRINTH_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
+	$(CC) -o $@ $(TEST_LABYRINTH_OBJ) $(LABYRINTH_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS) $(LIBTLS_LIBS)
 
 # Header dependencies so touching a .h triggers recompilation.
 CORE_HEADERS = bgtk.h internal.h config.h
@@ -315,17 +335,19 @@ $(TEST_THEME_GALLERY_OBJ): bgtk.h config.h
 
 clean:
 	rm -f $(TARGET) $(ALL_APPS) terminal test_terminal test_gemini_browser \
-		test_html test_settings test_theme_gallery test_sys_status headless \
+		test_html test_settings test_theme_gallery test_sys_status test_labyrinth headless \
 		$(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) \
-		$(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) \
+		$(GEMINI_BROWSER_OBJ) $(LABYRINTH_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) \
 		$(TEST_HTML_OBJ) $(SETTINGS_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) \
-		$(SYS_STATUS_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) libbgtk.so
+		$(SYS_STATUS_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) \
+		$(TEST_LABYRINTH_OBJ) $(LABYRINTH_TEST_OBJ) libbgtk.so
 	rm -f test/screenshots/*.png
 
 # Rebuild core apps before install. After BGTK_Context layout changes, a
 # lib-only install leaves blank windows (apps write root_widget at wrong offset).
 # gemini_browser is best-effort (needs libtls).
 install: libbgtk.so bgtk.h $(CORE_APPS)
+	-$(MAKE) labyrinth
 	-$(MAKE) gemini_browser
 	install -d $(INSTALL_LIB)
 	install -m 755 libbgtk.so $(INSTALL_LIB)

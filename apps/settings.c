@@ -1702,6 +1702,15 @@ static void rebuild_sidebar(void)
 	free(btns);
 	sidebar->data.scrollable.items[0] = sidebar_list;
 	sidebar->data.scrollable.widget_count = 1;
+	/* Drop scroll cache — new list must be painted so buttons get layout. */
+	if (sidebar->data.scrollable.tmp) {
+		free(sidebar->data.scrollable.tmp);
+		sidebar->data.scrollable.tmp = NULL;
+		sidebar->data.scrollable.widget_capacity = 0;
+		sidebar->data.scrollable.tmp_items = NULL;
+		sidebar->data.scrollable.tmp_item0 = NULL;
+		sidebar->data.scrollable.tmp_nitems = 0;
+	}
 	sidebar->padding = 0;
 	sidebar->margin = 0;
 	bgtk_widget_set_parent(sidebar_list, sidebar);
