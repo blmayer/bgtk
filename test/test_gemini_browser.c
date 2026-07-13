@@ -46,6 +46,7 @@ static BGTK_Options line_opts(void)
 #define GEM_V_BEFORE_HEADER 28
 #define GEM_V_AFTER_HEADER  20
 #define GEM_V_AFTER_PARA    22
+#define GEM_V_AFTER_LINK    4
 #define GEM_V_EMPTY_LINE    16
 
 static void gemini_recompute_scroll_height(void)
@@ -613,6 +614,8 @@ static void rebuild_content_from_gemtext(const char *body)
 						tw->h -= 2;
 				} else if (header_level > 0) {
 					tw->h += GEM_V_AFTER_HEADER;
+				} else if (is_link) {
+					tw->h += GEM_V_AFTER_LINK;
 				} else if (!vis[0]) {
 					tw->h += GEM_V_EMPTY_LINE;
 				} else {

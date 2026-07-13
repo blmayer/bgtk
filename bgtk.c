@@ -861,6 +861,9 @@ void bgtk_destroy(struct BGTK_Context *ctx)
 	}
 	/* Release framebuffer (mmap for real apps, malloc for mock). */
 	bgtk_release_buffer(ctx);
+	free(ctx->draw_back);
+	ctx->draw_back = NULL;
+	ctx->draw_back_n = 0;
 	bgtk_free_faces(ctx);
 	if (ctx->ft_library) {
 		FT_Done_FreeType(ctx->ft_library);
@@ -999,16 +1002,36 @@ void bgtk_draw_widgets(struct BGTK_Context *ctx)
 {
 	/* Fill with theme background (not full clear-to-zero). After resize the
 	 * new shm is zeroed — without a fill, gaps outside widget paint stay
-	 * pure black. Widgets still paint their own rects on top. */
+	 * pure black. Widgets still paint their own rects on top.
+	 *
+	 * Real BGCE: paint into a staging buffer then memcpy once so the
+	 * compositor never samples a cleared/mid-frame shm (black blink on
+	 * fast scroll). Mock keeps in-place draw for screenshot tests. */
+	void *real_shm;
+	int n, i, staged;
+	uint32_t bg;
+	uint32_t *p;
+
 	if (!ctx)
 		return;
-	if (ctx->shm_buffer && ctx->width > 0 && ctx->height > 0) {
-		uint32_t bg = ctx->theme.background ? ctx->theme.background
-						    : 0xFF0A0A0Au;
-		uint32_t *p = (uint32_t *)ctx->shm_buffer;
-		int n = ctx->width * ctx->height;
-		int i;
-
+	real_shm = ctx->shm_buffer;
+	n = (ctx->width > 0 && ctx->height > 0) ? ctx->width * ctx->height : 0;
+	staged = 0;
+	if (ctx->buffer_mapped && ctx->conn_fd >= 0 && real_shm && n > 0) {
+		if (!ctx->draw_back || ctx->draw_back_n < n) {
+			free(ctx->draw_back);
+			ctx->draw_back = malloc((size_t)n * sizeof(uint32_t));
+			ctx->draw_back_n = ctx->draw_back ? n : 0;
+		}
+		if (ctx->draw_back) {
+			ctx->shm_buffer = ctx->draw_back;
+			staged = 1;
+		}
+	}
+	if (ctx->shm_buffer && n > 0) {
+		bg = ctx->theme.background ? ctx->theme.background
+					   : 0xFF0A0A0Au;
+		p = (uint32_t *)ctx->shm_buffer;
 		bg |= 0xFF000000u;
 		for (i = 0; i < n; i++)
 			p[i] = bg;
@@ -1016,6 +1039,10 @@ void bgtk_draw_widgets(struct BGTK_Context *ctx)
 	if (ctx->root_widget) {
 		calculate_widget_size(ctx, ctx->root_widget);
 		draw_widget(ctx, ctx->root_widget, ctx->shm_buffer);
+	}
+	if (staged) {
+		memcpy(real_shm, ctx->draw_back, (size_t)n * sizeof(uint32_t));
+		ctx->shm_buffer = real_shm;
 	}
 	if (ctx->conn_fd >= 0)
 		bgce_draw(ctx->conn_fd);

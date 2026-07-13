@@ -821,7 +821,9 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	if (content_height > 100000)
 		content_height = 100000;
 
-	/* Reallocate offscreen buffer when page content or width changes. */
+	/* Offscreen cache: rebuild only when missing or size changed.
+	 * Scrolling only changes scroll_y — reusing tmp avoids a full page
+	 * clear+redraw every wheel/j/k tick (looked like black blinks). */
 	need = (size_t)w->w * (size_t)content_height;
 	if (need == 0)
 		return;
@@ -841,43 +843,67 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		}
 		/* Pixel count (fits: w*h capped above). */
 		w->data.scrollable.widget_capacity = (int)need;
-	}
 
-	tmp_ctx = *ctx;
-	tmp_ctx.width = w->w;
-	tmp_ctx.height = content_height;
-	tmp_ctx.shm_buffer = w->data.scrollable.tmp;
+		tmp_ctx = *ctx;
+		tmp_ctx.width = w->w;
+		tmp_ctx.height = content_height;
+		tmp_ctx.shm_buffer = w->data.scrollable.tmp;
 
-	draw_rect(&tmp_ctx, w->data.scrollable.tmp, 0, 0, w->w, content_height,
-		  ctx->theme.background);
+		draw_rect(&tmp_ctx, w->data.scrollable.tmp, 0, 0, w->w,
+			  content_height, ctx->theme.background);
 
-	current_y = 0;
-	for (i = 0; i < w->data.scrollable.widget_count; i++) {
-		struct BGTK_Widget *child = w->data.scrollable.items[i];
-		int bottom;
-		int inner_w = w->w - 2 * (w->margin + w->padding);
+		current_y = 0;
+		for (i = 0; i < w->data.scrollable.widget_count; i++) {
+			struct BGTK_Widget *child = w->data.scrollable.items[i];
+			int bottom;
+			int inner_w = w->w - 2 * (w->margin + w->padding);
 
-		if (!child)
-			continue;
-		/* EXPAND_X: fill content width (scroll body). */
-		if ((child->flags & BGTK_FLAG_EXPAND_X) && inner_w > 0)
-			child->w = inner_w;
-		child->x = w->margin + w->padding;
-		if (w->flags & BGTK_FLAG_CENTER) {
-			child->x =
-			    w->margin + (w->w - 2 * w->margin - child->w) / 2;
+			if (!child)
+				continue;
+			/* EXPAND_X: fill content width (scroll body). */
+			if ((child->flags & BGTK_FLAG_EXPAND_X) && inner_w > 0)
+				child->w = inner_w;
+			child->x = w->margin + w->padding;
+			if (w->flags & BGTK_FLAG_CENTER) {
+				child->x = w->margin +
+					   (w->w - 2 * w->margin - child->w) /
+						   2;
+			}
+			/* Padding insets content on all sides. */
+			child->y = current_y + w->margin + w->padding;
+			/* Content-space coords (events transform into this). */
+			child->abs_x = child->x;
+			child->abs_y = child->y;
+			child->parent = w;
+			bottom = child->y + child->h;
+			if (child->y < content_height && bottom > 0)
+				draw_widget(&tmp_ctx, child,
+					    w->data.scrollable.tmp);
+			current_y += child->h + 2 * w->margin;
 		}
-		/* Padding insets content on all sides (was X-only — Y ignored). */
-		child->y = current_y + w->margin + w->padding;
-		/* Content-space coords (events transform into this space). */
-		child->abs_x = child->x;
-		child->abs_y = child->y;
-		child->parent = w;
-		bottom = child->y + child->h;
-		/* Skip draw if entirely past buffer (defensive). */
-		if (child->y < content_height && bottom > 0)
-			draw_widget(&tmp_ctx, child, w->data.scrollable.tmp);
-		current_y += child->h + 2 * w->margin;
+	} else {
+		/* Cache hit: still refresh layout coords for hit-testing. */
+		current_y = 0;
+		for (i = 0; i < w->data.scrollable.widget_count; i++) {
+			struct BGTK_Widget *child = w->data.scrollable.items[i];
+			int inner_w = w->w - 2 * (w->margin + w->padding);
+
+			if (!child)
+				continue;
+			if ((child->flags & BGTK_FLAG_EXPAND_X) && inner_w > 0)
+				child->w = inner_w;
+			child->x = w->margin + w->padding;
+			if (w->flags & BGTK_FLAG_CENTER) {
+				child->x = w->margin +
+					   (w->w - 2 * w->margin - child->w) /
+						   2;
+			}
+			child->y = current_y + w->margin + w->padding;
+			child->abs_x = child->x;
+			child->abs_y = child->y;
+			child->parent = w;
+			current_y += child->h + 2 * w->margin;
+		}
 	}
 
 	/* Blit visible rows into the window buffer — clip to shm bounds.

@@ -59,6 +59,8 @@ static BGTK_Options line_opts(void)
 #define GEM_V_BEFORE_HEADER 28
 #define GEM_V_AFTER_HEADER  20
 #define GEM_V_AFTER_PARA    22
+/* Link lines are list-like — much tighter than paragraph spacing. */
+#define GEM_V_AFTER_LINK    4
 #define GEM_V_EMPTY_LINE    16
 
 /* Keep content_height in sync with items (scroll keys need this before draw). */
@@ -1020,6 +1022,8 @@ static void rebuild_content_from_gemtext(const char *body)
 					tw->handle_event = gemini_line_handler;
 					if (header_level > 0)
 						tw->h += GEM_V_AFTER_HEADER;
+					else if (is_link)
+						tw->h += GEM_V_AFTER_LINK;
 					else if (!vis[0])
 						tw->h += GEM_V_EMPTY_LINE;
 					else
@@ -1066,6 +1070,8 @@ static void rebuild_content_from_gemtext(const char *body)
 						tw->h -= 2;
 				} else if (header_level > 0) {
 					tw->h += GEM_V_AFTER_HEADER;
+				} else if (is_link) {
+					tw->h += GEM_V_AFTER_LINK;
 				} else {
 					tw->h += GEM_V_AFTER_PARA;
 				}

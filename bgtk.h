@@ -175,6 +175,10 @@ struct BGTK_Context {
 	int buffer_mapped;
 	int width;
 	int height;
+	/* Staging buffer for atomic present (real BGCE only). Avoids
+	 * mid-frame black flashes while painting into live shm. */
+	uint32_t *draw_back;
+	int draw_back_n; /* capacity in pixels */
 
 	// FreeType data (ft_face is the UI/sans face; mono/serif optional)
 	FT_Library ft_library;
