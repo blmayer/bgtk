@@ -198,9 +198,11 @@ void measure_text(FT_Face face, const char *text, int *out_width,
 void measure_text_style(FT_Face face, const char *text, int style,
 			int *out_width, int *out_height)
 {
-	int width = 0;
-	int ncp = 0;
+	int max_w = 0;
+	int line_w = 0;
+	int nlines = 1;
 	const char *p;
+	size_t left;
 
 	if (!text) {
 		if (out_width)
@@ -209,24 +211,9 @@ void measure_text_style(FT_Face face, const char *text, int style,
 			*out_height = 12;
 		return;
 	}
-	{
-		size_t left = strlen(text);
-
-		if (!face) {
-			/* Crude: count codepoints for fallback width. */
-			p = text;
-			while (left > 0) {
-				if (!bgtk_utf8_next_n(&p, &left))
-					break;
-				ncp++;
-			}
-			if (out_width)
-				*out_width = ncp * 7 +
-					     ((style & BGTK_TEXT_BOLD) ? ncp : 0);
-			if (out_height)
-				*out_height = 12;
-			return;
-		}
+	left = strlen(text);
+	if (!face) {
+		int ncp = 0, line_ncp = 0;
 
 		p = text;
 		while (left > 0) {
@@ -234,22 +221,62 @@ void measure_text_style(FT_Face face, const char *text, int style,
 
 			if (!cp)
 				break;
-			if (load_cp(face, cp, style) == 0)
-				width += face->glyph->advance.x;
-			ncp++;
+			if (cp == '\n') {
+				if (line_ncp > ncp)
+					ncp = line_ncp;
+				line_ncp = 0;
+				nlines++;
+				continue;
+			}
+			if (cp == '\r')
+				continue;
+			line_ncp++;
 		}
+		if (line_ncp > ncp)
+			ncp = line_ncp;
+		if (out_width)
+			*out_width = ncp * 7 +
+				     ((style & BGTK_TEXT_BOLD) ? ncp : 0);
+		if (out_height)
+			*out_height = 12 * (nlines > 0 ? nlines : 1);
+		return;
 	}
-	width >>= 6;
+
+	p = text;
+	while (left > 0) {
+		uint32_t cp = bgtk_utf8_next_n(&p, &left);
+
+		if (!cp)
+			break;
+		if (cp == '\n') {
+			if (line_w > max_w)
+				max_w = line_w;
+			line_w = 0;
+			nlines++;
+			continue;
+		}
+		if (cp == '\r')
+			continue;
+		if (load_cp(face, cp, style) == 0)
+			line_w += face->glyph->advance.x;
+	}
+	if (line_w > max_w)
+		max_w = line_w;
+	max_w >>= 6;
 	/* Synthetic italic shear needs a little end padding. */
 	if (style & BGTK_TEXT_ITALIC)
-		width += (face->size->metrics.height >> 6) / 4;
+		max_w += (face->size->metrics.height >> 6) / 4;
 
 	if (out_width)
-		*out_width = width;
+		*out_width = max_w;
 	if (out_height) {
 		int ascent = face->size->metrics.ascender >> 6;
 		int descent = -face->size->metrics.descender >> 6;
-		*out_height = ascent + descent;
+		int lh = ascent + descent;
+
+		if (lh < 1)
+			lh = 12;
+		*out_height = lh * (nlines > 0 ? nlines : 1);
 	}
 }
 
@@ -301,11 +328,18 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 		if (w->data.text.text) {
 			int tw = 0, th = 0;
 			int st = w->data.text.style;
+			FT_Face face = bgtk_font_face(ctx, w->data.text.font_role);
+
 			if (w->data.text.header_level > 0 &&
 			    w->data.text.header_level <= 3)
 				st |= BGTK_TEXT_BOLD;
-			measure_text_style(ctx->ft_face, w->data.text.text, st,
-					   &tw, &th);
+			if (face)
+				FT_Set_Pixel_Sizes(face, 0,
+						   ctx->font_size > 0
+							   ? ctx->font_size
+							   : 14);
+			measure_text_style(face, w->data.text.text, st, &tw,
+					   &th);
 			int nw = tw + 2 * (w->padding + w->margin);
 			int nh = th + 2 * (w->padding + w->margin);
 			if (w->w < nw)
@@ -493,7 +527,7 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
 			const char *text, int x, int y, uint32_t color,
 			int style, int baseline_offset)
 {
-	int pen_x, pen_y, stride;
+	int pen_x, pen_y, stride, line_h, ascent;
 	FT_Matrix italic;
 	size_t left;
 	const char *p;
@@ -507,10 +541,13 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
 	FT_Set_Pixel_Sizes(ctx->ft_face, 0,
 			   ctx->font_size > 0 ? ctx->font_size : 14);
 
+	ascent = ctx->ft_face->size->metrics.ascender >> 6;
+	line_h = ascent + (-(ctx->ft_face->size->metrics.descender >> 6));
+	if (line_h < 1)
+		line_h = 12;
 	pen_x = x;
 	/* y is top of the text box; FreeType pen is baseline. */
-	pen_y = y + (ctx->ft_face->size->metrics.ascender >> 6) +
-		baseline_offset;
+	pen_y = y + ascent + baseline_offset;
 	if (ctx->theme.text_baseline_offset)
 		pen_y += ctx->theme.text_baseline_offset;
 	stride = ctx->width;
@@ -530,6 +567,13 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
 
 		if (!cp)
 			break;
+		if (cp == '\n') {
+			pen_x = x;
+			pen_y += line_h;
+			continue;
+		}
+		if (cp == '\r')
+			continue;
 		index = FT_Get_Char_Index(ctx->ft_face, (FT_ULong)cp);
 		if (FT_Load_Glyph(ctx->ft_face, index,
 				  FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP |
@@ -720,6 +764,11 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	bool is_accent = (level == 10);
 	uint32_t accent = ctx->theme.highlight ? ctx->theme.highlight
 					      : BGTK_COLOR_FUCHSIA;
+	FT_Face old_face = ctx->ft_face;
+	FT_Face face = bgtk_font_face(ctx, w->data.text.font_role);
+
+	if (face)
+		ctx->ft_face = face;
 
 	if (is_header) {
 		color = accent;
@@ -758,6 +807,7 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 			   w->baseline_offset);
 	if (is_header)
 		ctx->font_size = old_size;
+	ctx->ft_face = old_face;
 }
 
 static void draw_button(struct BGTK_Context *ctx, struct BGTK_Widget *w,

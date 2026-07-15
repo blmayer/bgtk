@@ -584,8 +584,10 @@ struct BGTK_Widget *bgtk_text(struct BGTK_Context *ctx, char *text,
 	widget->data.text.text = ptr;
 	widget->data.text.header_level = 0;
 	widget->data.text.style = options.text_style;
+	widget->data.text.href = NULL;
+	widget->data.text.font_role = BGTK_FONT_SANS;
 
-	// Calculate size based on text
+	// Calculate size based on text (multi-line aware)
 	measure_text_style(widget->ctx->ft_face, widget->data.text.text,
 			   widget->data.text.style, &widget->w, &widget->h);
 

@@ -6,6 +6,8 @@
  *
  * Supported tags:
  *   h1..h6, p, b, i, a, span    -> BGTK_WIDGET_TEXT (with header_level / bold)
+ *   pre, code                    -> mono text; pre keeps newlines/spaces
+ *   br                           -> line break (block flush)
  *   ul, ol, li                   -> BGTK_WIDGET_LIST (vertical, with bullet/number)
  *   button                       -> BGTK_WIDGET_BUTTON
  *   input[type=text]             -> BGTK_WIDGET_TEXT_INPUT
@@ -17,8 +19,10 @@
  *
  * Layout is strictly top-down (block elements stack vertically).
  * Inline elements within a block are collected into a horizontal list row.
+ * <p> keeps mixed inlines so <a href> stays a separate clickable text widget.
  *
  * Attributes:  width, height, padding, margin  (in pixels)
+ *              href on <a>                     -> text.href (owned string)
  *              onclick / onchange             -> callbacks are left NULL
  *              (the user wires them in code via the returned widget tree)
  */
@@ -78,6 +82,97 @@ static char *collect_text(xmlNode *node)
 	return out ? out : strdup("");
 }
 
+/* Preformatted: keep spaces/newlines; expand tabs; normalize CRLF → LF.
+ * Strip a single leading/trailing newline (common HTML pretty-print). */
+static char *collect_text_pre(xmlNode *node)
+{
+	xmlChar *raw;
+	const char *s;
+	size_t i, n, out_n = 0, out_cap;
+	char *out;
+
+	raw = xmlNodeGetContent(node);
+	if (!raw)
+		return strdup("");
+	s = (const char *)raw;
+	n = strlen(s);
+	/* Drop one outer newline often left by <pre>\n...\n</pre>. */
+	if (n > 0 && s[0] == '\n') {
+		s++;
+		n--;
+	}
+	if (n > 0 && s[n - 1] == '\n')
+		n--;
+	out_cap = n * 2 + 1;
+	out = malloc(out_cap);
+	if (!out) {
+		xmlFree(raw);
+		return strdup("");
+	}
+	for (i = 0; i < n; i++) {
+		char c = s[i];
+
+		if (c == '\r') {
+			if (i + 1 < n && s[i + 1] == '\n')
+				continue;
+			c = '\n';
+		}
+		if (c == '\t') {
+			int spaces = 8 - (int)(out_n % 8);
+
+			while (spaces-- > 0) {
+				if (out_n + 1 >= out_cap) {
+					out_cap *= 2;
+					out = realloc(out, out_cap);
+					if (!out) {
+						xmlFree(raw);
+						return strdup("");
+					}
+				}
+				out[out_n++] = ' ';
+			}
+			continue;
+		}
+		if (out_n + 1 >= out_cap) {
+			out_cap *= 2;
+			out = realloc(out, out_cap);
+			if (!out) {
+				xmlFree(raw);
+				return strdup("");
+			}
+		}
+		out[out_n++] = c;
+	}
+	out[out_n] = '\0';
+	xmlFree(raw);
+	return out;
+}
+
+/* Measure/create text with an alternate face (mono for pre/code). */
+static struct BGTK_Widget *make_text_face(struct BGTK_Context *ctx,
+					  const char *txt, BGTK_Options opts,
+					  int font_role)
+{
+	FT_Face old, face;
+	struct BGTK_Widget *w;
+
+	if (!txt)
+		return NULL;
+	old = ctx ? ctx->ft_face : NULL;
+	face = ctx ? bgtk_font_face(ctx, font_role) : NULL;
+	if (face)
+		ctx->ft_face = face;
+	if (face && ctx)
+		FT_Set_Pixel_Sizes(face, 0,
+				   ctx->font_size > 0 ? ctx->font_size : 14);
+	w = bgtk_text(ctx, (char *)txt, opts);
+	if (ctx)
+		ctx->ft_face = old;
+	if (w)
+		w->data.text.font_role = font_role;
+	return w;
+}
+
 /* Theme spacing when ctx is available; fall back to hard defaults. */
 static int theme_pad(struct BGTK_Context *ctx, int fallback)
 {
@@ -106,7 +201,8 @@ static int is_inline_tag(const char *tag)
 		return 0;
 	return strcmp(tag, "b") == 0 || strcmp(tag, "i") == 0 ||
 	       strcmp(tag, "a") == 0 || strcmp(tag, "span") == 0 ||
-	       strcmp(tag, "strong") == 0 || strcmp(tag, "em") == 0;
+	       strcmp(tag, "strong") == 0 || strcmp(tag, "em") == 0 ||
+	       strcmp(tag, "code") == 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -115,6 +211,8 @@ static int is_inline_tag(const char *tag)
 
 static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
 					xmlNode *node, int avail_w);
+static struct BGTK_Widget *convert_container(struct BGTK_Context *ctx,
+					     xmlNode *node, int avail_w);
 
 /* Apply g_html_css + inline style to widget; return 1 if display:none. */
 static int html_style_widget(xmlNode *node, struct BGTK_Widget *w)
@@ -171,23 +269,51 @@ static void html_collect_styles(xmlNode *node, struct BGTK_CSS *css)
 /* ------------------------------------------------------------------ */
 
 // Create a text widget for a raw text node (XML_TEXT_NODE).
+// Keep spaces between inlines (e.g. </code> — text); only drop pure
+// newline/indent whitespace used between block elements.
 static struct BGTK_Widget *make_text_widget(struct BGTK_Context *ctx,
 					    const char *raw)
 {
-	// Trim whitespace.
-	const char *s = raw;
-	while (*s && isspace((unsigned char)*s))
-		s++;
-	int len = (int)strlen(s);
-	while (len > 0 && isspace((unsigned char)s[len - 1]))
-		len--;
-	if (len <= 0)
-		return NULL;
+	const char *s;
+	int len, i, only_ws, has_space;
+	char *txt;
+	struct BGTK_Widget *w;
 
-	char *txt = strndup(s, len);
+	if (!raw || !*raw)
+		return NULL;
+	only_ws = 1;
+	has_space = 0;
+	for (s = raw; *s; s++) {
+		if (!isspace((unsigned char)*s)) {
+			only_ws = 0;
+			break;
+		}
+		if (*s == ' ' || *s == '\t')
+			has_space = 1;
+	}
+	if (only_ws) {
+		/* Inter-inline space from " </a> " etc.; ignore indent-only. */
+		if (!has_space)
+			return NULL;
+		return bgtk_text(ctx, " ",
+				 (BGTK_Options){.padding = 0, .margin = 0});
+	}
+	/* Keep content; strip only leading/trailing newlines (pretty-print). */
+	s = raw;
+	while (*s == '\n' || *s == '\r')
+		s++;
+	len = (int)strlen(s);
+	while (len > 0 && (s[len - 1] == '\n' || s[len - 1] == '\r'))
+		len--;
+	/* Collapse internal newlines to spaces for inline text nodes. */
+	txt = strndup(s, len);
 	if (!txt)
 		return NULL;
-	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){.padding = 0, .margin = 0});
+	for (i = 0; txt[i]; i++) {
+		if (txt[i] == '\n' || txt[i] == '\r' || txt[i] == '\t')
+			txt[i] = ' ';
+	}
+	w = bgtk_text(ctx, txt, (BGTK_Options){.padding = 0, .margin = 0});
 	free(txt);
 	return w;
 }
@@ -213,17 +339,18 @@ static struct BGTK_Widget *convert_heading(struct BGTK_Context *ctx,
 	return w;
 }
 
-// <p> -> text widget (block, normal level).
-static struct BGTK_Widget *convert_p(struct BGTK_Context *ctx, xmlNode *node)
+/* <p> keeps mixed inlines so <a href> stays its own widget. */
+static struct BGTK_Widget *convert_p(struct BGTK_Context *ctx, xmlNode *node,
+				     int avail_w)
 {
-	char *txt = collect_text(node);
-	if (!txt || !*txt) {
-		free(txt);
+	struct BGTK_Widget *w = convert_container(ctx, node, avail_w);
+	int mar;
+
+	if (!w)
 		return NULL;
-	}
-	BGTK_Options opts = opts_from_node(node, 0, 4);
-	struct BGTK_Widget *w = bgtk_text(ctx, txt, opts);
-	free(txt);
+	mar = attr_int(node, "margin", 4);
+	if (w->margin < mar)
+		w->margin = mar;
 	return w;
 }
 
@@ -256,18 +383,83 @@ static struct BGTK_Widget *convert_italic(struct BGTK_Context *ctx,
 	return w;
 }
 
-// <a> -> accent (theme.highlight) via header_level 10.
+// <a> -> accent (theme.highlight) via header_level 10; href on text.href.
 static struct BGTK_Widget *convert_a(struct BGTK_Context *ctx, xmlNode *node)
 {
 	char *txt = collect_text(node);
+	xmlChar *href;
+	struct BGTK_Widget *w;
+
 	if (!txt || !*txt) {
 		free(txt);
 		return NULL;
 	}
-	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){0});
+	w = bgtk_text(ctx, txt, (BGTK_Options){0});
 	free(txt);
-	if (w)
-		w->data.text.header_level = 10;
+	if (!w)
+		return NULL;
+	w->data.text.header_level = 10;
+	href = attr_str(node, "href");
+	if (href && href[0]) {
+		w->data.text.href = strdup((const char *)href);
+		xmlFree(href);
+	} else if (href) {
+		xmlFree(href);
+	}
+	return w;
+}
+
+/* <code> -> mono, inline (spaces kept via collect_text trim only). */
+static struct BGTK_Widget *convert_code(struct BGTK_Context *ctx, xmlNode *node)
+{
+	char *txt = collect_text(node);
+	struct BGTK_Widget *w;
+
+	if (!txt || !*txt) {
+		free(txt);
+		return NULL;
+	}
+	w = make_text_face(ctx, txt, (BGTK_Options){0}, BGTK_FONT_MONO);
+	free(txt);
+	return w;
+}
+
+/* <pre> -> mono multi-line block; preserves whitespace. */
+static struct BGTK_Widget *convert_pre(struct BGTK_Context *ctx, xmlNode *node)
+{
+	char *txt = collect_text_pre(node);
+	struct BGTK_Widget *w;
+	BGTK_Options opts;
+
+	if (!txt) {
+		return NULL;
+	}
+	/* Empty pre still reserves a line so layout does not collapse. */
+	if (!txt[0]) {
+		free(txt);
+		txt = strdup(" ");
+		if (!txt)
+			return NULL;
+	}
+	opts = opts_from_node(node, 4, 4);
+	w = make_text_face(ctx, txt, opts, BGTK_FONT_MONO);
+	free(txt);
+	if (w && w->color_bg == 0)
+		/* Subtle panel so pre blocks read as code regions. */
+		w->color_bg = 0xFF1A1A1A;
+	return w;
+}
+
+/* <br> -> empty-ish line fragment (block, forces inline flush). */
+static struct BGTK_Widget *convert_br(struct BGTK_Context *ctx)
+{
+	struct BGTK_Widget *w = bgtk_text(ctx, " ", (BGTK_Options){0});
+
+	if (w) {
+		/* Half-line break so stacked <br>s still advance. */
+		if (w->h > 4)
+			w->h = w->h / 2 + 2;
+	}
 	return w;
 }
 
@@ -846,12 +1038,15 @@ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
 	else if (strcmp(tag, "h4") == 0) w = convert_heading(ctx, node, 3);
 	else if (strcmp(tag, "h5") == 0) w = convert_heading(ctx, node, 3);
 	else if (strcmp(tag, "h6") == 0) w = convert_heading(ctx, node, 3);
-	else if (strcmp(tag, "p") == 0)      w = convert_p(ctx, node);
+	else if (strcmp(tag, "p") == 0)      w = convert_p(ctx, node, avail_w);
 	else if (strcmp(tag, "b") == 0)      w = convert_bold(ctx, node);
 	else if (strcmp(tag, "strong") == 0) w = convert_bold(ctx, node);
 	else if (strcmp(tag, "i") == 0)      w = convert_italic(ctx, node);
 	else if (strcmp(tag, "em") == 0)     w = convert_italic(ctx, node);
 	else if (strcmp(tag, "a") == 0)      w = convert_a(ctx, node);
+	else if (strcmp(tag, "code") == 0)   w = convert_code(ctx, node);
+	else if (strcmp(tag, "pre") == 0)    w = convert_pre(ctx, node);
+	else if (strcmp(tag, "br") == 0)     w = convert_br(ctx);
 	else if (strcmp(tag, "span") == 0) {
 		/* Plain text span (not italic). */
 		char *txt = collect_text(node);

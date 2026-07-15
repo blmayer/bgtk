@@ -953,6 +953,7 @@ static void destroy_widget(struct BGTK_Widget *w)
 		break;
 	case BGTK_WIDGET_TEXT:
 		free(w->data.text.text);
+		free(w->data.text.href);
 		break;
 	case BGTK_WIDGET_TEXT_INPUT:
 		free(w->data.text_input.text);

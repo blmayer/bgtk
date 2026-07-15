@@ -12,6 +12,9 @@ void labyrinth_test_init(struct BGTK_Context *c, int w, int h);
 void labyrinth_test_load(const char *url);
 void labyrinth_test_load_html(const char *html);
 const char *labyrinth_test_url(void);
+int labyrinth_test_app_key(struct InputEvent ev);
+struct BGTK_Widget *labyrinth_test_addr(void);
+void labyrinth_test_focus_addr(void);
 
 static const char *SAMPLE =
 	"<!DOCTYPE html><html><body>"
@@ -19,8 +22,45 @@ static const char *SAMPLE =
 	"<p>Inline HTML rendered through <b>bgtk_html_parse_inline</b>.</p>"
 	"<h2>List</h2>"
 	"<ul><li>Alpha</li><li>Beta</li><li>Gamma</li></ul>"
-	"<p><a href=\"http://example.com/\">Example link</a> (click wiring later).</p>"
+	"<p><a href=\"about:blank\">Go blank</a> is a wired link.</p>"
+	"<h2>Pre</h2>"
+	"<pre>alpha\n"
+	"  beta\n"
+	"gamma</pre>"
 	"</body></html>";
+
+static struct BGTK_Widget *find_href(struct BGTK_Widget *w)
+{
+	int i;
+	struct BGTK_Widget *f;
+
+	if (!w)
+		return NULL;
+	if (w->type == BGTK_WIDGET_TEXT && w->data.text.href &&
+	    w->data.text.href[0])
+		return w;
+	switch (w->type) {
+	case BGTK_WIDGET_SCROLLABLE:
+		for (i = 0; i < w->data.scrollable.widget_count; i++) {
+			f = find_href(w->data.scrollable.items[i]);
+			if (f)
+				return f;
+		}
+		break;
+	case BGTK_WIDGET_LIST:
+		for (i = 0; i < w->data.list_widget.widget_count; i++) {
+			f = find_href(w->data.list_widget.items[i]);
+			if (f)
+				return f;
+		}
+		break;
+	case BGTK_WIDGET_FRAME:
+		return find_href(w->data.frame.child);
+	default:
+		break;
+	}
+	return NULL;
+}
 
 int main(void)
 {
@@ -39,8 +79,9 @@ int main(void)
 	bgtk_log_open("test_labyrinth");
 	labyrinth_test_init(ctx, width, height);
 
-	/* 00: about:home */
+	/* 00: about:home — shortcuts table; address bar focused (startup) */
 	labyrinth_test_load("about:home");
+	labyrinth_test_focus_addr();
 	bgtk_draw_widgets(ctx);
 	take_screenshot(ctx, "labyrinth_00_home.png");
 
@@ -63,10 +104,76 @@ int main(void)
 		bgtk_destroy_mock(ctx);
 		return 1;
 	}
+	if (!labyrinth_test_addr() ||
+	    ctx->focused_widget != labyrinth_test_addr()) {
+		fprintf(stderr,
+			"test_labyrinth: startup should focus address bar\n");
+		bgtk_destroy_mock(ctx);
+		return 1;
+	}
 
-	/* 01: inline HTML sample */
+	/* 01: inline HTML sample (pre + wired link) */
 	labyrinth_test_load_html(SAMPLE);
 	take_screenshot(ctx, "labyrinth_01_inline_html.png");
+	{
+		struct BGTK_Widget *link = find_href(ctx->root_widget);
+		struct BGTK_Widget *sc = NULL, *w;
+		int scx, scy;
+
+		if (!link || !link->data.text.href ||
+		    strcmp(link->data.text.href, "about:blank") != 0) {
+			fprintf(stderr,
+				"test_labyrinth: link href not wired "
+				"(got %s)\n",
+				link && link->data.text.href
+					? link->data.text.href
+					: "(null)");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* Walk up to content scrollable (link x/y are content-space). */
+		for (w = link; w; w = w->parent) {
+			if (w->type == BGTK_WIDGET_SCROLLABLE) {
+				sc = w;
+				break;
+			}
+		}
+		if (!sc) {
+			fprintf(stderr,
+				"test_labyrinth: link not under scrollable\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		bgtk_widget_screen_pos(sc, &scx, &scy);
+		/* Screen = scroll origin + content pos − scroll offset. */
+		click.type = EV_KEY;
+		click.code = BTN_LEFT;
+		click.value = 1;
+		click.x = scx + link->x + link->w / 2 -
+			  sc->data.scrollable.scroll_x;
+		click.y = scy + link->y + link->h / 2 -
+			  sc->data.scrollable.scroll_y;
+		if (!bgtk_inject_event(ctx, click)) {
+			fprintf(stderr,
+				"test_labyrinth: link click not handled "
+				"(screen %d,%d content link %d,%d)\n",
+				click.x, click.y, link->x, link->y);
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		click.value = 0;
+		bgtk_inject_event(ctx, click);
+		bgtk_draw_widgets(ctx);
+		take_screenshot(ctx, "labyrinth_01b_link_clicked.png");
+		if (strcmp(labyrinth_test_url(), "about:blank") != 0) {
+			fprintf(stderr,
+				"test_labyrinth: after link click want "
+				"about:blank got %s\n",
+				labyrinth_test_url());
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+	}
 
 	/* 02: focus URL bar (bottom) — click lower strip */
 	click.type = EV_KEY;
@@ -191,6 +298,82 @@ int main(void)
 			return 1;
 		}
 		take_screenshot(ctx, "labyrinth_05_shift_wheel_hscroll.png");
+	}
+
+	/* 06: Ctrl+L focuses URL bar; Ctrl+R reloads */
+	{
+		struct InputEvent ke = {0};
+		struct BGTK_Widget *addr;
+		const char *url_before;
+
+		labyrinth_test_load("about:home");
+		bgtk_draw_widgets(ctx);
+		/* Focus content so Ctrl+L has something to switch from. */
+		if (ctx->root_widget)
+			bgtk_set_focus(ctx, ctx->root_widget);
+
+		ke.type = EV_KEY;
+		ke.code = KEY_LEFTCTRL;
+		ke.value = 1;
+		if (labyrinth_test_app_key(ke) != 0) {
+			/* mod-only may return 0 — ok */
+		}
+		ke.code = KEY_L;
+		ke.value = 1;
+		if (labyrinth_test_app_key(ke) != 1) {
+			fprintf(stderr,
+				"test_labyrinth: Ctrl+L not handled\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		addr = labyrinth_test_addr();
+		if (!addr || ctx->focused_widget != addr) {
+			fprintf(stderr,
+				"test_labyrinth: Ctrl+L did not focus addr bar\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		bgtk_draw_widgets(ctx);
+		take_screenshot(ctx, "labyrinth_06_ctrl_l_addr.png");
+
+		/* Release L, still holding ctrl; R reloads */
+		ke.code = KEY_L;
+		ke.value = 0;
+		labyrinth_test_app_key(ke);
+		url_before = labyrinth_test_url();
+		ke.code = KEY_R;
+		ke.value = 1;
+		if (labyrinth_test_app_key(ke) != 1) {
+			fprintf(stderr,
+				"test_labyrinth: Ctrl+R not handled\n");
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		if (strcmp(labyrinth_test_url(), url_before) != 0 &&
+		    strcmp(labyrinth_test_url(), "about:home") != 0) {
+			fprintf(stderr,
+				"test_labyrinth: Ctrl+R left unexpected url %s\n",
+				labyrinth_test_url());
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		/* stay on about:home after reload */
+		if (strcmp(labyrinth_test_url(), "about:home") != 0) {
+			fprintf(stderr,
+				"test_labyrinth: after Ctrl+R want about:home "
+				"got %s\n",
+				labyrinth_test_url());
+			bgtk_destroy_mock(ctx);
+			return 1;
+		}
+		ke.code = KEY_R;
+		ke.value = 0;
+		labyrinth_test_app_key(ke);
+		ke.code = KEY_LEFTCTRL;
+		ke.value = 0;
+		labyrinth_test_app_key(ke);
+		bgtk_draw_widgets(ctx);
+		take_screenshot(ctx, "labyrinth_06b_ctrl_r_reload.png");
 	}
 
 	printf("test_labyrinth complete. PNG frames written.\n");

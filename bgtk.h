@@ -360,6 +360,10 @@ struct BGTK_Widget {
 			char* text;
 			int header_level;  // 0=normal, 1/2/3 headers; 10=accent line
 			int style;         // BGTK_TEXT_BOLD | BGTK_TEXT_ITALIC
+			/* Optional owned link target for HTML <a href>. */
+			char *href;
+			/* BGTK_FONT_SANS/MONO/SERIF — which face to measure/draw. */
+			int font_role;
 		} text;
 		struct {
 			enum BGTK_List_Orientation orientation;

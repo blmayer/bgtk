@@ -18,7 +18,7 @@
  *      ↓
  *   [js]     run scripts / bind events                (placeholder)
  *      ↓
- *   [wire]   <a href> → navigate()                  (placeholder)
+ *   [wire]   <a href> on text widgets → navigate()  ← implemented
  *
  * Keys (gemini-like): Ctrl+L focus URL · Ctrl+R reload · b back ·
  *   H home · j/k/Page* scroll · Esc blur URL then quit · q quit.
@@ -142,13 +142,201 @@ static void labyrinth_js_boot(struct BGTK_Widget *page, const char *html)
 	/* TODO: ECMAScript engine, DOM bindings, event loop on input. */
 }
 
-/* Wire <a href> navigation onto link widgets (no-op until HTML stores href). */
+static void navigate(const char *url, int push);
+
+/* Resolve rel against base (http/https/file/about). Fragments-only keep base. */
+static void resolve_page_url(const char *base, const char *rel, char *out,
+			     size_t outlen)
+{
+	char scheme[16] = {0};
+	char host[256] = {0};
+	char path[512] = {0};
+	const char *p, *he;
+	char dir[512], full[1024], norm[1024];
+	char *tmp, *save, *seg;
+	char *segs[64];
+	int nseg = 0, i;
+
+	if (!out || outlen < 2)
+		return;
+	out[0] = '\0';
+	if (!rel || !*rel) {
+		snprintf(out, outlen, "%s", base ? base : "");
+		return;
+	}
+	/* Absolute schemes / about: */
+	if (strstr(rel, "://") || !strncmp(rel, "about:", 6) ||
+	    !strncmp(rel, "file:", 5) || !strncmp(rel, "data:", 5)) {
+		snprintf(out, outlen, "%s", rel);
+		return;
+	}
+	/* Same-document fragment */
+	if (rel[0] == '#') {
+		snprintf(out, outlen, "%s", base ? base : rel);
+		return;
+	}
+	if (!base || !*base) {
+		snprintf(out, outlen, "%s", rel);
+		return;
+	}
+
+	/* Parse base into scheme://host/path */
+	p = base;
+	if (!strncmp(p, "https://", 8)) {
+		snprintf(scheme, sizeof(scheme), "https");
+		p += 8;
+	} else if (!strncmp(p, "http://", 7)) {
+		snprintf(scheme, sizeof(scheme), "http");
+		p += 7;
+	} else if (!strncmp(p, "file://", 7)) {
+		snprintf(scheme, sizeof(scheme), "file");
+		p += 7;
+		/* file has no host; rest is path */
+		snprintf(path, sizeof(path), "%s", p[0] ? p : "/");
+		host[0] = '\0';
+		goto have_base;
+	} else if (!strncmp(p, "about:", 6)) {
+		/* Relative from about: → treat as absolute path on about */
+		if (rel[0] == '/')
+			snprintf(out, outlen, "about:%s", rel + 1);
+		else
+			snprintf(out, outlen, "about:%s", rel);
+		return;
+	} else {
+		snprintf(out, outlen, "%s", rel);
+		return;
+	}
+	he = strchr(p, '/');
+	if (he) {
+		size_t hl = (size_t)(he - p);
+		if (hl >= sizeof(host))
+			hl = sizeof(host) - 1;
+		memcpy(host, p, hl);
+		host[hl] = '\0';
+		snprintf(path, sizeof(path), "%s", he);
+	} else {
+		snprintf(host, sizeof(host), "%s", p);
+		snprintf(path, sizeof(path), "/");
+	}
+
+have_base:
+	if (rel[0] == '/') {
+		/* Absolute path on same origin */
+		if (scheme[0] && host[0])
+			snprintf(out, outlen, "%s://%s%s", scheme, host, rel);
+		else if (scheme[0])
+			snprintf(out, outlen, "%s://%s", scheme, rel);
+		else
+			snprintf(out, outlen, "%s", rel);
+		return;
+	}
+
+	/* Directory of base path + relative */
+	snprintf(dir, sizeof(dir), "%s", path[0] ? path : "/");
+	{
+		char *ls = strrchr(dir, '/');
+		if (ls)
+			*(ls + 1) = '\0';
+		else
+			snprintf(dir, sizeof(dir), "/");
+	}
+	snprintf(full, sizeof(full), "%s%s", dir, rel);
+
+	tmp = strdup(full);
+	if (!tmp) {
+		snprintf(out, outlen, "%s", full);
+		return;
+	}
+	save = NULL;
+	seg = strtok_r(tmp, "/", &save);
+	while (seg && nseg < 64) {
+		if (!strcmp(seg, ".") || !*seg) {
+			/* skip */
+		} else if (!strcmp(seg, "..")) {
+			if (nseg > 0)
+				nseg--;
+		} else {
+			segs[nseg++] = seg;
+		}
+		seg = strtok_r(NULL, "/", &save);
+	}
+	norm[0] = '/';
+	norm[1] = '\0';
+	for (i = 0; i < nseg; i++) {
+		if (i)
+			strcat(norm, "/");
+		strcat(norm, segs[i]);
+	}
+	free(tmp);
+
+	if (scheme[0] && host[0])
+		snprintf(out, outlen, "%s://%s%s", scheme, host, norm);
+	else if (scheme[0] && !strcmp(scheme, "file"))
+		snprintf(out, outlen, "file://%s", norm);
+	else
+		snprintf(out, outlen, "%s", norm);
+}
+
+static int labyrinth_link_click(struct BGTK_Widget *w, struct InputEvent ev)
+{
+	if (!w || w->type != BGTK_WIDGET_TEXT)
+		return 0;
+	if (ev.code != BTN_LEFT || ev.value != 1)
+		return 0;
+	if (!bgtk_widget_hit(w, ev.x, ev.y))
+		return 0;
+	if (!w->data.text.href || !w->data.text.href[0])
+		return 0;
+	navigate(w->data.text.href, 1);
+	return 1;
+}
+
+static void labyrinth_wire_links_walk(struct BGTK_Widget *w)
+{
+	int i;
+
+	if (!w)
+		return;
+	if (w->type == BGTK_WIDGET_TEXT && w->data.text.href &&
+	    w->data.text.href[0]) {
+		char resolved[768];
+
+		resolve_page_url(current_url, w->data.text.href, resolved,
+				 sizeof(resolved));
+		if (resolved[0] && strcmp(resolved, w->data.text.href) != 0) {
+			free(w->data.text.href);
+			w->data.text.href = strdup(resolved);
+		}
+		w->handle_event = labyrinth_link_click;
+	}
+	switch (w->type) {
+	case BGTK_WIDGET_SCROLLABLE:
+		for (i = 0; i < w->data.scrollable.widget_count; i++)
+			labyrinth_wire_links_walk(w->data.scrollable.items[i]);
+		break;
+	case BGTK_WIDGET_LIST:
+		for (i = 0; i < w->data.list_widget.widget_count; i++)
+			labyrinth_wire_links_walk(w->data.list_widget.items[i]);
+		break;
+	case BGTK_WIDGET_FRAME:
+		labyrinth_wire_links_walk(w->data.frame.child);
+		break;
+	case BGTK_WIDGET_BUTTON:
+		labyrinth_wire_links_walk(w->data.button.label);
+		break;
+	case BGTK_WIDGET_LABEL:
+		labyrinth_wire_links_walk(w->data.label.text);
+		break;
+	default:
+		break;
+	}
+}
+
+/* Wire <a href> navigation onto link text widgets. */
 static void labyrinth_wire_links(struct BGTK_Widget *page, const char *html)
 {
-	(void)page;
 	(void)html;
-	/* TODO: extend html.c to attach href on <a> widgets; walk tree and
-	 * set handle_event → navigate(href). */
+	labyrinth_wire_links_walk(page);
 }
 
 /* ------------------------------------------------------------------ */
@@ -277,7 +465,6 @@ static void hist_push(const char *url)
 	hist_n++;
 }
 
-#ifndef LABYRINTH_TEST_MODE
 static int hist_back(char *out, size_t n)
 {
 	if (hist_n < 1)
@@ -286,7 +473,6 @@ static int hist_back(char *out, size_t n)
 	snprintf(out, n, "%s", hist[hist_n]);
 	return 1;
 }
-#endif
 
 /* ------------------------------------------------------------------ */
 /* Built-in pages & fetch                                             */
@@ -295,23 +481,30 @@ static int hist_back(char *out, size_t n)
 static const char *HOME_HTML =
 	"<!DOCTYPE html><html><head><title>Labyrinth</title></head><body>"
 	"<h1>Labyrinth</h1>"
-	"<p>A simple web browser for BGTK. Pages are HTML → widgets "
-	"with basic CSS (color, background, font-weight, text-align, …). "
-	"JavaScript is not run yet.</p>"
-	"<h2>Try</h2>"
+	"<p>Type a URL in the bar below and press <b>Enter</b>.</p>"
+	"<h2>Shortcuts</h2>"
+	"<table>"
+	"<tr><th>Key</th><th>Action</th></tr>"
+	"<tr><td><code>Ctrl+L</code></td><td>Focus address bar</td></tr>"
+	"<tr><td><code>Ctrl+R</code></td><td>Reload page</td></tr>"
+	"<tr><td><code>Enter</code></td><td>Go to URL in bar</td></tr>"
+	"<tr><td><code>Esc</code></td><td>Blur bar (again to quit)</td></tr>"
+	"<tr><td><code>b</code></td><td>Back</td></tr>"
+	"<tr><td><code>H</code></td><td>Home</td></tr>"
+	"<tr><td><code>j</code> / <code>k</code></td><td>Scroll down / up</td></tr>"
+	"<tr><td><code>Shift+wheel</code></td><td>Horizontal scroll</td></tr>"
+	"<tr><td><code>q</code> / <code>Ctrl+C</code></td><td>Quit</td></tr>"
+	"</table>"
+	"<h2>URLs</h2>"
 	"<ul>"
-	"<li>Type a URL in the bar below and press Enter</li>"
 	"<li><code>about:home</code> — this page</li>"
 	"<li><code>about:blank</code> — empty document</li>"
 	"<li><code>file:///path/to/page.html</code> — local file</li>"
-	"<li><code>http://example.com/</code> — plain HTTP</li>"
-	"<li><code>https://example.com/</code> — HTTPS (libtls)</li>"
+	"<li><code>http://…</code> / <code>https://…</code> — web (libtls)</li>"
 	"</ul>"
-	"<h2>Roadmap</h2>"
-	"<p><b>CSS</b> stylesheets and cascade · <b>JS</b> scripts and events · "
-	"clickable <code>&lt;a href&gt;</code>.</p>"
-	"<p>HTTPS uses <b>libtls</b>. Keys: Ctrl+L URL · Ctrl+R reload · b back · "
-	"H home · j/k scroll · <b>Shift+wheel</b> horizontal scroll · Esc / q quit.</p>"
+	"<p>Try "
+	"<a href=\"about:blank\">about:blank</a> · "
+	"<a href=\"https://example.com/\">example.com</a>.</p>"
 	"</body></html>";
 
 static const char *BLANK_HTML =
@@ -864,14 +1057,28 @@ static void load_url(const char *url)
 static void navigate(const char *url, int push)
 {
 	char full[768];
+	char resolved[768];
 
 	if (!url || !url[0])
 		return;
-	/* Bare host → http:// */
-	if (strncmp(url, "http://", 7) != 0 &&
-	    strncmp(url, "https://", 8) != 0 &&
-	    strncmp(url, "file://", 7) != 0 &&
-	    strncmp(url, "about:", 6) != 0) {
+	if (strncmp(url, "http://", 7) == 0 ||
+	    strncmp(url, "https://", 8) == 0 ||
+	    strncmp(url, "file://", 7) == 0 ||
+	    strncmp(url, "about:", 6) == 0) {
+		/* absolute — fall through */
+	} else if (current_url[0] &&
+		   (url[0] == '/' || strchr(url, ':') == NULL)) {
+		/* Relative path/file against current page (link wiring). */
+		resolve_page_url(current_url, url, resolved, sizeof(resolved));
+		if (strstr(resolved, "://") || !strncmp(resolved, "about:", 6) ||
+		    !strncmp(resolved, "file:", 5)) {
+			url = resolved;
+		} else {
+			snprintf(full, sizeof(full), "http://%s", url);
+			url = full;
+		}
+	} else {
+		/* Bare host typed in the URL bar → http:// */
 		snprintf(full, sizeof(full), "http://%s", url);
 		url = full;
 	}
@@ -887,20 +1094,8 @@ static void addr_on_enter(void)
 	navigate(addr_input->data.text_input.text, 1);
 }
 
-#ifndef LABYRINTH_TEST_MODE
-static void labyrinth_on_resize(void)
-{
-	labyrinth_layout_chrome();
-	if (last_html)
-		load_html_string(last_html);
-	else if (content_host && content_host->data.frame.child) {
-		content_host->data.frame.child->w = content_w;
-		content_host->data.frame.child->h = content_h;
-	}
-}
-
 /* ------------------------------------------------------------------ */
-/* Focus helpers                                                      */
+/* Focus / app keys (Ctrl+L, Ctrl+R, …)                               */
 /* ------------------------------------------------------------------ */
 
 static struct BGTK_Widget *content_scroll_widget(void)
@@ -920,13 +1115,107 @@ static struct BGTK_Widget *content_scroll_widget(void)
 	return NULL;
 }
 
-#endif
+/* Focus the URL bar and select all (browser-style Ctrl+L). */
+static void focus_addr_bar(void)
+{
+	int len;
+
+	if (!ctx || !addr_input)
+		return;
+	bgtk_set_focus(ctx, addr_input);
+	len = addr_input->data.text_input.text
+		      ? (int)strlen(addr_input->data.text_input.text)
+		      : 0;
+	addr_input->data.text_input.cursor_pos = (uint32_t)len;
+	addr_input->data.text_input.selection_start = 0;
+	addr_input->data.text_input.selection_end = len;
+	addr_input->data.text_input.scroll_x = 0;
+}
+
+/*
+ * App-level shortcuts. Call after bgtk_update_modifiers.
+ * Returns: 0 = not handled, 1 = handled (redraw), 2 = quit app.
+ */
+static int labyrinth_app_key(struct InputEvent ev)
+{
+	int addr_focus, mods, scroll_key;
+	char prev[768];
+	struct BGTK_Widget *sc;
+
+	if (!ctx || ev.type != EV_KEY || (ev.value != 1 && ev.value != 2))
+		return 0;
+
+	addr_focus = (ctx->focused_widget == addr_input);
+	mods = bgtk_mods_from_ctx(ctx);
+	scroll_key = 0;
+
+	/* Ctrl+L (or bare o): focus address bar */
+	if (((mods & BGTK_MOD_CTRL) && ev.code == KEY_L) ||
+	    (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
+	     !(mods & BGTK_MOD_SHIFT) && ev.code == KEY_O)) {
+		focus_addr_bar();
+		return 1;
+	}
+	/* Ctrl+R (or bare r when not typing URL): reload */
+	if (((mods & BGTK_MOD_CTRL) && ev.code == KEY_R) ||
+	    (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
+	     !(mods & BGTK_MOD_SHIFT) && ev.code == KEY_R)) {
+		load_url(current_url);
+		return 1;
+	}
+	if (ev.code == KEY_ESC) {
+		if (addr_focus) {
+			sc = content_scroll_widget();
+			bgtk_set_focus(ctx, sc ? sc : content_host);
+			return 1;
+		}
+		return 2; /* quit */
+	}
+	if (((mods & BGTK_MOD_CTRL) && ev.code == KEY_C) ||
+	    (!addr_focus && !(mods & BGTK_MOD_CTRL) && ev.code == KEY_Q))
+		return 2;
+	if (!addr_focus && !(mods & BGTK_MOD_CTRL) && ev.code == KEY_B) {
+		if (hist_back(prev, sizeof(prev)))
+			load_url(prev);
+		return 1;
+	}
+	if (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
+	    !(mods & BGTK_MOD_SHIFT) && ev.code == KEY_H) {
+		navigate("about:home", 1);
+		return 1;
+	}
+	if (ev.code == KEY_PAGEUP || ev.code == KEY_PAGEDOWN)
+		scroll_key = 1;
+	else if (!addr_focus &&
+		 (ev.code == KEY_UP || ev.code == KEY_DOWN ||
+		  ev.code == KEY_HOME || ev.code == KEY_END ||
+		  ev.code == KEY_SPACE || ev.code == KEY_J ||
+		  ev.code == KEY_K))
+		scroll_key = 1;
+	if (scroll_key) {
+		sc = content_scroll_widget();
+		if (sc && sc->handle_event && sc->handle_event(sc, ev))
+			return 1;
+		return 0;
+	}
+	return 0;
+}
+
+#ifndef LABYRINTH_TEST_MODE
+static void labyrinth_on_resize(void)
+{
+	labyrinth_layout_chrome();
+	if (last_html)
+		load_html_string(last_html);
+	else if (content_host && content_host->data.frame.child) {
+		content_host->data.frame.child->w = content_w;
+		content_host->data.frame.child->h = content_h;
+	}
+}
 
 /* ------------------------------------------------------------------ */
 /* Main                                                               */
 /* ------------------------------------------------------------------ */
-
-#ifndef LABYRINTH_TEST_MODE
 
 int main(void)
 {
@@ -997,13 +1286,10 @@ int main(void)
 	ctx->root_widget = root_frame;
 	labyrinth_layout_chrome();
 
-	{
-		struct BGTK_Widget *sc = content_scroll_widget();
-
-		bgtk_set_focus(ctx, sc ? sc : content_host);
-	}
-	bgtk_draw_widgets(ctx);
+	/* Home + shortcut list; start ready to type a URL. */
 	load_url(current_url);
+	focus_addr_bar();
+	bgtk_draw_widgets(ctx);
 
 	bgtk_log("entering main loop %dx%d url=%s", width, height, current_url);
 	while (1) {
@@ -1032,85 +1318,15 @@ int main(void)
 
 			bgtk_update_modifiers(ctx, *ev);
 
-			if (ev->type == EV_KEY &&
-			    (ev->value == 1 || ev->value == 2)) {
-				int addr_focus =
-					(ctx->focused_widget == addr_input);
-				int mods = bgtk_mods_from_ctx(ctx);
-				int scroll_key = 0;
-				char prev[768];
-				struct BGTK_Widget *sc;
+			{
+				int app = labyrinth_app_key(*ev);
 
-				if (((mods & BGTK_MOD_CTRL) &&
-				     ev->code == KEY_L) ||
-				    (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
-				     !(mods & BGTK_MOD_SHIFT) &&
-				     ev->code == KEY_O)) {
-					bgtk_set_focus(ctx, addr_input);
-					res = 1;
-					break;
-				}
-				if (((mods & BGTK_MOD_CTRL) &&
-				     ev->code == KEY_R) ||
-				    (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
-				     !(mods & BGTK_MOD_SHIFT) &&
-				     ev->code == KEY_R)) {
-					load_url(current_url);
-					res = 1;
-					break;
-				}
-				if (ev->code == KEY_ESC) {
-					if (addr_focus) {
-						sc = content_scroll_widget();
-						bgtk_set_focus(
-							ctx,
-							sc ? sc : content_host);
-						res = 1;
-						break;
-					}
-					quit_reason = "Esc";
-					goto done;
-				}
-				if (((mods & BGTK_MOD_CTRL) &&
-				     ev->code == KEY_C) ||
-				    (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
-				     ev->code == KEY_Q)) {
+				if (app == 2) {
 					quit_reason = "quit key";
 					goto done;
 				}
-				if (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
-				    ev->code == KEY_B) {
-					if (hist_back(prev, sizeof(prev)))
-						load_url(prev);
+				if (app == 1)
 					res = 1;
-					break;
-				}
-				if (!addr_focus && !(mods & BGTK_MOD_CTRL) &&
-				    !(mods & BGTK_MOD_SHIFT) &&
-				    ev->code == KEY_H) {
-					navigate("about:home", 1);
-					res = 1;
-					break;
-				}
-				if (ev->code == KEY_PAGEUP ||
-				    ev->code == KEY_PAGEDOWN)
-					scroll_key = 1;
-				else if (!addr_focus &&
-					 (ev->code == KEY_UP ||
-					  ev->code == KEY_DOWN ||
-					  ev->code == KEY_HOME ||
-					  ev->code == KEY_END ||
-					  ev->code == KEY_SPACE ||
-					  ev->code == KEY_J ||
-					  ev->code == KEY_K))
-					scroll_key = 1;
-				if (scroll_key) {
-					sc = content_scroll_widget();
-					if (sc && sc->handle_event &&
-					    sc->handle_event(sc, *ev))
-						res = 1;
-					break;
-				}
 			}
 
 			if (!res)
@@ -1149,6 +1365,10 @@ void labyrinth_test_init(struct BGTK_Context *c, int w, int h);
 void labyrinth_test_load(const char *url);
 void labyrinth_test_load_html(const char *html);
 const char *labyrinth_test_url(void);
+/* Inject app key after mods updated; returns 0/1/2 like labyrinth_app_key. */
+int labyrinth_test_app_key(struct InputEvent ev);
+struct BGTK_Widget *labyrinth_test_addr(void);
+void labyrinth_test_focus_addr(void);
 
 void labyrinth_test_init(struct BGTK_Context *c, int w, int h)
 {
@@ -1197,5 +1417,23 @@ void labyrinth_test_load_html(const char *html)
 const char *labyrinth_test_url(void)
 {
 	return current_url;
+}
+
+int labyrinth_test_app_key(struct InputEvent ev)
+{
+	if (!ctx)
+		return 0;
+	bgtk_update_modifiers(ctx, ev);
+	return labyrinth_app_key(ev);
+}
+
+struct BGTK_Widget *labyrinth_test_addr(void)
+{
+	return addr_input;
+}
+
+void labyrinth_test_focus_addr(void)
+{
+	focus_addr_bar();
 }
 #endif
