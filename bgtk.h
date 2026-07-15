@@ -334,7 +334,10 @@ struct BGTK_Widget {
 	enum BGTK_Text_Align text_align;  // Horizontal text alignment
 	enum BGTK_VAlign text_v_align;    // Vertical text alignment
 	int baseline_offset;              // FreeType baseline tweak (px)
-	
+	/* CSS / explicit colors: 0 = use theme default (no override). */
+	uint32_t color_fg;
+	uint32_t color_bg;
+
 	// Function pointer for event handling
 	int (*handle_event)(struct BGTK_Widget* widget, struct InputEvent ev);
 	
@@ -372,8 +375,10 @@ struct BGTK_Widget {
 			struct BGTK_Widget** items;  // List of child widgets
 			int widget_count;
 			int widget_capacity; /* pixel count of tmp, not item slots */
-			int scroll_y;	     // Current scroll position
+			int scroll_y;	     // Vertical scroll (px into content)
+			int scroll_x;	     // Horizontal scroll (Shift+wheel)
 			int content_height;  // Total height of all child widgets
+			int content_width;   // Total width (≥ view w; wide tables/pre)
 			uint32_t* tmp;	     // off-screen buffer
 			/* Identity of content last painted into tmp — if items
 			 * are swapped (settings sidebar) without freeing tmp,

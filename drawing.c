@@ -360,19 +360,47 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 		 *   child.y = current_y + margin + padding
 		 *   current_y += h + 2*margin
 		 *   content_height = cy + 2*(margin+padding)
+		 *   content_width = max(child right edges) + pads
 		 * Underestimating height caused OOB writes into the
 		 * offscreen buffer (heap corruption / SIGBUS on shm). */
 		int cy = 0;
+		int max_cw = 0;
+		int pad = w->padding;
+		int mar = w->margin;
+
 		w->data.scrollable.content_height = 0;
+		w->data.scrollable.content_width = 0;
 		for (int i = 0; i < w->data.scrollable.widget_count; i++) {
 			struct BGTK_Widget *child = w->data.scrollable.items[i];
+			int right;
+
 			if (!child)
 				continue;
 			calculate_widget_size(ctx, child);
-			cy += child->h + 2 * w->margin;
+			cy += child->h + 2 * mar;
+			/* Natural width; EXPAND_X only grows in draw. */
+			right = child->w + 2 * (mar + pad);
+			if (right > max_cw)
+				max_cw = right;
 		}
-		w->data.scrollable.content_height =
-			cy + 2 * (w->margin + w->padding);
+		w->data.scrollable.content_height = cy + 2 * (mar + pad);
+		if (max_cw < w->w)
+			max_cw = w->w;
+		w->data.scrollable.content_width = max_cw;
+		/* Keep scroll offsets in range after content shrinks. */
+		{
+			int max_y = w->data.scrollable.content_height - w->h;
+			int max_x = w->data.scrollable.content_width - w->w;
+
+			if (max_y < 0)
+				max_y = 0;
+			if (max_x < 0)
+				max_x = 0;
+			if (w->data.scrollable.scroll_y > max_y)
+				w->data.scrollable.scroll_y = max_y;
+			if (w->data.scrollable.scroll_x > max_x)
+				w->data.scrollable.scroll_x = max_x;
+		}
 		break;
 	}
 	case BGTK_WIDGET_LIST: {
@@ -700,6 +728,15 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	} else if (is_accent) {
 		color = accent;
 	}
+	/* CSS color overrides theme/accent when set. */
+	if (w->color_fg)
+		color = w->color_fg;
+
+	/* Optional CSS background fill behind text. */
+	if (w->color_bg)
+		draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,
+			  w->w - 2 * w->margin, w->h - 2 * w->margin,
+			  w->color_bg);
 
 	int content_x0 = w->x + w->margin + w->padding;
 	int content_y0 = w->y + w->margin + w->padding;
@@ -805,6 +842,7 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 {
 	(void)pixels;
 	int content_height = w->data.scrollable.content_height;
+	int content_width = w->data.scrollable.content_width;
 	int current_y = 0;
 	int i;
 	size_t need;
@@ -812,21 +850,42 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	uint32_t *buff;
 	uint32_t *tmp;
 	int dst_x0, dst_y0, copy_w, rows;
+	int scroll_x, scroll_y;
 
 	if (w->w < 1 || w->h < 1)
 		return;
 	if (content_height < w->h)
 		content_height = w->h;
-	/* Cap insane heights so (int)pixel count cannot wrap. */
+	if (content_width < w->w)
+		content_width = w->w;
+	/* Cap so (int)pixel count cannot wrap. */
 	if (content_height > 100000)
 		content_height = 100000;
+	if (content_width > 100000)
+		content_width = 100000;
+	w->data.scrollable.content_height = content_height;
+	w->data.scrollable.content_width = content_width;
 
-	/* Offscreen cache: rebuild when size or content identity changes.
-	 * Scroll only changes scroll_y — reusing tmp avoids a full page
-	 * clear+redraw every wheel/j/k tick (black blinks). Settings replaces
-	 * items[0] (sidebar list) in place; that must bust the cache so new
-	 * nav buttons get layout and hit-test coords. */
-	need = (size_t)w->w * (size_t)content_height;
+	scroll_x = w->data.scrollable.scroll_x;
+	scroll_y = w->data.scrollable.scroll_y;
+	if (scroll_x < 0)
+		scroll_x = 0;
+	if (scroll_y < 0)
+		scroll_y = 0;
+	if (scroll_x > content_width - w->w)
+		scroll_x = content_width - w->w > 0 ? content_width - w->w : 0;
+	if (scroll_y > content_height - w->h)
+		scroll_y = content_height - w->h > 0 ? content_height - w->h
+						     : 0;
+	w->data.scrollable.scroll_x = scroll_x;
+	w->data.scrollable.scroll_y = scroll_y;
+
+	/*
+	 * Offscreen cache: rebuild when size or content identity changes.
+	 * Scroll only changes scroll_x/y — reusing tmp avoids full redraw.
+	 * Buffer is content_width × content_height for horizontal pan.
+	 */
+	need = (size_t)content_width * (size_t)content_height;
 	if (need == 0)
 		return;
 	if (w->data.scrollable.tmp &&
@@ -860,40 +919,42 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 				fprintf(stderr,
 					"Failed to allocate off-screen buffer "
 					"(%dx%d)\n",
-					w->w, content_height);
+					content_width, content_height);
 				return;
 			}
-			/* Pixel count (fits: w*h capped above). */
 			w->data.scrollable.widget_capacity = (int)need;
 			w->data.scrollable.tmp_items = its;
 			w->data.scrollable.tmp_item0 = i0;
 			w->data.scrollable.tmp_nitems = nch;
 
 			tmp_ctx = *ctx;
-			tmp_ctx.width = w->w;
+			tmp_ctx.width = content_width;
 			tmp_ctx.height = content_height;
 			tmp_ctx.shm_buffer = w->data.scrollable.tmp;
 
-			draw_rect(&tmp_ctx, w->data.scrollable.tmp, 0, 0, w->w,
-				  content_height, ctx->theme.background);
+			draw_rect(&tmp_ctx, w->data.scrollable.tmp, 0, 0,
+				  content_width, content_height,
+				  ctx->theme.background);
 
 			current_y = 0;
 			for (i = 0; i < nch; i++) {
 				struct BGTK_Widget *child = its ? its[i] : NULL;
 				int bottom;
-				int inner_w =
-					w->w - 2 * (w->margin + w->padding);
+				int inner_w = content_width -
+					      2 * (w->margin + w->padding);
 
 				if (!child)
 					continue;
+				/* Expand only if narrower — do not shrink wide
+				 * content (tables/pre) so horizontal scroll works. */
 				if ((child->flags & BGTK_FLAG_EXPAND_X) &&
-				    inner_w > 0)
+				    inner_w > child->w)
 					child->w = inner_w;
 				child->x = w->margin + w->padding;
 				if (w->flags & BGTK_FLAG_CENTER) {
 					child->x =
 						w->margin +
-						(w->w - 2 * w->margin -
+						(content_width - 2 * w->margin -
 						 child->w) /
 							2;
 				}
@@ -912,19 +973,19 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 			current_y = 0;
 			for (i = 0; i < nch; i++) {
 				struct BGTK_Widget *child = its ? its[i] : NULL;
-				int inner_w =
-					w->w - 2 * (w->margin + w->padding);
+				int inner_w = content_width -
+					      2 * (w->margin + w->padding);
 
 				if (!child)
 					continue;
 				if ((child->flags & BGTK_FLAG_EXPAND_X) &&
-				    inner_w > 0)
+				    inner_w > child->w)
 					child->w = inner_w;
 				child->x = w->margin + w->padding;
 				if (w->flags & BGTK_FLAG_CENTER) {
 					child->x =
 						w->margin +
-						(w->w - 2 * w->margin -
+						(content_width - 2 * w->margin -
 						 child->w) /
 							2;
 				}
@@ -937,8 +998,7 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		}
 	}
 
-	/* Blit visible rows into the window buffer — clip to shm bounds.
-	 * Writing past mmap'd BGCE shm is a common SIGBUS. */
+	/* Blit visible viewport from (scroll_x, scroll_y) into the window. */
 	buff = (uint32_t *)ctx->shm_buffer;
 	tmp = w->data.scrollable.tmp;
 	if (!buff || !tmp)
@@ -962,14 +1022,23 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	if (dst_y0 + rows > ctx->height)
 		rows = ctx->height - dst_y0;
 	for (i = 0; i < rows; i++) {
-		int src_row = w->data.scrollable.scroll_y + (i + (dst_y0 - w->y));
-		int src_x = (dst_x0 > w->x) ? (dst_x0 - w->x) : 0;
+		int src_row = scroll_y + (i + (dst_y0 - w->y));
+		int src_x = scroll_x + ((dst_x0 > w->x) ? (dst_x0 - w->x) : 0);
+		int row_copy = copy_w;
 
 		if (src_row < 0 || src_row >= content_height)
 			continue;
+		if (src_x < 0) {
+			row_copy += src_x;
+			src_x = 0;
+		}
+		if (src_x + row_copy > content_width)
+			row_copy = content_width - src_x;
+		if (row_copy <= 0)
+			continue;
 		memcpy(&buff[(dst_y0 + i) * ctx->width + dst_x0],
-		       &tmp[src_row * w->w + src_x],
-		       (size_t)copy_w * sizeof(uint32_t));
+		       &tmp[src_row * content_width + src_x],
+		       (size_t)row_copy * sizeof(uint32_t));
 	}
 }
 
@@ -1087,6 +1156,9 @@ static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	int oy = w->y;
 	int i, n = w->data.list_widget.widget_count;
 
+	if (w->color_bg)
+		draw_rect(ctx, pixels, w->x, w->y, w->w, w->h, w->color_bg);
+
 	bgtk_list_layout_expand(w);
 
 	for (i = 0; i < n; i++) {
@@ -1147,8 +1219,9 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	if (bw < 0)
 		bw = 0;
 
-	/* Full card fill (includes inner margin band). */
-	draw_rect(ctx, pixels, w->x, w->y, w->w, w->h, ctx->theme.background);
+	/* Full card fill (includes inner margin band). CSS bg overrides theme. */
+	draw_rect(ctx, pixels, w->x, w->y, w->w, w->h,
+		  w->color_bg ? w->color_bg : ctx->theme.background);
 
 	/* border_w 0 = no border (HTML cells / borderless panels). */
 	if (bw > 0) {

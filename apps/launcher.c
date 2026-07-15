@@ -137,10 +137,8 @@ static void rebuild_matches_ui(void)
 	}
 
 	n = num_matches;
-	if (n < 1) {
-		bgtk_draw_widgets(ctx);
+	if (n < 1)
 		return;
-	}
 
 	items = calloc((size_t)n, sizeof(struct BGTK_Widget *));
 	if (!items)
@@ -207,8 +205,7 @@ static void rebuild_matches_ui(void)
 	matches_scroll->data.scrollable.items = items;
 	matches_scroll->data.scrollable.widget_count = n;
 	matches_scroll->data.scrollable.scroll_y = 0;
-
-	bgtk_draw_widgets(ctx);
+	/* No draw here — callers present once after muting the tree. */
 }
 
 static void on_text_change(void)
@@ -305,7 +302,7 @@ static void on_enter_pressed(void)
 		return;
 	quit_after_launch = 1;
 	/* Disconnect now so the server erases us before any post-enter
-	 * redraw (text_input always draws after on_enter) or free path. */
+	 * redraw (main loop may still see need_draw) or free path. */
 	launcher_detach();
 }
 
@@ -470,16 +467,15 @@ int main(void)
 	}
 
 	layout_launcher();
-	bgtk_log("first draw / focus");
-	bgtk_log_flush();
-	/* Draw before set_focus: set_focus also draws; if draw crashes we know. */
-	bgtk_draw_widgets(ctx);
-	bgtk_log("first draw ok");
-	bgtk_set_focus(ctx, text_input);
-
+	/* Quiet focus: bgtk_set_focus would present before the match list exists. */
+	ctx->focused_widget = text_input;
 	update_matches("");
 	bgtk_log("matches=%d; rebuilding list", num_matches);
 	rebuild_matches_ui();
+	bgtk_log("first draw");
+	bgtk_log_flush();
+	bgtk_draw_widgets(ctx);
+	bgtk_log("first draw ok");
 
 	bgtk_log("Starting launcher main loop (%dx%d)", ctx->width, ctx->height);
 	bgtk_log_flush();
@@ -520,12 +516,14 @@ int main(void)
 				    ev->code == KEY_J) {
 					selected = (selected + 1) % num_matches;
 					rebuild_matches_ui();
+					need_draw = 1;
 					break;
 				}
 				if (ev->code == KEY_UP || ev->code == KEY_K) {
 					selected = (selected - 1 + num_matches) %
 						   num_matches;
 					rebuild_matches_ui();
+					need_draw = 1;
 					break;
 				}
 			}
@@ -533,8 +531,8 @@ int main(void)
 			break;
 		}
 		case MSG_FOCUS_CHANGE:
+			/* set_window_focus already presents. */
 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
-			need_draw = 1;
 			break;
 		case MSG_BUFFER_CHANGE:
 			/* Server allocated a new shm buffer after a window resize. */

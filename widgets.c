@@ -185,21 +185,15 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 	int len = text ? (int)strlen(text) : 0;
 	int changed = 0;
 
+	/* Mutate only; callers (main loop / inject) present once. */
 	if (ev.code == KEY_TAB) {
 		if (widget->data.text_input.on_tab)
 			widget->data.text_input.on_tab();
-		if (ctx)
-			bgtk_draw_widgets(ctx);
 		return 1;
 	}
 	if (ev.code == KEY_ENTER || ev.code == KEY_KPENTER) {
 		if (widget->data.text_input.on_enter)
 			widget->data.text_input.on_enter();
-		/* Skip redraw if the app already closed its BGCE connection
-		 * (e.g. launcher after spawn) — draw would paint a black
-		 * frame into a dying shm and race the compositor erase. */
-		if (ctx && ctx->conn_fd >= 0)
-			bgtk_draw_widgets(ctx);
 		return 1;
 	}
 
@@ -234,8 +228,6 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 			text_input_ensure_cursor_visible(ctx, widget);
 			if (widget->data.text_input.on_change)
 				widget->data.text_input.on_change();
-			if (ctx)
-				bgtk_draw_widgets(ctx);
 		}
 		return 1;
 	}
@@ -256,8 +248,6 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 		text_input_ensure_cursor_visible(ctx, widget);
 		if (widget->data.text_input.on_change)
 			widget->data.text_input.on_change();
-		if (ctx)
-			bgtk_draw_widgets(ctx);
 		return 1;
 	}
 
@@ -267,8 +257,6 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 		text_input_ensure_cursor_visible(ctx, widget);
 		if (widget->data.text_input.on_change)
 			widget->data.text_input.on_change();
-		if (ctx)
-			bgtk_draw_widgets(ctx);
 		return 1;
 	}
 	if (ev.code == KEY_DELETE && text && cursor < len) {
@@ -276,36 +264,26 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 		text_input_ensure_cursor_visible(ctx, widget);
 		if (widget->data.text_input.on_change)
 			widget->data.text_input.on_change();
-		if (ctx)
-			bgtk_draw_widgets(ctx);
 		return 1;
 	}
 	if (ev.code == KEY_LEFT && cursor > 0) {
 		widget->data.text_input.cursor_pos--;
 		text_input_ensure_cursor_visible(ctx, widget);
-		if (ctx)
-			bgtk_draw_widgets(ctx);
 		return 1;
 	}
 	if (ev.code == KEY_RIGHT && cursor < len) {
 		widget->data.text_input.cursor_pos++;
 		text_input_ensure_cursor_visible(ctx, widget);
-		if (ctx)
-			bgtk_draw_widgets(ctx);
 		return 1;
 	}
 	if (ev.code == KEY_HOME) {
 		widget->data.text_input.cursor_pos = 0;
 		text_input_ensure_cursor_visible(ctx, widget);
-		if (ctx)
-			bgtk_draw_widgets(ctx);
 		return 1;
 	}
 	if (ev.code == KEY_END) {
 		widget->data.text_input.cursor_pos = (uint32_t)len;
 		text_input_ensure_cursor_visible(ctx, widget);
-		if (ctx)
-			bgtk_draw_widgets(ctx);
 		return 1;
 	}
 
@@ -313,7 +291,7 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 }
 
 /* Clamp scroll_y into [0, max]; return 1 if value changed. */
-static int scrollable_nudge(struct BGTK_Widget *widget, int delta)
+static int scrollable_nudge_y(struct BGTK_Widget *widget, int delta)
 {
 	int old = widget->data.scrollable.scroll_y;
 	int max_y = widget->data.scrollable.content_height - widget->h;
@@ -326,6 +304,22 @@ static int scrollable_nudge(struct BGTK_Widget *widget, int delta)
 	if (widget->data.scrollable.scroll_y > max_y)
 		widget->data.scrollable.scroll_y = max_y;
 	return widget->data.scrollable.scroll_y != old;
+}
+
+/* Clamp scroll_x into [0, max]; return 1 if value changed. */
+static int scrollable_nudge_x(struct BGTK_Widget *widget, int delta)
+{
+	int old = widget->data.scrollable.scroll_x;
+	int max_x = widget->data.scrollable.content_width - widget->w;
+
+	if (max_x < 0)
+		max_x = 0;
+	widget->data.scrollable.scroll_x = old + delta;
+	if (widget->data.scrollable.scroll_x < 0)
+		widget->data.scrollable.scroll_x = 0;
+	if (widget->data.scrollable.scroll_x > max_x)
+		widget->data.scrollable.scroll_x = max_x;
+	return widget->data.scrollable.scroll_x != old;
 }
 
 // Scrollable event handler
@@ -343,24 +337,44 @@ static int scrollable_handle_event(struct BGTK_Widget *widget,
 		int step = 24;
 		int page = widget->h > 40 ? widget->h - 24 : 40;
 		int max_y = widget->data.scrollable.content_height - widget->h;
+		int max_x = widget->data.scrollable.content_width - widget->w;
 		int handled = 0;
+		int shift = widget->ctx &&
+			    (bgtk_mods_from_ctx(widget->ctx) & BGTK_MOD_SHIFT);
 
 		if (max_y < 0)
 			max_y = 0;
+		if (max_x < 0)
+			max_x = 0;
+		/* Shift+arrows / Shift+h/l: horizontal pan when content wider. */
+		if (shift && (ev.code == KEY_LEFT || ev.code == KEY_RIGHT ||
+			      ev.code == KEY_H || ev.code == KEY_L)) {
+			if (ev.code == KEY_LEFT || ev.code == KEY_H)
+				handled = scrollable_nudge_x(widget, -step);
+			else
+				handled = scrollable_nudge_x(widget, step);
+			return handled ? 1 : 0;
+		}
 		if (ev.code == KEY_DOWN || ev.code == KEY_J)
-			handled = scrollable_nudge(widget, step);
+			handled = scrollable_nudge_y(widget, step);
 		else if (ev.code == KEY_UP || ev.code == KEY_K)
-			handled = scrollable_nudge(widget, -step);
+			handled = scrollable_nudge_y(widget, -step);
 		else if (ev.code == KEY_PAGEDOWN || ev.code == KEY_SPACE)
-			handled = scrollable_nudge(widget, page);
+			handled = scrollable_nudge_y(widget, page);
 		else if (ev.code == KEY_PAGEUP)
-			handled = scrollable_nudge(widget, -page);
+			handled = scrollable_nudge_y(widget, -page);
 		else if (ev.code == KEY_HOME) {
-			handled = (widget->data.scrollable.scroll_y != 0);
+			handled = (widget->data.scrollable.scroll_y != 0) ||
+				  (widget->data.scrollable.scroll_x != 0);
 			widget->data.scrollable.scroll_y = 0;
+			widget->data.scrollable.scroll_x = 0;
 		} else if (ev.code == KEY_END) {
 			handled = (widget->data.scrollable.scroll_y != max_y);
 			widget->data.scrollable.scroll_y = max_y;
+		} else if (ev.code == KEY_LEFT) {
+			handled = scrollable_nudge_x(widget, -step);
+		} else if (ev.code == KEY_RIGHT) {
+			handled = scrollable_nudge_x(widget, step);
 		} else {
 			/* Forward other keys to children (e.g. link activation). */
 			for (int i = 0; i < widget->data.scrollable.widget_count;
@@ -377,13 +391,27 @@ static int scrollable_handle_event(struct BGTK_Widget *widget,
 		return handled ? 1 : 0;
 	}
 
-	/* Wheel: allow if pointer is over us (BGCE attaches cursor x,y). */
-	if (ev.type == EV_REL && ev.code == REL_WHEEL) {
+	/*
+	 * Wheel: over us (BGCE attaches cursor x,y).
+	 * Plain REL_WHEEL → vertical; Shift+wheel or REL_HWHEEL → horizontal.
+	 */
+	if (ev.type == EV_REL &&
+	    (ev.code == REL_WHEEL || ev.code == REL_HWHEEL)) {
+		int shift = widget->ctx &&
+			    (bgtk_mods_from_ctx(widget->ctx) & BGTK_MOD_SHIFT);
+		int horiz = (ev.code == REL_HWHEEL) ||
+			    (ev.code == REL_WHEEL && shift);
+
 		if (!in_bounds)
 			return 0;
-		/* value > 0 = scroll up = content moves down (smaller scroll_y) */
-		if (!scrollable_nudge(widget, -(ev.value * 32)))
-			return 0;
+		/* value > 0 = scroll up / left-ish → smaller offset */
+		if (horiz) {
+			if (!scrollable_nudge_x(widget, -(ev.value * 32)))
+				return 0;
+		} else {
+			if (!scrollable_nudge_y(widget, -(ev.value * 32)))
+				return 0;
+		}
 		return 1;
 	}
 
@@ -393,7 +421,7 @@ static int scrollable_handle_event(struct BGTK_Widget *widget,
 	/* Pass pointer events to children in content coordinates. */
 	{
 		struct InputEvent cev = ev;
-		cev.x = ev.x - sx;
+		cev.x = ev.x - sx + widget->data.scrollable.scroll_x;
 		cev.y = ev.y - sy + widget->data.scrollable.scroll_y;
 
 		for (int i = 0; i < widget->data.scrollable.widget_count; i++) {
@@ -734,12 +762,18 @@ struct BGTK_Widget *bgtk_scrollable(struct BGTK_Context *ctx,
 	// Copy the input widgets into the scrollable container
 	widget->data.scrollable.widget_count = widget_count;
 	widget->data.scrollable.scroll_y = 0;
+	widget->data.scrollable.scroll_x = 0;
 	widget->data.scrollable.content_height = 0;
+	widget->data.scrollable.content_width = 0;
 	for (int i = 0; i < widget_count; i++) {
 		widget->data.scrollable.items[i] = items[i];
 		bgtk_widget_set_parent(items[i], widget);
 		widget->data.scrollable.content_height += items[i]->h + 5 + 2 * widget->margin;	// 5px spacing + margin
+		if (items[i]->w > widget->data.scrollable.content_width)
+			widget->data.scrollable.content_width = items[i]->w;
 	}
+	if (widget->data.scrollable.content_width < 1)
+		widget->data.scrollable.content_width = 1;
 
 	/* Offscreen cache (filled on first draw; busted when items change). */
 	widget->data.scrollable.tmp = NULL;

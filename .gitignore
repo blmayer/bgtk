@@ -18,3 +18,4 @@ test/screenshots/*.png
 .DS_Store
 .tai
 .codebase-memory/
+/test_labyrinth

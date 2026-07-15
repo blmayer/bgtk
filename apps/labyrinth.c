@@ -10,13 +10,13 @@
  *      ↓
  *   [decode] charset (placeholder: assume UTF-8)
  *      ↓
- *   [css]    collect <style>/link stylesheets → cascade (placeholder)
+ *   [css]    <style> + style="" → cascade (css.c)     ← v1 implemented
  *      ↓
- *   [html]   bgtk_html_parse_inline → widget tree   ← implemented
+ *   [html]   bgtk_html_parse_inline → widget tree     ← implemented
  *      ↓
- *   [style]  apply computed styles to widgets       (placeholder)
+ *   [style]  applied during HTML convert via css.c
  *      ↓
- *   [js]     run scripts / bind events              (placeholder)
+ *   [js]     run scripts / bind events                (placeholder)
  *      ↓
  *   [wire]   <a href> → navigate()                  (placeholder)
  *
@@ -124,14 +124,14 @@ static void labyrinth_scan_pipeline(const char *html)
 		 last_style_blocks, last_script_blocks, last_anchor_count);
 }
 
-/* Apply CSS cascade to the widget tree (identity for now). */
+/* CSS is applied inside bgtk_html_parse_inline (css.c). Hook kept for
+ * future document-level re-style / linked stylesheets. */
 static void labyrinth_css_apply(struct BGTK_Widget *page,
 				const char *html)
 {
 	(void)page;
 	(void)html;
-	/* TODO: parse stylesheets, match selectors, set colors/fonts/spacing
-	 * on BGTK widgets (or a parallel style map keyed by widget). */
+	/* TODO: fetch <link rel=stylesheet>, media queries, recomputed layout. */
 }
 
 /* Boot scripts for the document (no-op). */
@@ -296,7 +296,8 @@ static const char *HOME_HTML =
 	"<!DOCTYPE html><html><head><title>Labyrinth</title></head><body>"
 	"<h1>Labyrinth</h1>"
 	"<p>A simple web browser for BGTK. Pages are HTML → widgets "
-	"(no CSS or JavaScript yet).</p>"
+	"with basic CSS (color, background, font-weight, text-align, …). "
+	"JavaScript is not run yet.</p>"
 	"<h2>Try</h2>"
 	"<ul>"
 	"<li>Type a URL in the bar below and press Enter</li>"
@@ -310,7 +311,7 @@ static const char *HOME_HTML =
 	"<p><b>CSS</b> stylesheets and cascade · <b>JS</b> scripts and events · "
 	"clickable <code>&lt;a href&gt;</code>.</p>"
 	"<p>HTTPS uses <b>libtls</b>. Keys: Ctrl+L URL · Ctrl+R reload · b back · "
-	"H home · j/k scroll · Esc / q quit.</p>"
+	"H home · j/k scroll · <b>Shift+wheel</b> horizontal scroll · Esc / q quit.</p>"
 	"</body></html>";
 
 static const char *BLANK_HTML =
@@ -1023,7 +1024,10 @@ int main(void)
 
 			if (ev->type == EV_ABS)
 				break;
-			if (ev->type == EV_REL && ev->code != REL_WHEEL)
+			/* Wheel / h-wheel (and Shift+wheel → horizontal in
+			 * scrollable). Drop other EV_REL (pointer deltas). */
+			if (ev->type == EV_REL && ev->code != REL_WHEEL &&
+			    ev->code != REL_HWHEEL)
 				break;
 
 			bgtk_update_modifiers(ctx, *ev);

@@ -19,6 +19,7 @@ works on Linux and macOS without BGCE.
 ├── drawing.c         - Drawing and rendering functions
 ├── widgets.c         - Widget implementations
 ├── html.c / html.h   - HTML → widget tree parser (libxml2)
+├── css.c / css.h     - Minimal CSS (stylesheets + inline → widget colors)
 ├── internal.h        - Internal headers and definitions
 ├── Makefile          - Build configuration (real apps + headless/test targets)
 ├── README.md         - Project overview and mock testing examples
@@ -81,7 +82,11 @@ works on Linux and macOS without BGCE.
 - Returns a frame widget; assign to `ctx->root_widget` before drawing
 - **Labyrinth** (`apps/labyrinth.c`) is the HTML browser shell (gemini-like
   chrome: content + bottom URL bar). Fetches `https://` via **libtls** (same
-  stack as gemini_browser). CSS/JS/`<a href>` click remain planned hooks.
+  stack as gemini_browser). CSS v1 lives in `css.c` / `css.h` (applied during
+  `bgtk_html_parse*`). JS / clickable `<a href>` remain planned hooks.
+- **CSS** (`css.c`): selectors `*`, type, `.class`, `#id`; properties color,
+  background-color, font-weight, font-style, text-align, margin, padding,
+  display:none. Inline `style=""` wins over stylesheets.
 
 ### 6. Apps
 - Real BGCE apps live under `apps/` (terminal, gemini_browser, labyrinth, launcher, image_viewer, sys_status, test_app)

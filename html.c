@@ -24,6 +24,7 @@
  */
 
 #include "html.h"
+#include "css.h"
 #include "internal.h"
 
 #include <ctype.h>
@@ -32,6 +33,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Active stylesheet while converting a document (NULL if none). */
+static struct BGTK_CSS *g_html_css;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -111,6 +115,56 @@ static int is_inline_tag(const char *tag)
 
 static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
 					xmlNode *node, int avail_w);
+
+/* Apply g_html_css + inline style to widget; return 1 if display:none. */
+static int html_style_widget(xmlNode *node, struct BGTK_Widget *w)
+{
+	xmlChar *id = NULL, *cls = NULL, *sty = NULL;
+	const char *tag = NULL;
+	int hide;
+
+	if (!node || node->type != XML_ELEMENT_NODE)
+		return 0;
+	tag = (const char *)node->name;
+	id = xmlGetProp(node, (const xmlChar *)"id");
+	cls = xmlGetProp(node, (const xmlChar *)"class");
+	sty = xmlGetProp(node, (const xmlChar *)"style");
+	hide = bgtk_css_apply(g_html_css, w, tag,
+			      id ? (const char *)id : NULL,
+			      cls ? (const char *)cls : NULL,
+			      sty ? (const char *)sty : NULL);
+	if (id)
+		xmlFree(id);
+	if (cls)
+		xmlFree(cls);
+	if (sty)
+		xmlFree(sty);
+	return hide;
+}
+
+/* Collect <style>…</style> text under root into css. */
+static void html_collect_styles(xmlNode *node, struct BGTK_CSS *css)
+{
+	if (!node || !css)
+		return;
+	for (xmlNode *c = node; c; c = c->next) {
+		if (c->type == XML_ELEMENT_NODE) {
+			const char *tag = (const char *)c->name;
+			if (strcmp(tag, "style") == 0) {
+				xmlChar *txt = xmlNodeGetContent(c);
+				if (txt) {
+					bgtk_css_add_sheet(css, (const char *)txt);
+					xmlFree(txt);
+				}
+				continue;
+			}
+			if (strcmp(tag, "script") == 0)
+				continue;
+			if (c->children)
+				html_collect_styles(c->children, css);
+		}
+	}
+}
 
 /* ------------------------------------------------------------------ */
 /* Inline text helpers                                                 */
@@ -762,6 +816,8 @@ static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
 static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
 					xmlNode *node, int avail_w)
 {
+	struct BGTK_Widget *w = NULL;
+
 	if (!node)
 		return NULL;
 
@@ -774,30 +830,50 @@ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
 
 	const char *tag = (const char *)node->name;
 
-	if (strcmp(tag, "h1") == 0) return convert_heading(ctx, node, 1);
-	if (strcmp(tag, "h2") == 0) return convert_heading(ctx, node, 2);
-	if (strcmp(tag, "h3") == 0) return convert_heading(ctx, node, 3);
-	if (strcmp(tag, "h4") == 0) return convert_heading(ctx, node, 3);
-	if (strcmp(tag, "h5") == 0) return convert_heading(ctx, node, 3);
-	if (strcmp(tag, "h6") == 0) return convert_heading(ctx, node, 3);
+	/* Non-rendered / non-widget tags */
+	if (strcmp(tag, "style") == 0 || strcmp(tag, "script") == 0 ||
+	    strcmp(tag, "head") == 0 || strcmp(tag, "meta") == 0 ||
+	    strcmp(tag, "link") == 0 || strcmp(tag, "title") == 0)
+		return NULL;
 
-	if (strcmp(tag, "p") == 0)      return convert_p(ctx, node);
-	if (strcmp(tag, "b") == 0)      return convert_bold(ctx, node);
-	if (strcmp(tag, "strong") == 0) return convert_bold(ctx, node);
-	if (strcmp(tag, "i") == 0)      return convert_italic(ctx, node);
-	if (strcmp(tag, "em") == 0)     return convert_italic(ctx, node);
-	if (strcmp(tag, "a") == 0)      return convert_a(ctx, node);
-	if (strcmp(tag, "span") == 0)   return convert_italic(ctx, node); // plain text
-	if (strcmp(tag, "button") == 0) return convert_button(ctx, node);
-	if (strcmp(tag, "input") == 0)  return convert_input(ctx, node);
-	if (strcmp(tag, "select") == 0) return convert_select(ctx, node);
-	if (strcmp(tag, "img") == 0)    return convert_img(ctx, node);
-	if (strcmp(tag, "ul") == 0)     return convert_list(ctx, node, avail_w, 0);
-	if (strcmp(tag, "ol") == 0)     return convert_list(ctx, node, avail_w, 1);
-	if (strcmp(tag, "table") == 0)  return convert_table(ctx, node, avail_w);
+	/* display:none before building (cheap check via empty widget). */
+	if (html_style_widget(node, NULL))
+		return NULL;
 
-	// Generic containers: div, section, article, body, html, header, nav, footer, form, ...
-	return convert_container(ctx, node, avail_w);
+	if (strcmp(tag, "h1") == 0) w = convert_heading(ctx, node, 1);
+	else if (strcmp(tag, "h2") == 0) w = convert_heading(ctx, node, 2);
+	else if (strcmp(tag, "h3") == 0) w = convert_heading(ctx, node, 3);
+	else if (strcmp(tag, "h4") == 0) w = convert_heading(ctx, node, 3);
+	else if (strcmp(tag, "h5") == 0) w = convert_heading(ctx, node, 3);
+	else if (strcmp(tag, "h6") == 0) w = convert_heading(ctx, node, 3);
+	else if (strcmp(tag, "p") == 0)      w = convert_p(ctx, node);
+	else if (strcmp(tag, "b") == 0)      w = convert_bold(ctx, node);
+	else if (strcmp(tag, "strong") == 0) w = convert_bold(ctx, node);
+	else if (strcmp(tag, "i") == 0)      w = convert_italic(ctx, node);
+	else if (strcmp(tag, "em") == 0)     w = convert_italic(ctx, node);
+	else if (strcmp(tag, "a") == 0)      w = convert_a(ctx, node);
+	else if (strcmp(tag, "span") == 0) {
+		/* Plain text span (not italic). */
+		char *txt = collect_text(node);
+		if (txt && *txt)
+			w = bgtk_text(ctx, txt, (BGTK_Options){0});
+		free(txt);
+	} else if (strcmp(tag, "button") == 0) w = convert_button(ctx, node);
+	else if (strcmp(tag, "input") == 0)  w = convert_input(ctx, node);
+	else if (strcmp(tag, "select") == 0) w = convert_select(ctx, node);
+	else if (strcmp(tag, "img") == 0)    w = convert_img(ctx, node);
+	else if (strcmp(tag, "ul") == 0)     w = convert_list(ctx, node, avail_w, 0);
+	else if (strcmp(tag, "ol") == 0)     w = convert_list(ctx, node, avail_w, 1);
+	else if (strcmp(tag, "table") == 0)  w = convert_table(ctx, node, avail_w);
+	else
+		/* Generic containers: div, section, article, body, … */
+		w = convert_container(ctx, node, avail_w);
+
+	if (w && html_style_widget(node, w)) {
+		/* display:none after build (should be rare — checked above). */
+		w = NULL;
+	}
+	return w;
 }
 
 /* ------------------------------------------------------------------ */
@@ -807,15 +883,25 @@ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
 static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
 				     int width, int height)
 {
+	struct BGTK_CSS *css;
+	struct BGTK_Widget *content;
+	xmlNode *root, *body = NULL;
+
 	if (!doc)
 		return NULL;
 
-	xmlNode *root = xmlDocGetRootElement(doc);
-	if (!root)
+	root = xmlDocGetRootElement(doc);
+	if (!root) {
+		xmlFreeDoc(doc);
 		return NULL;
+	}
+
+	css = bgtk_css_create();
+	if (css)
+		html_collect_styles(root, css);
+	g_html_css = css;
 
 	// Find <body> if present, otherwise use the root element.
-	xmlNode *body = NULL;
 	for (xmlNode *c = root->children; c; c = c->next) {
 		if (c->type == XML_ELEMENT_NODE &&
 		    strcmp((const char *)c->name, "body") == 0) {
@@ -826,7 +912,14 @@ static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
 	if (!body)
 		body = root;
 
-	struct BGTK_Widget *content = convert_container(ctx, body, width);
+	/* convert_node applies body CSS (background, etc.). */
+	content = convert_node(ctx, body, width);
+	if (!content)
+		content = convert_container(ctx, body, width);
+
+	g_html_css = NULL;
+	bgtk_css_destroy(css);
+
 	if (!content) {
 		xmlFreeDoc(doc);
 		return NULL;
@@ -848,11 +941,18 @@ static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
 		}
 		scroll->w = width;
 		scroll->h = height;
+		/* Propagate body background to the page surface. */
+		if (content->color_bg) {
+			scroll->color_bg = content->color_bg;
+		}
 
 		struct BGTK_Widget *frame = bgtk_frame(ctx, scroll, width, height,
 			(BGTK_Options){.padding = 0, .margin = 0});
-		if (frame)
+		if (frame) {
 			frame->data.frame.border_w = 0;
+			if (content->color_bg)
+				frame->color_bg = content->color_bg;
+		}
 		xmlFreeDoc(doc);
 		return frame ? frame : scroll;
 	}
