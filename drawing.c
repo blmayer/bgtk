@@ -1324,15 +1324,14 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	uint32_t border;
 	int bw;
 
-	/* Per-widget border (-1 = theme; 0 = borderless / minimal field). */
+	/* Per-widget border (-1 = theme; 0 = borderless / minimal field).
+	 * Same thickness focused and unfocused — a thicker focus ring shrank
+	 * the content box and made the text sit lower when focused. */
 	bw = w->data.text_input.border_w >= 0
 		     ? w->data.text_input.border_w
 		     : (int)ctx->theme.input_border_size;
 	if (bw < 0)
 		bw = 0;
-	/* Focused fields get a thicker ring only when a border is drawn. */
-	if (focused && bw > 0 && bw < 3)
-		bw = 3;
 	if (bw * 2 > w->w - 2 * w->margin)
 		bw = (w->w - 2 * w->margin) / 2;
 	if (bw * 2 > w->h - 2 * w->margin)
@@ -1346,6 +1345,7 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 						 : 0xFF0A0A0A;
 	else
 		field_bg = focused ? focus_bg : input_bg;
+	/* Focus uses color, not thickness. */
 	border = focused ? focus : 0xFF888888;
 
 	draw_rect(ctx, pixels, w->x + w->margin, w->y + w->margin,

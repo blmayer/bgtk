@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -478,6 +479,7 @@ static int hist_back(char *out, size_t n)
 /* Built-in pages & fetch                                             */
 /* ------------------------------------------------------------------ */
 
+/* Pure ASCII so any locale/charset build still embeds correctly. */
 static const char *HOME_HTML =
 	"<!DOCTYPE html><html><head><title>Labyrinth</title></head><body>"
 	"<h1>Labyrinth</h1>"
@@ -497,10 +499,10 @@ static const char *HOME_HTML =
 	"</table>"
 	"<h2>URLs</h2>"
 	"<ul>"
-	"<li><code>about:home</code> — this page</li>"
-	"<li><code>about:blank</code> — empty document</li>"
-	"<li><code>file:///path/to/page.html</code> — local file</li>"
-	"<li><code>http://…</code> / <code>https://…</code> — web (libtls)</li>"
+	"<li><code>about:home</code> - this page</li>"
+	"<li><code>about:blank</code> - empty document</li>"
+	"<li><code>file:///path/to/page.html</code> - local file</li>"
+	"<li><code>http://</code> / <code>https://</code> - web (libtls)</li>"
 	"</ul>"
 	"<p>Try "
 	"<a href=\"about:blank\">about:blank</a> · "
@@ -509,6 +511,33 @@ static const char *HOME_HTML =
 
 static const char *BLANK_HTML =
 	"<!DOCTYPE html><html><body></body></html>";
+
+/* Normalize about: URLs: trim space, accept about://home, trailing / #. */
+static int about_page(const char *url, const char *page)
+{
+	const char *p;
+	size_t n;
+
+	if (!url || !page)
+		return 0;
+	while (*url == ' ' || *url == '\t')
+		url++;
+	if (strncasecmp(url, "about:", 6) != 0)
+		return 0;
+	p = url + 6;
+	if (p[0] == '/' && p[1] == '/')
+		p += 2;
+	while (*p == '/')
+		p++;
+	n = strlen(page);
+	if (strncasecmp(p, page, n) != 0)
+		return 0;
+	p += n;
+	if (*p == '/' || *p == '#' || *p == '?' || *p == '\0' ||
+	    *p == ' ' || *p == '\t')
+		return 1;
+	return 0;
+}
 
 static char *read_file_all(const char *path, size_t *out_len)
 {
@@ -902,18 +931,37 @@ static char *wrap_http_error(int st, char *body)
 	return wrap;
 }
 
+/* Builtin pages: pointer to static HTML (not malloc). NULL if not builtin. */
+static const char *builtin_document(const char *url)
+{
+	if (about_page(url, "home") || (url && !strcmp(url, "about:")))
+		return HOME_HTML;
+	if (about_page(url, "blank"))
+		return BLANK_HTML;
+	return NULL;
+}
+
 static char *fetch_document(const char *url, char *err, size_t errlen)
 {
+	const char *builtin;
+
 	if (!url || !url[0]) {
 		if (err)
 			snprintf(err, errlen, "empty URL");
 		return NULL;
 	}
-	if (!strcmp(url, "about:home") || !strcmp(url, "about://home"))
-		return strdup(HOME_HTML);
-	if (!strcmp(url, "about:blank") || !strcmp(url, "about://blank"))
-		return strdup(BLANK_HTML);
-	if (!strncmp(url, "about:", 6)) {
+	/* Skip leading spaces (address bar paste). */
+	while (*url == ' ' || *url == '\t')
+		url++;
+	builtin = builtin_document(url);
+	if (builtin) {
+		char *copy = strdup(builtin);
+
+		if (!copy && err)
+			snprintf(err, errlen, "out of memory");
+		return copy;
+	}
+	if (!strncasecmp(url, "about:", 6)) {
 		if (err)
 			snprintf(err, errlen, "unknown about: page");
 		return NULL;
@@ -1019,22 +1067,38 @@ static void load_url(const char *url)
 {
 	char err[256];
 	char *html;
+	const char *builtin;
 
 	if (!url || !url[0])
 		return;
+	while (*url == ' ' || *url == '\t')
+		url++;
 	snprintf(current_url, sizeof(current_url), "%s", url);
 	set_addr_bar(current_url);
 	bgtk_log("labyrinth load %s", current_url);
 
-	html = fetch_document(current_url, err, sizeof(err));
-	if (!html) {
-		show_message_page("Load failed", err[0] ? err : "unknown error");
-		if (ctx)
-			bgtk_draw_widgets(ctx);
-		return;
+	/*
+	 * Builtins never go through fetch/strdup failure as a hard error —
+	 * pass the static string so about:home always paints the shortcuts.
+	 */
+	builtin = builtin_document(current_url);
+	if (builtin) {
+		load_html_string(builtin);
+	} else {
+		err[0] = '\0';
+		html = fetch_document(current_url, err, sizeof(err));
+		if (!html) {
+			bgtk_log("labyrinth load failed: %s",
+				 err[0] ? err : "unknown error");
+			show_message_page("Load failed",
+					  err[0] ? err : "unknown error");
+			if (ctx)
+				bgtk_draw_widgets(ctx);
+			return;
+		}
+		load_html_string(html);
+		free(html);
 	}
-	load_html_string(html);
-	free(html);
 	if (ctx) {
 		/* Prefer focusing content so j/k scroll the page. */
 		if (content_host && content_host->data.frame.child) {
@@ -1286,8 +1350,15 @@ int main(void)
 	ctx->root_widget = root_frame;
 	labyrinth_layout_chrome();
 
-	/* Home + shortcut list; start ready to type a URL. */
-	load_url(current_url);
+	/*
+	 * Always paint builtin home first (shortcuts table). Do not depend on
+	 * fetch/network/strdup — Load failed at startup was a user-facing bug
+	 * when about: matching or allocation failed.
+	 */
+	snprintf(current_url, sizeof(current_url), "about:home");
+	set_addr_bar(current_url);
+	labyrinth_layout_chrome();
+	load_html_string(HOME_HTML);
 	focus_addr_bar();
 	bgtk_draw_widgets(ctx);
 

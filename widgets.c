@@ -43,17 +43,14 @@ void bgtk_widget_set_parent(struct BGTK_Widget *child,
 		child->parent = parent;
 }
 
-// Default event handler for widgets
+// Default event handler — labels/text/images do not take keyboard focus.
+// (Focus-on-click here stole typing from settings form fields.)
 static int
 default_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 {
-	if (bgtk_widget_hit(widget, ev.x, ev.y)) {
-		if (ev.code == BTN_LEFT && ev.value == 1) {
-			bgtk_set_focus(widget->ctx, widget);
-			return 1;
-		}
-	}
-	return 0;		// Event not handled by this widget
+	(void)widget;
+	(void)ev;
+	return 0;
 }
 
 // Button event handler
@@ -439,10 +436,13 @@ static int scrollable_handle_event(struct BGTK_Widget *widget,
 		}
 	}
 
-	if (ev.type == EV_KEY && ev.code == BTN_LEFT && ev.value == 1) {
-		bgtk_set_focus(widget->ctx, widget);
+	/*
+	 * Do not steal keyboard focus on empty clicks. Focusing the scrollable
+	 * made subsequent typing vanish (scrollable only handles j/k/page);
+	 * settings forms need the text field to keep focus.
+	 */
+	if (ev.type == EV_KEY && ev.code == BTN_LEFT && ev.value == 1)
 		return 1;
-	}
 
 	return 0;
 }
@@ -480,11 +480,9 @@ static int frame_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 			return 1;
 		}
 	}
-	// If clicked inside the frame but not on the child, focus the frame.
-	if (ev.code == BTN_LEFT && ev.value == 1) {
-		bgtk_set_focus(widget->ctx, widget);
+	/* Empty click inside frame: consume, do not steal focus from fields. */
+	if (ev.code == BTN_LEFT && ev.value == 1)
 		return 1;
-	}
 
 	return 0;		// Event not handled
 }
@@ -832,10 +830,10 @@ list_widget_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
 		break;
 	}
 
-	if (ev.code == BTN_LEFT && ev.value == 1) {
-		bgtk_set_focus(widget->ctx, widget);
+	/* Consume empty clicks without focusing the list (keeps text-field
+	 * focus for typing in settings forms). */
+	if (ev.code == BTN_LEFT && ev.value == 1)
 		return 1;
-	}
 
 	return 0;		// Event not handled
 }

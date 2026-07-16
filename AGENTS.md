@@ -41,7 +41,7 @@ works on Linux and macOS without BGCE.
 │   ├── test_labyrinth.c
 │   ├── server_client.sh
 │   └── screenshots/  - PNG output from headless tests (gitignored)
-└── www/              - Sample HTML for html tests
+└── www/              - Site snapshot (index.html + bgtk.tar.gz source tarball)
 ```
 
 ## Key Components
@@ -282,6 +282,25 @@ etc.) still need BGCE on Linux.
 
 ### HTML
 - `bgtk_html_parse()`, `bgtk_html_parse_inline()`
+
+## Source snapshot (`www/bgtk.tar.gz`)
+
+When the user asks to refresh the site tarball, commit, or push a release
+snapshot, **always** rebuild with `git archive` and a `bgtk/` prefix (so
+extract yields `bgtk/...`, matching README download instructions):
+
+```bash
+git archive --worktree-attributes --format=tar.gz --prefix=bgtk/ \
+	-o www/bgtk.tar.gz HEAD
+```
+
+Notes:
+- Prefer this over hand-rolled `tar` (includes only tracked files; respects
+  `.gitattributes` `export-ignore`).
+- `www/bgtk.tar.gz` is listed as `export-ignore` so the archive does not nest
+  itself.
+- Rebuild **after** the code commit is on `HEAD` (or include both in order:
+  commit code → archive → commit tarball), then push.
 
 This is a toolkit for the BGCE display server. It works by directly writing to
 a graphical buffer; this library lets developers create user interfaces easily.
