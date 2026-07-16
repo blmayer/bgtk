@@ -326,9 +326,10 @@ int main(void)
 	fds[0].fd = conn_fd;
 	fds[0].events = POLLIN;
 	fds[1].fd = master_fd;
-	fds[1].events = POLLIN;
+	fds[1].events = POLLIN | POLLHUP | POLLERR;
 
 	int quit = 0;
+	int pty_dead = 0;
 
 	while (!quit) {
 		int ret = poll(fds, 2, -1);
@@ -339,33 +340,53 @@ int main(void)
 			break;
 		}
 
-		if (fds[1].revents & POLLIN) {
-			char buf[4096];
-			ssize_t n = read(master_fd, buf, sizeof(buf));
-			if (n > 0) {
-				term_feed(ts, buf, (int)n);
-				term_render(ts, ctx, img->data.image.pixels,
-					    inner_w, inner_h);
-				bgtk_draw_widgets(ctx);
-			} else if (n == 0 ||
-				   (n < 0 && errno != EAGAIN && errno != EINTR)) {
-				if (n < 0)
-					bgtk_log_errno("PTY read");
-				else
-					bgtk_log("PTY EOF (shell exited?)");
-				quit = 1;
-			}
-		}
-		if (fds[1].revents & (POLLHUP | POLLERR)) {
-			bgtk_log("PTY hangup/error revents=0x%x", fds[1].revents);
+		/*
+		 * PTY: drain all available bytes once, then a single present.
+		 * Drawing per 4K chunk floods BGCE's DRAW queue (subprocess
+		 * dumps / shell exit noise) and can stall the compositor.
+		 * POLLHUP/EIO means the shell (or last session) closed.
+		 */
+		if (master_fd >= 0 &&
+		    (fds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+			int got = 0;
+			int dead = 0;
+
+			if (fds[1].revents & (POLLHUP | POLLERR))
+				bgtk_log("PTY hangup/error revents=0x%x",
+					 fds[1].revents);
+
 			for (;;) {
 				char buf[4096];
 				ssize_t n = read(master_fd, buf, sizeof(buf));
-				if (n <= 0)
+
+				if (n > 0) {
+					term_feed(ts, buf, (int)n);
+					got = 1;
+					continue;
+				}
+				if (n == 0) {
+					bgtk_log("PTY EOF (shell exited)");
+					dead = 1;
 					break;
-				term_feed(ts, buf, (int)n);
+				}
+				if (errno == EAGAIN || errno == EWOULDBLOCK)
+					break;
+				if (errno == EINTR)
+					continue;
+				/* EIO: slave closed after child exit. */
+				bgtk_log_errno("PTY read");
+				dead = 1;
+				break;
 			}
-			quit = 1;
+			if (got && ctx->conn_fd >= 0) {
+				term_render(ts, ctx, img->data.image.pixels,
+					    inner_w, inner_h);
+				bgtk_draw_widgets(ctx);
+			}
+			if (dead) {
+				pty_dead = 1;
+				quit = 1;
+			}
 		}
 
 		if (fds[0].revents & POLLIN) {
@@ -483,14 +504,25 @@ int main(void)
 								     : 'k';
 					bgtk_clear_modifiers(ctx);
 				}
-				if (n > 0) {
-					if (write(master_fd, out, (size_t)n) < 0)
-						bgtk_log_errno("PTY write key");
+				if (n > 0 && master_fd >= 0 && !pty_dead) {
+					if (write(master_fd, out, (size_t)n) < 0) {
+						if (errno == EIO ||
+						    errno == EPIPE) {
+							bgtk_log(
+								"PTY write after "
+								"shell exit — quit");
+							pty_dead = 1;
+							quit = 1;
+						} else if (errno != EAGAIN &&
+							   errno != EINTR)
+							bgtk_log_errno(
+								"PTY write key");
+					}
 				}
 				/* Esc resets sticky mods for the next motion. */
 				if (ev->code == KEY_ESC)
 					bgtk_clear_modifiers(ctx);
-				if (need_draw) {
+				if (need_draw && ctx->conn_fd >= 0) {
 					term_render(ts, ctx,
 						    img->data.image.pixels,
 						    inner_w, inner_h);
@@ -505,9 +537,12 @@ int main(void)
 				 * before compositing so focus dim is clean. */
 				ctx->window_focused = msg.data.focus_event.state;
 				bgtk_clear_modifiers(ctx);
-				term_render(ts, ctx, img->data.image.pixels,
-					    inner_w, inner_h);
-				bgtk_draw_widgets(ctx);
+				if (ctx->conn_fd >= 0) {
+					term_render(ts, ctx,
+						    img->data.image.pixels,
+						    inner_w, inner_h);
+					bgtk_draw_widgets(ctx);
+				}
 				break;
 			case MSG_BUFFER_CHANGE:
 				if (bgtk_handle_buffer_change(
@@ -515,7 +550,8 @@ int main(void)
 					if (terminal_apply_size(ctx, ts, img,
 								frame, master_fd,
 								&inner_w,
-								&inner_h) == 0) {
+								&inner_h) == 0 &&
+					    ctx->conn_fd >= 0) {
 						term_render(ts, ctx,
 							    img->data.image.pixels,
 							    inner_w, inner_h);
@@ -529,8 +565,54 @@ int main(void)
 		}
 	}
 
-	bgtk_log("shutting down master_fd=%d", master_fd);
-	close(master_fd);
+	/*
+	 * Teardown order (matches launcher / BGCE client_thread notes):
+	 * close PTY → reap shell → disconnect BGCE *before* munmap so the
+	 * compositor is not still blitting freed shm (freeze/SEGV on exit 1).
+	 */
+	bgtk_log("shutting down master_fd=%d child=%ld pty_dead=%d", master_fd,
+		 (long)child, pty_dead);
+	ts->pty_fd = -1;
+	if (master_fd >= 0) {
+		close(master_fd);
+		master_fd = -1;
+	}
+	if (child > 0) {
+		int st = 0;
+		pid_t w;
+
+		/* SIGCHLD=IGN may already have reaped (ECHILD). */
+		w = waitpid(child, &st, WNOHANG);
+		if (w == 0) {
+			int i;
+
+			for (i = 0; i < 20; i++) {
+				w = waitpid(child, &st, WNOHANG);
+				if (w != 0)
+					break;
+				usleep(10000);
+			}
+			if (w == 0) {
+				kill(child, SIGTERM);
+				w = waitpid(child, &st, 0);
+			}
+		}
+		if (w == child) {
+			if (WIFEXITED(st))
+				bgtk_log("shell exit status=%d",
+					 WEXITSTATUS(st));
+			else if (WIFSIGNALED(st))
+				bgtk_log("shell killed signal=%d",
+					 WTERMSIG(st));
+		}
+	}
+	if (ctx && ctx->conn_fd >= 0) {
+		int c = ctx->conn_fd;
+
+		ctx->conn_fd = -1;
+		bgce_disconnect(c);
+		bgtk_log("detached from bgce (fd=%d)", c);
+	}
 	term_destroy(ts);
 	bgtk_destroy(ctx);
 	return 0;
