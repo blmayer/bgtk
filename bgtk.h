@@ -208,6 +208,16 @@ struct BGTK_Context {
 	int shift_held;
 	int ctrl_held;
 	int alt_held;
+
+	/*
+	 * Optional HTML resource loading (Labyrinth sets these before parse).
+	 * base_url: page URL for resolving relative img src / href.
+	 * fetch: GET bytes (malloc *out); return 0 on success. Binary-safe.
+	 */
+	const char *base_url;
+	int (*fetch_url)(const char *url, unsigned char **out, size_t *out_len,
+			 void *userdata);
+	void *fetch_userdata;
 };
 
 /* Modifier bitflags for bgtk_key_to_bytes */
@@ -282,6 +292,11 @@ enum BGTK_Widget_Type {
 #define BGTK_FLAG_FILL (BGTK_FLAG_EXPAND_X | BGTK_FLAG_EXPAND_Y)
 /* x/y are parent-relative; abs_x/abs_y hold screen position after layout. */
 #define BGTK_FLAG_RELATIVE (1 << 3)
+/* List: do not pack children; use each child's x,y as offsets in the list box
+ * (HTML tables with colspan/rowspan). Parent w/h must be set by the creator. */
+#define BGTK_FLAG_ABSOLUTE (1 << 4)
+/* CSS margin:auto — center this widget on the parent's cross-axis. */
+#define BGTK_FLAG_MARGIN_AUTO (1 << 5)
 
 /* Text style bits (bgtk_text / BGTK_Options.text_style). Synthetic via FreeType. */
 #define BGTK_TEXT_BOLD   (1 << 0)

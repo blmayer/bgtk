@@ -117,33 +117,90 @@ static int load_cp(FT_Face face, uint32_t cp, int style)
 // Loads an image file into a pixel buffer as 0xAARRGGBB uint32 pixels.
 // stbi gives RGBA bytes; casting those to uint32 is wrong (R/B swap on LE).
 // Returns 0 on success, -1 on failure.
+static int rgba_to_argb(unsigned char *rgba, int w, int h, uint32_t **out_pixels)
+{
+	int n, i;
+	uint32_t *out;
+
+	if (!rgba || w < 1 || h < 1)
+		return -1;
+	n = w * h;
+	out = malloc((size_t)n * sizeof(uint32_t));
+	if (!out)
+		return -1;
+	for (i = 0; i < n; i++) {
+		unsigned char *p = rgba + (size_t)i * 4;
+
+		out[i] = pack_argb(p[3], p[0], p[1], p[2]);
+	}
+	*out_pixels = out;
+	return 0;
+}
+
 int load_image(const char *path, uint32_t **out_pixels, int *out_w, int *out_h)
 {
-	int w, h, channels, n, i;
+	int w, h, channels;
 	unsigned char *rgba;
-	uint32_t *out;
 
 	rgba = stbi_load(path, &w, &h, &channels, 4);
 	if (!rgba) {
 		fprintf(stderr, "Failed to load image: %s\n", path);
 		return -1;
 	}
-	n = w * h;
-	out = malloc((size_t)n * sizeof(uint32_t));
-	if (!out) {
+	if (rgba_to_argb(rgba, w, h, out_pixels) != 0) {
 		stbi_image_free(rgba);
 		return -1;
 	}
-	for (i = 0; i < n; i++) {
-		unsigned char *p = rgba + (size_t)i * 4;
-		/* p[0]=R p[1]=G p[2]=B p[3]=A → same packing as BGCE rgba_to_u32 */
-		out[i] = pack_argb(p[3], p[0], p[1], p[2]);
-	}
 	stbi_image_free(rgba);
-	*out_pixels = out;
 	*out_w = w;
 	*out_h = h;
 	return 0;
+}
+
+int load_image_mem(const unsigned char *data, int len, uint32_t **out_pixels,
+		   int *out_w, int *out_h)
+{
+	int w, h, channels;
+	unsigned char *rgba;
+
+	if (!data || len < 1)
+		return -1;
+	rgba = stbi_load_from_memory(data, len, &w, &h, &channels, 4);
+	if (!rgba)
+		return -1;
+	if (rgba_to_argb(rgba, w, h, out_pixels) != 0) {
+		stbi_image_free(rgba);
+		return -1;
+	}
+	stbi_image_free(rgba);
+	*out_w = w;
+	*out_h = h;
+	return 0;
+}
+
+uint32_t *scale_image_argb(uint32_t *src, int sw, int sh, int dw, int dh)
+{
+	uint32_t *dst;
+	int x, y;
+
+	if (!src || sw < 1 || sh < 1 || dw < 1 || dh < 1)
+		return NULL;
+	if (sw == dw && sh == dh)
+		return src;
+	dst = malloc((size_t)dw * (size_t)dh * sizeof(uint32_t));
+	if (!dst)
+		return NULL;
+	for (y = 0; y < dh; y++) {
+		int sy = y * sh / dh;
+
+		for (x = 0; x < dw; x++) {
+			int sx = x * sw / dw;
+
+			dst[y * dw + x] = src[sy * sw + sx];
+		}
+	}
+	free(src);
+	return dst;
 }
 
 void clear_buffer(struct BGTK_Context *ctx)
@@ -446,6 +503,18 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
 
 		w->data.list_widget.content_width = 0;
 		w->data.list_widget.content_height = 0;
+		/* Absolute lists keep creator-set w/h; still size children. */
+		if (w->flags & BGTK_FLAG_ABSOLUTE) {
+			for (int i = 0; i < n; i++) {
+				struct BGTK_Widget *child =
+					w->data.list_widget.items[i];
+				if (child)
+					calculate_widget_size(ctx, child);
+			}
+			w->data.list_widget.content_width = keep_w;
+			w->data.list_widget.content_height = keep_h;
+			break;
+		}
 		for (int i = 0; i < n; i++) {
 			struct BGTK_Widget *child =
 			    w->data.list_widget.items[i];
@@ -1001,7 +1070,8 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 				    inner_w > child->w)
 					child->w = inner_w;
 				child->x = w->margin + w->padding;
-				if (w->flags & BGTK_FLAG_CENTER) {
+				if ((w->flags & BGTK_FLAG_CENTER) ||
+				    (child->flags & BGTK_FLAG_MARGIN_AUTO)) {
 					child->x =
 						w->margin +
 						(content_width - 2 * w->margin -
@@ -1032,7 +1102,8 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 				    inner_w > child->w)
 					child->w = inner_w;
 				child->x = w->margin + w->padding;
-				if (w->flags & BGTK_FLAG_CENTER) {
+				if ((w->flags & BGTK_FLAG_CENTER) ||
+				    (child->flags & BGTK_FLAG_MARGIN_AUTO)) {
 					child->x =
 						w->margin +
 						(content_width - 2 * w->margin -
@@ -1209,6 +1280,23 @@ static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 	if (w->color_bg)
 		draw_rect(ctx, pixels, w->x, w->y, w->w, w->h, w->color_bg);
 
+	/* Absolute grid (HTML tables): children already have x,y offsets. */
+	if (w->flags & BGTK_FLAG_ABSOLUTE) {
+		for (i = 0; i < n; i++) {
+			struct BGTK_Widget *child =
+				w->data.list_widget.items[i];
+			int rel_x, rel_y;
+
+			if (!child)
+				continue;
+			rel_x = child->x;
+			rel_y = child->y;
+			place_child(w, child, ox, oy, rel_x, rel_y);
+			draw_widget(ctx, child, pixels);
+		}
+		return;
+	}
+
 	bgtk_list_layout_expand(w);
 
 	for (i = 0; i < n; i++) {
@@ -1221,7 +1309,8 @@ static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		if (w->data.list_widget.orientation == BGTK_LIST_VERTICAL) {
 			/* Margin is row gap only — not a left inset. */
 			rel_x = w->padding;
-			if (w->flags & BGTK_FLAG_CENTER)
+			if ((w->flags & BGTK_FLAG_CENTER) ||
+			    (child->flags & BGTK_FLAG_MARGIN_AUTO))
 				rel_x = (w->w - child->w) / 2;
 			rel_y = w->padding + current_y;
 			place_child(w, child, ox, oy, rel_x, rel_y);
@@ -1229,7 +1318,8 @@ static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		} else {
 			rel_x = w->padding + current_x;
 			rel_y = w->padding;
-			if (w->flags & BGTK_FLAG_CENTER)
+			if ((w->flags & BGTK_FLAG_CENTER) ||
+			    (child->flags & BGTK_FLAG_MARGIN_AUTO))
 				rel_y = (w->h - child->h) / 2;
 			place_child(w, child, ox, oy, rel_x, rel_y);
 			current_x += child->w + 2 * w->margin;
@@ -1278,8 +1368,9 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
 		uint32_t border =
 			w->data.frame.border_color ? w->data.frame.border_color
 						  : ctx->theme.frame_border_color;
-		if (!ctx->window_focused) {
-			/* Dedicated unfocused chrome; 0 falls back to bg. */
+		/* Window chrome dims only when using the theme default color.
+		 * Explicit CSS/HTML border_color (table cells) keeps its hue. */
+		if (!ctx->window_focused && !w->data.frame.border_color) {
 			border = ctx->theme.frame_border_unfocused
 					 ? ctx->theme.frame_border_unfocused
 					 : ctx->theme.background;

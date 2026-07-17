@@ -623,12 +623,15 @@ static int parse_http_url(const char *url, int is_https, char *host, size_t host
 	return 0;
 }
 
-static char *http_strip_headers(char *raw, size_t len, int *out_status)
+static char *http_strip_headers(char *raw, size_t len, int *out_status,
+				size_t *out_body_len)
 {
 	char *hdr_end, *payload, *out;
 	size_t blen;
 	int status = 0;
 
+	if (out_body_len)
+		*out_body_len = 0;
 	if (!raw || len < 12) {
 		free(raw);
 		return NULL;
@@ -639,6 +642,8 @@ static char *http_strip_headers(char *raw, size_t len, int *out_status)
 	if (!hdr_end) {
 		if (out_status && !*out_status)
 			*out_status = status;
+		if (out_body_len)
+			*out_body_len = len;
 		return raw;
 	}
 	payload = hdr_end + 4;
@@ -651,11 +656,14 @@ static char *http_strip_headers(char *raw, size_t len, int *out_status)
 	memcpy(out, payload, blen);
 	out[blen] = '\0';
 	free(raw);
+	if (out_body_len)
+		*out_body_len = blen;
 	return out;
 }
 
-/* Minimal HTTP/1.0 GET over plain TCP. */
-static char *http_get(const char *url, int *out_status, char *err, size_t errlen)
+/* Minimal HTTP/1.0 GET over plain TCP. *out_len = body bytes if non-NULL. */
+static char *http_get(const char *url, int *out_status, size_t *out_len,
+		      char *err, size_t errlen)
 {
 	char host[256], path[512], portstr[16];
 	int port = 80, fd = -1;
@@ -702,7 +710,7 @@ static char *http_get(const char *url, int *out_status, char *err, size_t errlen
 
 	snprintf(req, sizeof(req),
 		 "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: Labyrinth/0.1 "
-		 "(BGTK)\r\nAccept: text/html,*/*\r\nConnection: close\r\n\r\n",
+		 "(BGTK)\r\nAccept: */*\r\nConnection: close\r\n\r\n",
 		 path, host);
 	if (write(fd, req, strlen(req)) < 0) {
 		if (err)
@@ -737,7 +745,7 @@ static char *http_get(const char *url, int *out_status, char *err, size_t errlen
 			snprintf(err, errlen, "empty response");
 		return NULL;
 	}
-	return http_strip_headers(body, len, out_status);
+	return http_strip_headers(body, len, out_status, out_len);
 }
 
 /* Retry tls_read/write through WANT_POLLIN/WANT_POLLOUT (same as gemini). */
@@ -793,7 +801,8 @@ static ssize_t lab_tls_write(struct tls *t, const void *buf, size_t len)
 }
 
 /* HTTPS GET via libtls. Returns malloc body or NULL. */
-static char *https_get(const char *url, int *out_status, char *err, size_t errlen)
+static char *https_get(const char *url, int *out_status, size_t *out_len,
+		       char *err, size_t errlen)
 {
 	char host[256], path[512], portstr[16], req[1024];
 	int port = 443;
@@ -857,7 +866,7 @@ static char *https_get(const char *url, int *out_status, char *err, size_t errle
 
 	snprintf(req, sizeof(req),
 		 "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: Labyrinth/0.1 "
-		 "(BGTK)\r\nAccept: text/html,*/*\r\nConnection: close\r\n\r\n",
+		 "(BGTK)\r\nAccept: */*\r\nConnection: close\r\n\r\n",
 		 path, host);
 	if (lab_tls_write(ctx_tls, req, strlen(req)) < 0) {
 		if (err)
@@ -908,7 +917,7 @@ static char *https_get(const char *url, int *out_status, char *err, size_t errle
 			snprintf(err, errlen, "empty HTTPS response");
 		return NULL;
 	}
-	return http_strip_headers(body, len, out_status);
+	return http_strip_headers(body, len, out_status, out_len);
 }
 
 static char *wrap_http_error(int st, char *body)
@@ -980,13 +989,13 @@ static char *fetch_document(const char *url, char *err, size_t errlen)
 	}
 	if (!strncmp(url, "https://", 8)) {
 		int st = 0;
-		char *body = https_get(url, &st, err, errlen);
+		char *body = https_get(url, &st, NULL, err, errlen);
 
 		return wrap_http_error(st, body);
 	}
 	if (!strncmp(url, "http://", 7)) {
 		int st = 0;
-		char *body = http_get(url, &st, err, errlen);
+		char *body = http_get(url, &st, NULL, err, errlen);
 
 		return wrap_http_error(st, body);
 	}
@@ -1032,6 +1041,50 @@ static void show_message_page(const char *title, const char *detail)
 	last_html = strdup(html);
 }
 
+/* Binary-safe fetch for <img src> (and future assets). */
+static int labyrinth_fetch_url(const char *url, unsigned char **out,
+			       size_t *out_len, void *userdata)
+{
+	char err[128];
+	int st = 0;
+	char *body;
+	size_t blen = 0;
+
+	(void)userdata;
+	if (!url || !out || !out_len)
+		return -1;
+	*out = NULL;
+	*out_len = 0;
+	err[0] = '\0';
+	if (!strncmp(url, "file://", 7)) {
+		const char *path = url + 7;
+		size_t n = 0;
+		char *data;
+
+		if (path[0] == '/' && path[1] == '/')
+			path++;
+		data = read_file_all(path, &n);
+		if (!data)
+			return -1;
+		*out = (unsigned char *)data;
+		*out_len = n;
+		return 0;
+	}
+	if (!strncmp(url, "https://", 8))
+		body = https_get(url, &st, &blen, err, sizeof(err));
+	else if (!strncmp(url, "http://", 7))
+		body = http_get(url, &st, &blen, err, sizeof(err));
+	else
+		return -1;
+	if (!body || st >= 400) {
+		free(body);
+		return -1;
+	}
+	*out = (unsigned char *)body;
+	*out_len = blen;
+	return 0;
+}
+
 static void load_html_string(const char *html)
 {
 	struct BGTK_Widget *page, *old;
@@ -1041,6 +1094,13 @@ static void load_html_string(const char *html)
 
 	labyrinth_scan_pipeline(html);
 	labyrinth_layout_chrome();
+
+	/* Resource base + fetch for <img src="…"> relative/remote. */
+	if (ctx) {
+		ctx->base_url = current_url;
+		ctx->fetch_url = labyrinth_fetch_url;
+		ctx->fetch_userdata = NULL;
+	}
 
 	page = bgtk_html_parse_inline(ctx, html, content_w, content_h);
 	if (!page) {

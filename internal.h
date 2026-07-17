@@ -38,5 +38,10 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
 void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
 		 uint32_t* pixels);
 int load_image(const char* path, uint32_t** out_pixels, int* out_w, int* out_h);
+/* Decode image from memory (PNG/JPEG/…). Same pixel format as load_image. */
+int load_image_mem(const unsigned char *data, int len, uint32_t **out_pixels,
+		   int *out_w, int *out_h);
+/* Nearest-neighbour scale ARGB buffer; frees src on success. */
+uint32_t *scale_image_argb(uint32_t *src, int sw, int sh, int dw, int dh);
 
 #endif

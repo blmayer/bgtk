@@ -22,7 +22,14 @@ struct BGTK_CSS_Decl {
 	int font_style;  /* 0 unset, 1 normal, 2 italic */
 	int text_align;  /* -1 unset, 0 left, 1 center, 2 right */
 	int margin;      /* -1 unset */
+	int margin_auto; /* 1 = margin:auto (or left/right auto) */
 	int padding;     /* -1 unset */
+	int width;       /* -1 unset, px */
+	int max_width;   /* -1 unset, px */
+	int border_w;    /* -1 unset */
+	int border_color_set;
+	uint32_t border_color;
+	int table_layout_fixed; /* 1 = table-layout:fixed */
 	int display_none;
 };
 
@@ -119,29 +126,174 @@ uint32_t bgtk_css_parse_color(const char *s)
 	return 0;
 }
 
-static int parse_px(const char *v)
+/* Parse length: 12, 12px, 1.5em, 2rem, 50% (of ref_pct, default 0 → -1). */
+static int parse_len(const char *v, int em_px, int pct_of)
 {
 	char *end;
-	long n;
+	double n;
 
 	if (!v)
 		return -1;
 	skip_ws(&v);
-	n = strtol(v, &end, 10);
+	if (*v == 'a' || *v == 'A') {
+		/* auto */
+		if (strncasecmp(v, "auto", 4) == 0)
+			return -2; /* special: auto */
+	}
+	n = strtod(v, &end);
 	if (end == v)
 		return -1;
 	while (*end && isspace((unsigned char)*end))
 		end++;
-	if (*end == 'p' || *end == 'P')
-		end++;
-	if (*end == 'x' || *end == 'X')
-		end++;
-	(void)end;
+	if (*end == '%') {
+		if (pct_of <= 0)
+			return -1;
+		n = n * pct_of / 100.0;
+	} else if ((*end == 'e' || *end == 'E') &&
+		   (end[1] == 'm' || end[1] == 'M')) {
+		n *= em_px > 0 ? em_px : 14;
+	} else if ((*end == 'r' || *end == 'R') &&
+		   (end[1] == 'e' || end[1] == 'E')) {
+		/* rem */
+		n *= em_px > 0 ? em_px : 14;
+	} else {
+		/* px or unitless */
+		if (*end == 'p' || *end == 'P')
+			end++;
+		/* x optional */
+	}
 	if (n < 0)
 		n = 0;
 	if (n > 10000)
 		n = 10000;
-	return (int)n;
+	return (int)(n + 0.5);
+}
+
+static int parse_px(const char *v)
+{
+	return parse_len(v, 14, 0);
+}
+
+/* Split CSS value into up to 4 whitespace-separated tokens. */
+static int split_tokens(const char *v, char tok[][32], int max_tok)
+{
+	int n = 0;
+	const char *p = v;
+
+	while (*p && n < max_tok) {
+		size_t i = 0;
+
+		skip_ws(&p);
+		if (!*p)
+			break;
+		while (*p && !isspace((unsigned char)*p) && i + 1 < 32)
+			tok[n][i++] = *p++;
+		tok[n][i] = '\0';
+		if (i > 0)
+			n++;
+	}
+	return n;
+}
+
+/* margin: N | V H | T H B | T R B L ; auto → margin_auto. */
+static void parse_margin_shorthand(struct BGTK_CSS_Decl *d, const char *v)
+{
+	char tok[4][32];
+	int n = split_tokens(v, tok, 4);
+	int sides[4] = { -1, -1, -1, -1 }; /* T R B L; -2 = auto */
+	int i, vert = -1, horiz = -1;
+
+	if (n < 1)
+		return;
+	for (i = 0; i < n; i++) {
+		if (strcasecmp(tok[i], "auto") == 0)
+			sides[i] = -2;
+		else
+			sides[i] = parse_len(tok[i], 14, 0);
+	}
+	if (n == 1) {
+		vert = sides[0];
+		horiz = sides[0];
+	} else if (n == 2) {
+		vert = sides[0];
+		horiz = sides[1];
+	} else if (n == 3) {
+		vert = sides[0] >= 0 ? sides[0] : sides[2];
+		if (sides[0] >= 0 && sides[2] >= 0 && sides[2] > vert)
+			vert = sides[2];
+		horiz = sides[1];
+	} else {
+		vert = sides[0] >= 0 ? sides[0] : -1;
+		if (sides[2] >= 0 && (vert < 0 || sides[2] > vert))
+			vert = sides[2];
+		horiz = sides[1] >= 0 ? sides[1] : sides[3];
+		if (sides[1] == -2 || sides[3] == -2)
+			horiz = -2;
+	}
+	if (horiz == -2 || vert == -2 ||
+	    (n == 1 && sides[0] == -2))
+		d->margin_auto = 1;
+	if (vert >= 0)
+		d->margin = vert;
+	else if (horiz >= 0 && !d->margin_auto)
+		d->margin = horiz;
+}
+
+/* padding multi-value: use horizontal (or single) for BGTK's one padding. */
+static void parse_padding_shorthand(struct BGTK_CSS_Decl *d, const char *v)
+{
+	char tok[4][32];
+	int n = split_tokens(v, tok, 4);
+	int px = -1;
+
+	if (n == 1)
+		px = parse_len(tok[0], 14, 0);
+	else if (n == 2)
+		px = parse_len(tok[1], 14, 0); /* horizontal */
+	else if (n >= 3)
+		px = parse_len(tok[1], 14, 0);
+	if (px >= 0)
+		d->padding = px;
+}
+
+/* border / border-width / border-color helpers */
+static void parse_border_shorthand(struct BGTK_CSS_Decl *d, const char *v)
+{
+	char tok[8][32];
+	int n = split_tokens(v, tok, 8);
+	int i;
+
+	for (i = 0; i < n; i++) {
+		int px;
+		uint32_t c;
+
+		if (strcasecmp(tok[i], "none") == 0 ||
+		    strcasecmp(tok[i], "hidden") == 0) {
+			d->border_w = 0;
+			continue;
+		}
+		if (strcasecmp(tok[i], "solid") == 0 ||
+		    strcasecmp(tok[i], "dashed") == 0 ||
+		    strcasecmp(tok[i], "dotted") == 0 ||
+		    strcasecmp(tok[i], "double") == 0)
+			continue;
+		px = parse_len(tok[i], 14, 0);
+		if (px >= 0 && (strchr(tok[i], 'p') || strchr(tok[i], 'e') ||
+				isdigit((unsigned char)tok[i][0]))) {
+			if (px > 16)
+				px = 16;
+			d->border_w = px;
+			continue;
+		}
+		c = bgtk_css_parse_color(tok[i]);
+		if (c) {
+			d->border_color = c;
+			d->border_color_set = 1;
+		}
+	}
+	/* color without width still draws a 1px edge */
+	if (d->border_color_set && d->border_w < 0)
+		d->border_w = 1;
 }
 
 static void decl_clear(struct BGTK_CSS_Decl *d)
@@ -150,6 +302,9 @@ static void decl_clear(struct BGTK_CSS_Decl *d)
 	d->text_align = -1;
 	d->margin = -1;
 	d->padding = -1;
+	d->width = -1;
+	d->max_width = -1;
+	d->border_w = -1;
 }
 
 static void decl_set_prop(struct BGTK_CSS_Decl *d, const char *prop,
@@ -224,13 +379,80 @@ static void decl_set_prop(struct BGTK_CSS_Decl *d, const char *prop,
 		else if (strcasecmp(v, "right") == 0)
 			d->text_align = 2;
 	} else if (strcmp(p, "margin") == 0) {
+		parse_margin_shorthand(d, v);
+	} else if (strcmp(p, "margin-left") == 0 ||
+		   strcmp(p, "margin-right") == 0) {
+		if (strcasecmp(v, "auto") == 0)
+			d->margin_auto = 1;
+		else {
+			int px = parse_px(v);
+
+			if (px >= 0 && (d->margin < 0 || px > d->margin))
+				d->margin = px;
+		}
+	} else if (strcmp(p, "margin-top") == 0 ||
+		   strcmp(p, "margin-bottom") == 0) {
 		int px = parse_px(v);
-		if (px >= 0)
+
+		if (px >= 0 && (d->margin < 0 || px > d->margin))
 			d->margin = px;
 	} else if (strcmp(p, "padding") == 0) {
+		parse_padding_shorthand(d, v);
+	} else if (strcmp(p, "padding-left") == 0 ||
+		   strcmp(p, "padding-right") == 0 ||
+		   strcmp(p, "padding-top") == 0 ||
+		   strcmp(p, "padding-bottom") == 0) {
 		int px = parse_px(v);
-		if (px >= 0)
+
+		if (px >= 0 && (d->padding < 0 || px > d->padding))
 			d->padding = px;
+	} else if (strcmp(p, "border") == 0) {
+		parse_border_shorthand(d, v);
+	} else if (strcmp(p, "border-width") == 0) {
+		int px = parse_px(v);
+
+		if (px >= 0) {
+			if (px > 16)
+				px = 16;
+			d->border_w = px;
+		}
+	} else if (strcmp(p, "border-color") == 0) {
+		uint32_t c = bgtk_css_parse_color(v);
+
+		if (c) {
+			d->border_color = c;
+			d->border_color_set = 1;
+			if (d->border_w < 0)
+				d->border_w = 1;
+		}
+	} else if (strcmp(p, "table-layout") == 0) {
+		if (strcasecmp(v, "fixed") == 0)
+			d->table_layout_fixed = 1;
+	} else if (strcmp(p, "width") == 0) {
+		int px = parse_len(v, 14, 0);
+		/* % widths handled later with parent; bare % → treat as 0 flag */
+		if (strchr(v, '%')) {
+			/* Store percent as 100000+pct so apply can expand */
+			char *end;
+			long pct = strtol(v, &end, 10);
+
+			if (pct > 0 && pct <= 100)
+				d->width = 100000 + (int)pct;
+		} else if (px >= 0) {
+			d->width = px;
+		}
+	} else if (strcmp(p, "max-width") == 0) {
+		int px = parse_len(v, 14, 0);
+
+		if (strchr(v, '%')) {
+			char *end;
+			long pct = strtol(v, &end, 10);
+
+			if (pct > 0 && pct <= 100)
+				d->max_width = 100000 + (int)pct;
+		} else if (px >= 0) {
+			d->max_width = px;
+		}
 	} else if (strcmp(p, "display") == 0) {
 		if (strcasecmp(v, "none") == 0)
 			d->display_none = 1;
@@ -479,8 +701,22 @@ static void decl_merge(struct BGTK_CSS_Decl *dst, const struct BGTK_CSS_Decl *sr
 		dst->text_align = src->text_align;
 	if (src->margin >= 0)
 		dst->margin = src->margin;
+	if (src->margin_auto)
+		dst->margin_auto = 1;
 	if (src->padding >= 0)
 		dst->padding = src->padding;
+	if (src->width >= 0)
+		dst->width = src->width;
+	if (src->max_width >= 0)
+		dst->max_width = src->max_width;
+	if (src->border_w >= 0)
+		dst->border_w = src->border_w;
+	if (src->border_color_set) {
+		dst->border_color = src->border_color;
+		dst->border_color_set = 1;
+	}
+	if (src->table_layout_fixed)
+		dst->table_layout_fixed = 1;
 	if (src->display_none)
 		dst->display_none = 1;
 }
@@ -496,6 +732,8 @@ static void apply_decl_to_widget(struct BGTK_Widget *w,
 		w->color_bg = d->bg;
 	if (d->margin >= 0)
 		w->margin = d->margin;
+	if (d->margin_auto)
+		w->flags |= BGTK_FLAG_MARGIN_AUTO;
 	if (d->padding >= 0)
 		w->padding = d->padding;
 	if (d->text_align == 0)
@@ -516,15 +754,25 @@ static void apply_decl_to_widget(struct BGTK_Widget *w,
 	}
 	if (w->type == BGTK_WIDGET_BUTTON && d->bg_set && d->bg)
 		w->data.button.bg_override = d->bg;
+	if (w->type == BGTK_WIDGET_FRAME) {
+		if (d->border_w >= 0)
+			w->data.frame.border_w = d->border_w;
+		if (d->border_color_set)
+			w->data.frame.border_color = d->border_color;
+	}
 }
 
 int bgtk_css_apply(struct BGTK_CSS *css, struct BGTK_Widget *w, const char *tag,
 		   const char *id, const char *class_attr,
-		   const char *style_attr)
+		   const char *style_attr, int *out_width, int *out_max_width)
 {
 	struct BGTK_CSS_Decl acc;
 	int i, changed;
 
+	if (out_width)
+		*out_width = -1;
+	if (out_max_width)
+		*out_max_width = -1;
 	decl_clear(&acc);
 	if (css && css->n > 0) {
 		/* Sort by specificity (stable for equals → later source wins
@@ -565,12 +813,100 @@ int bgtk_css_apply(struct BGTK_CSS *css, struct BGTK_Widget *w, const char *tag,
 	}
 	if (acc.display_none)
 		return 1;
+	if (out_width)
+		*out_width = acc.width;
+	if (out_max_width)
+		*out_max_width = acc.max_width;
 	if (!w)
 		return 0;
 	changed = acc.color_set || acc.bg_set || acc.font_weight ||
 		  acc.font_style || acc.text_align >= 0 || acc.margin >= 0 ||
-		  acc.padding >= 0;
+		  acc.margin_auto || acc.padding >= 0 || acc.border_w >= 0 ||
+		  acc.border_color_set;
 	if (changed)
 		apply_decl_to_widget(w, &acc);
+	/* Image/box width from CSS (content width before margin). */
+	if (acc.width >= 0 &&
+	    (w->type == BGTK_WIDGET_IMAGE || w->type == BGTK_WIDGET_FRAME)) {
+		int outer = acc.width + 2 * (w->padding + w->margin);
+
+		if (outer > 0)
+			w->w = outer;
+	}
 	return 0;
+}
+
+/* Cascade into acc for tag/id/class/inline (shared by apply + border helpers). */
+static void css_resolve(struct BGTK_CSS *css, const char *tag, const char *id,
+			const char *class_attr, const char *style_attr,
+			struct BGTK_CSS_Decl *acc)
+{
+	int i;
+
+	decl_clear(acc);
+	if (css && css->n > 0) {
+		int *idx = malloc((size_t)css->n * sizeof(int));
+		int a, b;
+
+		if (idx) {
+			for (i = 0; i < css->n; i++)
+				idx[i] = i;
+			for (a = 0; a < css->n; a++) {
+				for (b = a + 1; b < css->n; b++) {
+					int sa = css->rules[idx[a]].specificity;
+					int sb = css->rules[idx[b]].specificity;
+
+					if (sb < sa ||
+					    (sb == sa && idx[b] < idx[a])) {
+						int t = idx[a];
+						idx[a] = idx[b];
+						idx[b] = t;
+					}
+				}
+			}
+			for (i = 0; i < css->n; i++) {
+				const struct BGTK_CSS_Rule *r =
+					&css->rules[idx[i]];
+				if (rule_matches(r, tag, id, class_attr))
+					decl_merge(acc, &r->decl);
+			}
+			free(idx);
+		}
+	}
+	if (style_attr && *style_attr) {
+		struct BGTK_CSS_Decl inl;
+
+		parse_declarations(style_attr, &inl);
+		decl_merge(acc, &inl);
+	}
+}
+
+void bgtk_css_border(struct BGTK_CSS *css, const char *tag, const char *id,
+		     const char *class_attr, const char *style_attr, int *bw,
+		     uint32_t *bc)
+{
+	struct BGTK_CSS_Decl acc;
+
+	if (bw)
+		*bw = 0;
+	if (bc)
+		*bc = 0xFF888888u;
+	css_resolve(css, tag, id, class_attr, style_attr, &acc);
+	if (bw && acc.border_w >= 0)
+		*bw = acc.border_w;
+	if (bc && acc.border_color_set)
+		*bc = acc.border_color;
+	/* border-color alone implies 1px when attr may also set width */
+	if (bw && acc.border_color_set && acc.border_w < 0 && *bw == 0)
+		*bw = 1;
+}
+
+int bgtk_css_table_layout_fixed(struct BGTK_CSS *css, const char *tag,
+				const char *id, const char *class_attr,
+				const char *style_attr)
+{
+	struct BGTK_CSS_Decl acc;
+
+	css_resolve(css, tag, id, class_attr, style_attr, &acc);
+	return acc.table_layout_fixed;
 }
