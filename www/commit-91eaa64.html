@@ -1,0 +1,2056 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 91eaa64</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 91eaa64
+parent <a href=commit-eea48d1.html>eea48d1</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-09T17:12:28-03:00
+
+    feat: layout expand/relative, settings reflow, gemini ereandel keys
+
+    Add FILL/EXPAND/RELATIVE layout helpers and wire settings shell through
+    them. Gemini browser gains ereandel-style history and keys (b/u/o/r/…),
+    sturdier shortcut handling, and roomier gemtext spacing. Widen switch
+    tracks.
+
+<a href=tree-91eaa64.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 81aadea..1954869 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -235,13 +235,19 @@ etc.) still need BGCE on Linux.
+ 
+ ## Important Notes for Agents
+ 
+-1. **Event Coordinate System**: Events use absolute screen coordinates. When propagating to children, transform coordinates to be relative to the child widget.
+-2. **Widget Hierarchy**: The root widget is in `ctx-&gt;root_widget`. Child widgets are stored in parent widgets.
++1. **Event Coordinate System**: Pointer events use screen coordinates at the root.
++   Hit-test with `bgtk_widget_hit()` (handles `BGTK_FLAG_RELATIVE`). Scrollables
++   still transform events into content space for their children.
++2. **Widget Hierarchy**: Root is `ctx-&gt;root_widget`. Containers set `child-&gt;parent`.
+ 3. **Focus Management**: Text input widgets need special handling for keyboard events. Use `bgtk_set_focus()` to manage focus.
+ 4. **Drawing**: Widgets are drawn to `ctx-&gt;shm_buffer`. Use the drawing functions in `drawing.c`.
+ 5. **Memory Management**: Widgets are responsible for freeing their own resources in the destructor. Mock contexts are freed with `bgtk_destroy_mock()`, real ones with `bgtk_destroy()`.
+ 6. **Configuration**: Theme and font settings are loaded from a config file at startup.
+ 7. **Platform**: Full BGCE apps are Linux-oriented. Headless/mock builds are the default on macOS (`Makefile` sets `TARGET = headless test_terminal test_html` on Darwin).
++8. **Layout flags** (optional; default is legacy absolute placement):
++   - `BGTK_FLAG_EXPAND_X` / `BGTK_FLAG_EXPAND_Y` / `BGTK_FLAG_FILL` — grow into free space in a parent list (main axis shared among expanders; cross axis fills content box). Parent list needs a fixed/pre-set size larger than content (e.g. filled by a frame).
++   - `BGTK_FLAG_RELATIVE` — `x`/`y` are parent-relative; `abs_x`/`abs_y` are screen (or scroll content) coords after layout. Set on a container to opt a subtree in; children inherit during place.
++   - `bgtk_widget_screen_pos()`, `bgtk_widget_hit()`, `bgtk_widget_set_parent()`.
+ 
+ ## Useful Functions
+ 
+@@ -254,6 +260,7 @@ etc.) still need BGCE on Linux.
+ - `take_screenshot()`: Write framebuffer to PNG
+ - `draw_widget()`: Draw a single widget
+ - `calculate_widget_size()`: Calculate widget dimensions and positions
++- `bgtk_widget_screen_pos()` / `bgtk_widget_hit()`: Screen bounds after layout
+ 
+ ### Widget constructors
+ - `bgtk_text()`, `bgtk_label()`, `bgtk_button()`, `bgtk_scrollable()`,
+diff --git a/apps/gemini_browser.c b/apps/gemini_browser.c
+index 508836c..0069632 100644
+--- a/apps/gemini_browser.c
++++ b/apps/gemini_browser.c
+@@ -8,10 +8,18 @@
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
++#include &lt;sys/stat.h&gt;
+ #include &lt;time.h&gt;
+ #include &lt;tls.h&gt;
+ #include &lt;unistd.h&gt;
+ 
++/*
++ * BGTK port of ereandel keybindings (see ../ereandel):
++ *   b back · u up path · o open URL · r reload · H home
++ *   g go to link # · s save page · m mark · M bookmarks · K unmark · q quit
++ * Also: Ctrl+L / Ctrl+R, j/k scroll, Esc blur URL then quit.
++ */
++
+ static struct BGTK_Context *ctx = NULL;
+ static struct BGTK_Widget *content_scroll = NULL;
+ static struct BGTK_Widget *addr_input = NULL;
+@@ -19,6 +27,7 @@ static struct BGTK_Widget *main_list = NULL;
+ static struct BGTK_Widget *root_frame = NULL;
+ 
+ static char current_url[512] = "gemini://geminiprotocol.net/";
++static const char *homepage = "gemini://geminiprotocol.net/";
+ /* Retained gemtext body so resize can reflow wrap without re-fetch. */
+ static char *last_body = NULL;
+ 
+@@ -26,15 +35,292 @@ static struct BGTK_Widget *link_target_widgets[128];
+ static char link_targets[128][512];
+ static int num_page_links = 0;
+ 
++/* Navigation history (ereandel histfile). */
++#define HIST_MAX 64
++static char hist[HIST_MAX][512];
++static int hist_n;
++
++/* g = go-to-link: digits then Enter (or single-digit 1–9). */
++static int go_link_mode;
++static int go_link_num;
++
+ static void content_scroll_invalidate_tmp(void);
+ static void rebuild_content_from_gemtext(const char *body);
++static void load_url(const char *url);
++static void navigate(const char *url, int push_hist);
+ 
+-/* Line chrome: keep body lines dense; theme spacing is for outer chrome. */
++/* Line chrome: body stays fairly dense; headers/paragraphs add extra vspace. */
+ static BGTK_Options line_opts(void)
+ {
+ 	return (BGTK_Options){.padding = 1, .margin = 1};
+ }
+ 
++/* Extra vertical space (px) around gemtext structure. */
++#define GEM_V_BEFORE_HEADER 18
++#define GEM_V_AFTER_HEADER  12
++#define GEM_V_AFTER_PARA    14
++#define GEM_V_EMPTY_LINE    12
++
++/* Keep content_height in sync with items (scroll keys need this before draw). */
++static void gemini_recompute_scroll_height(void)
++{
++	int cy = 0, i, n;
++
++	if (!content_scroll)
++		return;
++	n = content_scroll-&gt;data.scrollable.widget_count;
++	for (i = 0; i &lt; n; i++) {
++		struct BGTK_Widget *ch = content_scroll-&gt;data.scrollable.items[i];
++
++		if (ch)
++			cy += ch-&gt;h + 2 * content_scroll-&gt;margin;
++	}
++	content_scroll-&gt;data.scrollable.content_height =
++		cy + 2 * (content_scroll-&gt;margin + content_scroll-&gt;padding);
++}
++
++static void hist_push(const char *url)
++{
++	if (!url || !url[0])
++		return;
++	if (hist_n &gt; 0 &amp;&amp; strcmp(hist[hist_n - 1], url) == 0)
++		return;
++	if (hist_n &gt;= HIST_MAX) {
++		memmove(hist[0], hist[1], (HIST_MAX - 1) * sizeof(hist[0]));
++		hist_n = HIST_MAX - 1;
++	}
++	snprintf(hist[hist_n], sizeof(hist[0]), "%s", url);
++	hist_n++;
++}
++
++/* Pop previous URL into out (history does not include current page). */
++static int hist_back(char *out, size_t n)
++{
++	if (hist_n &lt; 1 || !out || n == 0)
++		return -1;
++	snprintf(out, n, "%s", hist[--hist_n]);
++	return 0;
++}
++
++static void config_paths(char *bookmarks, size_t bn, char *certdir, size_t cn)
++{
++	const char *xdg = getenv("XDG_CONFIG_HOME");
++	const char *home = getenv("HOME");
++	char base[512];
++
++	if (xdg &amp;&amp; xdg[0])
++		snprintf(base, sizeof(base), "%s/ereandel", xdg);
++	else if (home &amp;&amp; home[0])
++		snprintf(base, sizeof(base), "%s/.config/ereandel", home);
++	else
++		snprintf(base, sizeof(base), "/tmp/ereandel");
++	mkdir(base, 0755);
++	if (bookmarks &amp;&amp; bn)
++		snprintf(bookmarks, bn, "%s/bookmarks", base);
++	if (certdir &amp;&amp; cn) {
++		snprintf(certdir, cn, "%s/certs", base);
++		mkdir(certdir, 0755);
++	}
++}
++
++/* Strip last path segment: gemini://h/a/b -&gt; gemini://h/a */
++static void url_go_up(char *url)
++{
++	char *scheme, *host_end, *slash;
++	size_t len;
++
++	if (!url || !url[0])
++		return;
++	scheme = strstr(url, "://");
++	if (!scheme)
++		return;
++	host_end = strchr(scheme + 3, '/');
++	if (!host_end)
++		return;
++	len = strlen(url);
++	while (len &gt; 1 &amp;&amp; url[len - 1] == '/' &amp;&amp; &amp;url[len - 1] &gt; host_end) {
++		url[--len] = '\0';
++	}
++	slash = strrchr(url, '/');
++	if (!slash || slash &lt;= host_end)
++		return;
++	if (slash == host_end)
++		slash[1] = '\0';
++	else
++		*slash = '\0';
++}
++
++static void navigate(const char *url, int push_hist)
++{
++	if (!url || !url[0])
++		return;
++	if (push_hist &amp;&amp; current_url[0])
++		hist_push(current_url);
++	go_link_mode = 0;
++	go_link_num = 0;
++	load_url(url);
++}
++
++static void bookmark_add(void)
++{
++	char path[512];
++	FILE *f;
++
++	config_paths(path, sizeof(path), NULL, 0);
++	f = fopen(path, "a");
++	if (!f) {
++		bgtk_log("bookmark_add: cannot open %s", path);
++		return;
++	}
++	fprintf(f, "%s\n", current_url);
++	fclose(f);
++	bgtk_log("bookmark added: %s", current_url);
++}
++
++static void bookmark_del(void)
++{
++	char path[512], tmp[520], line[600];
++	FILE *in, *out;
++
++	config_paths(path, sizeof(path), NULL, 0);
++	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
++	in = fopen(path, "r");
++	if (!in)
++		return;
++	out = fopen(tmp, "w");
++	if (!out) {
++		fclose(in);
++		return;
++	}
++	while (fgets(line, sizeof(line), in)) {
++		char *nl = strchr(line, '\n');
++		if (nl)
++			*nl = '\0';
++		if (strncmp(line, current_url, strlen(current_url)) != 0 ||
++		    (line[strlen(current_url)] != '\0' &amp;&amp;
++		     line[strlen(current_url)] != ' '))
++			fprintf(out, "%s\n", line);
++	}
++	fclose(in);
++	fclose(out);
++	rename(tmp, path);
++	bgtk_log("bookmark removed for %s", current_url);
++}
++
++/* Show bookmarks as a synthetic gemtext page (like ereandel M). */
++static void bookmark_goto_page(void)
++{
++	char path[512], line[600], *body = NULL;
++	size_t cap = 0, len = 0;
++	FILE *f;
++	int n = 0;
++
++	config_paths(path, sizeof(path), NULL, 0);
++	f = fopen(path, "r");
++	body = strdup("# Bookmarks\n\n");
++	if (!body)
++		return;
++	len = strlen(body);
++	cap = len + 1;
++	if (f) {
++		while (fgets(line, sizeof(line), f)) {
++			char url[512], *sp, *nl;
++			char entry[640];
++			size_t el;
++
++			nl = strchr(line, '\n');
++			if (nl)
++				*nl = '\0';
++			if (!line[0])
++				continue;
++			sp = strchr(line, ' ');
++			if (sp) {
++				size_t ul = (size_t)(sp - line);
++				if (ul &gt;= sizeof(url))
++					ul = sizeof(url) - 1;
++				memcpy(url, line, ul);
++				url[ul] = '\0';
++				snprintf(entry, sizeof(entry), "=&gt; %s %s\n", url,
++					 sp + 1);
++			} else {
++				snprintf(entry, sizeof(entry), "=&gt; %s\n", line);
++			}
++			el = strlen(entry);
++			if (len + el + 1 &gt; cap) {
++				char *nb = realloc(body, len + el + 256);
++				if (!nb)
++					break;
++				body = nb;
++				cap = len + el + 256;
++			}
++			memcpy(body + len, entry, el + 1);
++			len += el;
++			n++;
++		}
++		fclose(f);
++	}
++	if (n == 0) {
++		const char *empty = "No bookmarks yet. Press m to add.\n";
++		size_t el = strlen(empty);
++		char *nb = realloc(body, len + el + 1);
++		if (nb) {
++			body = nb;
++			memcpy(body + len, empty, el + 1);
++		}
++	}
++	if (current_url[0])
++		hist_push(current_url);
++	free(last_body);
++	last_body = body;
++	snprintf(current_url, sizeof(current_url), "about:bookmarks");
++	if (addr_input &amp;&amp; addr_input-&gt;data.text_input.text) {
++		free(addr_input-&gt;data.text_input.text);
++		addr_input-&gt;data.text_input.text = strdup(current_url);
++		addr_input-&gt;data.text_input.cursor_pos =
++			(uint32_t)strlen(current_url);
++		addr_input-&gt;data.text_input.scroll_x = 0;
++	}
++	rebuild_content_from_gemtext(last_body);
++	if (content_scroll)
++		bgtk_set_focus(ctx, content_scroll);
++	else
++		bgtk_draw_widgets(ctx);
++}
++
++static void save_page(void)
++{
++	const char *home = getenv("HOME");
++	char path[640];
++	FILE *f;
++	time_t t = time(NULL);
++
++	if (!last_body) {
++		bgtk_log("save_page: no body");
++		return;
++	}
++	if (home &amp;&amp; home[0])
++		snprintf(path, sizeof(path), "%s/gemini-%ld.gmi", home,
++			 (long)t);
++	else
++		snprintf(path, sizeof(path), "/tmp/gemini-%ld.gmi", (long)t);
++	f = fopen(path, "w");
++	if (!f) {
++		bgtk_log_errno("save_page %s", path);
++		return;
++	}
++	fputs(last_body, f);
++	fclose(f);
++	bgtk_log("saved page to %s", path);
++}
++
++static void go_link_index(int idx)
++{
++	/* 1-based like ereandel */
++	if (idx &lt; 1 || idx &gt; num_page_links)
++		return;
++	navigate(link_targets[idx - 1], 1);
++}
++
+ /* Root chrome: [frame_margin][border][padding][content]… (from theme). */
+ static void gemini_chrome(int *pad, int *fmar, int *bw)
+ {
+@@ -494,7 +780,7 @@ static int gemini_link_handler(struct BGTK_Widget *w, struct InputEvent ev)
+ 	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
+ 		for (int i = 0; i &lt; num_page_links; i++) {
+ 			if (link_target_widgets[i] == w) {
+-				load_url(link_targets[i]);
++				navigate(link_targets[i], 1);
+ 				return 1;
+ 			}
+ 		}
+@@ -665,7 +951,9 @@ static void rebuild_content_from_gemtext(const char *body)
+ 			else
+ 				strncpy(disp, tgt, sizeof(disp) - 1);
+ 
+-			snprintf(vis, sizeof(vis), "=&gt; %s", disp);
++			/* Numbered like ereandel so g + N can jump. */
++			snprintf(vis, sizeof(vis), "[%d] %s",
++				 num_page_links + 1, disp);
+ 			strncpy(link_to, tgt, sizeof(link_to) - 1);
+ 			is_link = 1;
+ 			item_color = 10;
+@@ -692,9 +980,8 @@ static void rebuild_content_from_gemtext(const char *body)
+ 		if (is_link)
+ 			resolve_url(current_url, link_to, resolved, sizeof(resolved));
+ 
+-		if (header_level &gt; 0 &amp;&amp; cnt &gt; 0) {
+-			new_items[cnt-1]-&gt;h += 5;  /* increase the top spacing a little before headings */
+-		}
++		if (header_level &gt; 0 &amp;&amp; cnt &gt; 0)
++			new_items[cnt - 1]-&gt;h += GEM_V_BEFORE_HEADER;
+ 
+ 		if (header_level &gt; 0 &amp;&amp; ctx-&gt;ft_face) {
+ 			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0,
+@@ -726,6 +1013,12 @@ static void rebuild_content_from_gemtext(const char *body)
+ 						tw-&gt;handle_event =
+ 							gemini_link_handler;
+ 					}
++					if (header_level &gt; 0)
++						tw-&gt;h += GEM_V_AFTER_HEADER;
++					else if (!vis[0])
++						tw-&gt;h += GEM_V_EMPTY_LINE;
++					else
++						tw-&gt;h += GEM_V_AFTER_PARA / 2;
+ 					if (cnt &gt;= cap) {
+ 						cap = cap ? cap * 2 : 32;
+ 						new_items = realloc(
+@@ -763,10 +1056,13 @@ static void rebuild_content_from_gemtext(const char *body)
+ 					tw-&gt;handle_event = gemini_link_handler;
+ 				}
+ 				if (s &lt; nsubs - 1) {
+-					tw-&gt;h -= 3;  /* decrease a little for lines in the same paragraph (tighter leading between wraps) */
+-				}
+-				if (s == nsubs - 1) {
+-					tw-&gt;h += 5;  /* extra vertical space after this logical block */
++					/* tighter leading between wraps of same block */
++					if (tw-&gt;h &gt; 4)
++						tw-&gt;h -= 2;
++				} else if (header_level &gt; 0) {
++					tw-&gt;h += GEM_V_AFTER_HEADER;
++				} else {
++					tw-&gt;h += GEM_V_AFTER_PARA;
+ 				}
+ 				if (cnt &gt;= cap) {
+ 					cap = cap ? cap * 2 : 32;
+@@ -813,7 +1109,10 @@ static void rebuild_content_from_gemtext(const char *body)
+ 	content_scroll-&gt;data.scrollable.widget_count = cnt;
+ 	content_scroll-&gt;data.scrollable.scroll_y = 0;
+ 	content_scroll_invalidate_tmp();
+-	bgtk_log("rebuild: %d line widgets, %d links", cnt, num_page_links);
++	gemini_recompute_scroll_height();
++	bgtk_log("rebuild: %d line widgets, %d links, content_h=%d", cnt,
++		 num_page_links,
++		 content_scroll-&gt;data.scrollable.content_height);
+ }
+ 
+ /* main navigation entry */
+@@ -905,6 +1204,7 @@ static void load_url(const char *url)
+ 		content_scroll-&gt;data.scrollable.widget_count = errs ? 1 : 0;
+ 		content_scroll-&gt;data.scrollable.scroll_y = 0;
+ 		content_scroll_invalidate_tmp();
++		gemini_recompute_scroll_height();
+ 		/* Drop retained body so resize does not reflow a prior page. */
+ 		free(last_body);
+ 		last_body = NULL;
+@@ -938,14 +1238,33 @@ static void load_url(const char *url)
+ 	if (body)
+ 		free(body);
+ 
+-	bgtk_draw_widgets(ctx);
+-	bgtk_log("load_url: draw complete for %s", current_url);
++	/*
++	 * Content focus so j/k/Page* scroll work after every navigation.
++	 * Ctrl+L returns focus to the URL field.
++	 */
++	if (content_scroll)
++		bgtk_set_focus(ctx, content_scroll);
++	else
++		bgtk_draw_widgets(ctx);
++	bgtk_log("load_url: draw complete for %s focus=content", current_url);
+ }
+ 
+ static void addr_on_enter(void)
+ {
+-	if (addr_input)
+-		load_url(addr_input-&gt;data.text_input.text);
++	char url[512];
++
++	if (!addr_input || !addr_input-&gt;data.text_input.text)
++		return;
++	snprintf(url, sizeof(url), "%s", addr_input-&gt;data.text_input.text);
++	/* Convenience: allow host/path without scheme (ereandel). */
++	if (strncmp(url, "gemini://", 9) != 0 &amp;&amp; strncmp(url, "about:", 6) != 0 &amp;&amp;
++	    url[0]) {
++		char full[512];
++		snprintf(full, sizeof(full), "gemini://%s", url);
++		navigate(full, 1);
++		return;
++	}
++	navigate(url, 1);
+ }
+ 
+ int main(void)
+@@ -1046,7 +1365,8 @@ int main(void)
+ 	}
+ 
+ 	ctx-&gt;root_widget = frame;
+-	bgtk_set_focus(ctx, addr_input);
++	/* Content focused so j/k/Page* scroll work; Ctrl+L focuses the URL. */
++	bgtk_set_focus(ctx, content_scroll);
+ 	bgtk_draw_widgets(ctx);
+ 	bgtk_log("shell drawn; loading initial url %s", current_url);
+ 
+@@ -1086,50 +1406,178 @@ int main(void)
+ 				break;
+ 
+ 			bgtk_update_modifiers(ctx, *ev);
+-			if (bgtk_is_app_quit_event(ctx, *ev)) {
+-				bgtk_log("quit key type=%d code=%d value=%d "
+-					 "mods shift=%d ctrl=%d alt=%d",
+-					 ev-&gt;type, ev-&gt;code, ev-&gt;value,
+-					 ctx-&gt;shift_held, ctx-&gt;ctrl_held,
+-					 ctx-&gt;alt_held);
+-				quit_reason = "app quit key (Esc or Ctrl+C)";
+-				goto done;
+-			}
+ 
+-			/* Browser chords (before text-input eats the key). */
++			/*
++			 * Ereandel-style keys when content is focused (not
++			 * typing in the URL bar). Ctrl chords always work.
++			 */
+ 			if (ev-&gt;type == EV_KEY &amp;&amp;
+ 			    (ev-&gt;value == 1 || ev-&gt;value == 2)) {
+-				if (ctx-&gt;ctrl_held &amp;&amp; ev-&gt;code == KEY_L) {
++				int addr_focus =
++					(ctx-&gt;focused_widget == addr_input);
++				int mods = bgtk_mods_from_ctx(ctx);
++				int scroll_key = 0;
++				char prev[512];
++
++				/* Ctrl+L / o: open (focus URL). */
++				if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     ev-&gt;code == KEY_L) ||
++				    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     !(mods &amp; BGTK_MOD_SHIFT) &amp;&amp;
++				     ev-&gt;code == KEY_O)) {
++					go_link_mode = 0;
+ 					bgtk_set_focus(ctx, addr_input);
+ 					res = 1;
+ 					break;
+ 				}
+-				if (ctx-&gt;ctrl_held &amp;&amp; ev-&gt;code == KEY_R) {
++				/* Ctrl+R / r: reload. */
++				if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     ev-&gt;code == KEY_R) ||
++				    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     !(mods &amp; BGTK_MOD_SHIFT) &amp;&amp;
++				     ev-&gt;code == KEY_R)) {
++					go_link_mode = 0;
+ 					load_url(current_url);
+ 					res = 1;
+ 					break;
+ 				}
++				/* Esc: cancel go-mode, blur URL, or quit. */
+ 				if (ev-&gt;code == KEY_ESC) {
+-					if (ctx-&gt;focused_widget == addr_input) {
++					if (go_link_mode) {
++						go_link_mode = 0;
++						go_link_num = 0;
++						res = 1;
++						break;
++					}
++					if (addr_focus) {
+ 						bgtk_set_focus(ctx,
+ 							       content_scroll);
+ 						res = 1;
+ 						break;
+ 					}
++					quit_reason = "Esc";
++					goto done;
+ 				}
+-				/* Scroll page when focus is not the URL field. */
+-				if (content_scroll &amp;&amp;
+-				    ctx-&gt;focused_widget != addr_input &amp;&amp;
+-				    content_scroll-&gt;handle_event &amp;&amp;
+-				    (ev-&gt;code == KEY_UP ||
+-				     ev-&gt;code == KEY_DOWN ||
+-				     ev-&gt;code == KEY_PAGEUP ||
+-				     ev-&gt;code == KEY_PAGEDOWN ||
+-				     ev-&gt;code == KEY_HOME ||
+-				     ev-&gt;code == KEY_END ||
+-				     ev-&gt;code == KEY_SPACE ||
+-				     ev-&gt;code == KEY_J ||
+-				     ev-&gt;code == KEY_K)) {
++				/* Ctrl+C / q: quit. */
++				if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     ev-&gt;code == KEY_C) ||
++				    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     ev-&gt;code == KEY_Q)) {
++					quit_reason = "quit key";
++					goto done;
++				}
++
++				/* go-link mode: type number, Enter to open. */
++				if (go_link_mode &amp;&amp; !addr_focus) {
++					if (ev-&gt;code &gt;= KEY_1 &amp;&amp;
++					    ev-&gt;code &lt;= KEY_0) {
++						int d = (ev-&gt;code == KEY_0)
++								? 0
++								: (int)(ev-&gt;code -
++									KEY_1 +
++									1);
++						go_link_num =
++							go_link_num * 10 + d;
++						res = 1;
++						break;
++					}
++					if (ev-&gt;code == KEY_ENTER ||
++					    ev-&gt;code == KEY_KPENTER) {
++						int n = go_link_num;
++						go_link_mode = 0;
++						go_link_num = 0;
++						if (n &gt; 0)
++							go_link_index(n);
++						res = 1;
++						break;
++					}
++					if (ev-&gt;code == KEY_BACKSPACE) {
++						go_link_num /= 10;
++						res = 1;
++						break;
++					}
++				}
++
++				/* Ereandel single-letter keys (content only). */
++				if (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				    !(mods &amp; BGTK_MOD_ALT)) {
++					if (ev-&gt;code == KEY_B) {
++						if (hist_back(prev,
++							      sizeof(prev)) == 0)
++							navigate(prev, 0);
++						res = 1;
++						break;
++					}
++					if (ev-&gt;code == KEY_U) {
++						char u[512];
++						snprintf(u, sizeof(u), "%s",
++							 current_url);
++						url_go_up(u);
++						if (strcmp(u, current_url) != 0)
++							navigate(u, 1);
++						res = 1;
++						break;
++					}
++					if (ev-&gt;code == KEY_H &amp;&amp;
++					    (mods &amp; BGTK_MOD_SHIFT)) {
++						navigate(homepage, 1);
++						res = 1;
++						break;
++					}
++					if (ev-&gt;code == KEY_G &amp;&amp;
++					    !(mods &amp; BGTK_MOD_SHIFT)) {
++						go_link_mode = 1;
++						go_link_num = 0;
++						bgtk_log("go-link mode (type #)");
++						res = 1;
++						break;
++					}
++					if (ev-&gt;code == KEY_S &amp;&amp;
++					    !(mods &amp; BGTK_MOD_SHIFT)) {
++						save_page();
++						res = 1;
++						break;
++					}
++					if (ev-&gt;code == KEY_M &amp;&amp;
++					    !(mods &amp; BGTK_MOD_SHIFT)) {
++						bookmark_add();
++						res = 1;
++						break;
++					}
++					if (ev-&gt;code == KEY_M &amp;&amp;
++					    (mods &amp; BGTK_MOD_SHIFT)) {
++						bookmark_goto_page();
++						res = 1;
++						break;
++					}
++					if (ev-&gt;code == KEY_K &amp;&amp;
++					    (mods &amp; BGTK_MOD_SHIFT)) {
++						bookmark_del();
++						res = 1;
++						break;
++					}
++				}
++
++				/*
++				 * Scroll: PageUp/Down always; j/k/arrows when
++				 * not editing URL.
++				 */
++				if (ev-&gt;code == KEY_PAGEUP ||
++				    ev-&gt;code == KEY_PAGEDOWN)
++					scroll_key = 1;
++				else if (!addr_focus &amp;&amp; !go_link_mode &amp;&amp;
++					 (ev-&gt;code == KEY_UP ||
++					  ev-&gt;code == KEY_DOWN ||
++					  ev-&gt;code == KEY_HOME ||
++					  ev-&gt;code == KEY_END ||
++					  ev-&gt;code == KEY_SPACE ||
++					  ev-&gt;code == KEY_J ||
++					  ev-&gt;code == KEY_K))
++					scroll_key = 1;
++
++				if (scroll_key &amp;&amp; content_scroll &amp;&amp;
++				    content_scroll-&gt;handle_event) {
++					gemini_recompute_scroll_height();
+ 					if (content_scroll-&gt;handle_event(
+ 						    content_scroll, *ev)) {
+ 						res = 1;
+diff --git a/apps/settings.c b/apps/settings.c
+index 5903082..5f33bd8 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -38,6 +38,7 @@ static struct BGTK_Widget *sidebar_list;
+ static struct BGTK_Widget *sidebar;
+ static struct BGTK_Widget *panel_rule;
+ static struct BGTK_Widget *content_panel;
++static struct BGTK_Widget *shell_row; /* [sidebar | rule | content] */
+ static struct BGTK_Widget *root_frame;
+ 
+ static int current_page = 0;
+@@ -365,15 +366,35 @@ static int root_pad(void)
+ 	return outer &gt; pin ? outer - pin : 0;
+ }
+ 
++/* One side of window chrome: frame_margin + border + root padding.
++ * Matches content→window-edge distance (top/bottom/left). */
++static int edge_inset(void)
++{
++	int fmar = (ctx &amp;&amp; ctx-&gt;theme.frame_margin &gt;= 0) ? ctx-&gt;theme.frame_margin
++							: 0;
++	int fbw = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
++	int e;
++
++	if (fbw &lt; 0)
++		fbw = 0;
++	e = fmar + fbw + root_pad();
++	if (e &lt; 8)
++		e = 8;
++	return e;
++}
++
+ static BGTK_Options ctl_opts(void)
+ {
+-	return (BGTK_Options){.padding = control_pad(), .margin = 0};
++	return (BGTK_Options){.padding = control_pad(), .margin = 0,
++			      .text_align = BGTK_ALIGN_LEFT,
++			      .text_v_align = BGTK_VALIGN_CENTER};
+ }
+ 
+ static struct BGTK_Widget *ui_text(const char *s)
+ {
+ 	return bgtk_text(ctx, (char *)s,
+ 		(BGTK_Options){.padding = 2, .margin = 0,
++			       .text_align = BGTK_ALIGN_LEFT,
+ 			       .text_v_align = BGTK_VALIGN_CENTER});
+ }
+ 
+@@ -400,9 +421,11 @@ static struct BGTK_Widget *ui_input(const char *val, int width)
+ 
+ static struct BGTK_Widget *ui_hbox(struct BGTK_Widget **items, int n)
+ {
++	/* CENTER: vertically align label + field on form rows. */
+ 	return bgtk_list(ctx, items, n,
+ 		(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+-			       .margin = 0, .padding = 0});
++			       .margin = 0, .padding = 0,
++			       .flags = BGTK_FLAG_CENTER});
+ }
+ 
+ static struct BGTK_Widget *ui_vbox(struct BGTK_Widget **items, int n)
+@@ -470,21 +493,45 @@ static struct BGTK_Widget *ui_row2(const char *l0, struct BGTK_Widget *f0,
+ 			       .margin = FORM_COL_GAP, .padding = 0});
+ }
+ 
+-/* Scrollable borderless page; pad matches sidebar panel_inset. */
+-static struct BGTK_Widget *make_page(struct BGTK_Widget *body, int pw, int ph)
++/* Content size after reflow (panel filled by shell EXPAND). */
++static void content_size(int *out_w, int *out_h)
++{
++	int w = content_panel ? content_panel-&gt;w : 400;
++	int h = content_panel ? content_panel-&gt;h : 300;
++
++	if (w &lt; 80)
++		w = 80;
++	if (h &lt; 40)
++		h = 40;
++	if (out_w)
++		*out_w = w;
++	if (out_h)
++		*out_h = h;
++}
++
++/* Scrollable borderless page; sizes from parent frame FILL on draw. */
++static struct BGTK_Widget *make_page(struct BGTK_Widget *body)
+ {
+ 	struct BGTK_Widget *scroll;
+ 	struct BGTK_Widget *frame;
+ 	int pin = panel_inset();
++	int pw, ph;
+ 
++	content_size(&amp;pw, &amp;ph);
++	if (body)
++		body-&gt;flags |= BGTK_FLAG_EXPAND_X;
+ 	scroll = bgtk_scrollable(ctx, &amp;body, 1,
+ 		(BGTK_Options){.padding = pin, .margin = 0});
+-	scroll-&gt;w = pw;
+-	scroll-&gt;h = ph;
+-	frame = bgtk_frame(ctx, scroll, pw, ph,
++	/* Seed size for first draw / preview; parent frame refills on layout. */
++	scroll-&gt;w = pw &gt; 0 ? pw : 80;
++	scroll-&gt;h = ph &gt; 0 ? ph : 40;
++	scroll-&gt;flags |= BGTK_FLAG_FILL;
++	frame = bgtk_frame(ctx, scroll, scroll-&gt;w, scroll-&gt;h,
+ 		(BGTK_Options){.padding = 0, .margin = 0});
+-	if (frame)
++	if (frame) {
+ 		frame-&gt;data.frame.border_w = 0;
++		frame-&gt;flags |= BGTK_FLAG_FILL;
++	}
+ 	return frame ? frame : scroll;
+ }
+ 
+@@ -1112,9 +1159,9 @@ static struct BGTK_Widget *make_solid_preview(int pw, int ph, uint32_t color)
+ 	return img;
+ }
+ 
+-static void add_bg_preview(struct BGTK_Widget *page, int panel_w, int panel_h)
++static void add_bg_preview(struct BGTK_Widget *page)
+ {
+-	int pw, ph;
++	int pw, ph, panel_w, panel_h;
+ 	struct BGTK_Widget *preview = NULL;
+ 	struct BGTK_Widget *scroll;
+ 	struct BGTK_Widget *list;
+@@ -1136,6 +1183,8 @@ static void add_bg_preview(struct BGTK_Widget *page, int panel_w, int panel_h)
+ 	if (n &lt; 1)
+ 		return;
+ 
++	content_size(&amp;panel_w, &amp;panel_h);
++
+ 	/* Height already used by form rows + Apply — preview fills the rest. */
+ 	reserved = 0;
+ 	for (i = 0; i &lt; n; i++) {
+@@ -1225,7 +1274,7 @@ static void page_cb(void *userdata)
+ 	rebuild_content();
+ }
+ 
+-static struct BGTK_Widget *build_background_page(int panel_w, int panel_h)
++static struct BGTK_Widget *build_background_page(void)
+ {
+ 	char color_hex[16];
+ 	struct BGTK_Widget *rows[8];
+@@ -1262,12 +1311,12 @@ static struct BGTK_Widget *build_background_page(int panel_w, int panel_h)
+ 	}
+ 	rows[n++] = ui_btn("Apply", apply_background, NULL);
+ 	body = ui_vbox(rows, n);
+-	page = make_page(body, panel_w, panel_h);
+-	add_bg_preview(page, panel_w, panel_h);
++	page = make_page(body);
++	add_bg_preview(page);
+ 	return page;
+ }
+ 
+-static struct BGTK_Widget *build_cursor_page(int panel_w, int panel_h)
++static struct BGTK_Widget *build_cursor_page(void)
+ {
+ 	char **cursors = NULL;
+ 	int nc = scan_cursors(&amp;cursors);
+@@ -1293,10 +1342,10 @@ static struct BGTK_Widget *build_cursor_page(int panel_w, int panel_h)
+ 	rows[n++] = ui_btn("Apply", apply_cursor, NULL);
+ 	body = ui_vbox(rows, n);
+ 	free(rows);
+-	return make_page(body, panel_w, panel_h);
++	return make_page(body);
+ }
+ 
+-static struct BGTK_Widget *build_shortcuts_page(int panel_w, int panel_h)
++static struct BGTK_Widget *build_shortcuts_page(void)
+ {
+ 	struct BGTK_Widget **rows;
+ 	int n = 0, i;
+@@ -1314,10 +1363,10 @@ static struct BGTK_Widget *build_shortcuts_page(int panel_w, int panel_h)
+ 	rows[n++] = ui_btn("Apply", apply_shortcuts, NULL);
+ 	body = ui_vbox(rows, n);
+ 	free(rows);
+-	return make_page(body, panel_w, panel_h);
++	return make_page(body);
+ }
+ 
+-static struct BGTK_Widget *build_font_page(int panel_w, int panel_h)
++static struct BGTK_Widget *build_font_page(void)
+ {
+ 	char size_buf[16];
+ 	struct BGTK_Widget *rows[64];
+@@ -1353,7 +1402,7 @@ static struct BGTK_Widget *build_font_page(int panel_w, int panel_h)
+ 	}
+ 	rows[n++] = ui_btn("Apply", apply_font, NULL);
+ 	body = ui_vbox(rows, n);
+-	return make_page(body, panel_w, panel_h);
++	return make_page(body);
+ }
+ 
+ static struct BGTK_Widget *theme_color_input(uint32_t c, int w)
+@@ -1370,7 +1419,7 @@ static struct BGTK_Widget *theme_int_input(int v, int w)
+ 	return ui_input(buf, w);
+ }
+ 
+-static struct BGTK_Widget *build_theme_page(int panel_w, int panel_h)
++static struct BGTK_Widget *build_theme_page(void)
+ {
+ 	struct BGTK_Widget *rows[16];
+ 	int n = 0;
+@@ -1430,7 +1479,7 @@ static struct BGTK_Widget *build_theme_page(int panel_w, int panel_h)
+ 
+ 	rows[n++] = ui_btn("Apply", apply_theme, NULL);
+ 	body = ui_vbox(rows, n);
+-	return make_page(body, panel_w, panel_h);
++	return make_page(body);
+ }
+ 
+ 
+@@ -1455,10 +1504,10 @@ static void clear_page_ptrs(void)
+ 	theme_frame_margin_input = theme_baseline_input = NULL;
+ }
+ 
+-/* Resize shell chrome to current theme/app size without rebuilding pages. */
++/* Size root + shell_row; EXPAND fills content_panel / sidebar height. */
+ static void reflow_shell(void)
+ {
+-	int rpad, fmar, fbw, chrome, rule_w, panel_w, panel_h;
++	int rpad, fmar, fbw, inner_w, inner_h, edge, gap;
+ 
+ 	if (!ctx || !root_frame)
+ 		return;
+@@ -1467,38 +1516,44 @@ static void reflow_shell(void)
+ 	fbw = (int)ctx-&gt;theme.frame_border_size;
+ 	if (fbw &lt; 0)
+ 		fbw = 0;
+-	chrome = 2 * (fmar + fbw + rpad);
+-	rule_w = panel_rule ? panel_rule-&gt;w : 1;
+-	panel_w = app_w - (sidebar ? sidebar-&gt;w : SIDEBAR_W) - rule_w - chrome;
+-	panel_h = app_h - chrome;
+-	if (panel_w &lt; 80)
+-		panel_w = 80;
+-	if (panel_h &lt; 40)
+-		panel_h = 40;
+ 	root_frame-&gt;w = app_w;
+ 	root_frame-&gt;h = app_h;
+ 	root_frame-&gt;padding = rpad;
+ 	root_frame-&gt;margin = fmar;
++
++	/* Content box inside root frame (margin + border + padding). */
++	inner_w = app_w - 2 * (fmar + fbw + rpad);
++	inner_h = app_h - 2 * (fmar + fbw + rpad);
++	if (inner_w &lt; 80)
++		inner_w = 80;
++	if (inner_h &lt; 40)
++		inner_h = 40;
++
++	/* Match button↔rule (and rule↔content) gap to content↔window edge. */
++	edge = edge_inset();
++	gap = (edge + 1) / 2; /* list inter-item gap = 2×margin */
++
+ 	if (sidebar) {
+-		sidebar-&gt;h = panel_h;
+-		sidebar-&gt;padding = panel_inset();
+-		if (sidebar-&gt;h &lt; 40)
+-			sidebar-&gt;h = 40;
+-	}
+-	if (panel_rule) {
+-		panel_rule-&gt;h = panel_h;
+-		if (panel_rule-&gt;h &lt; 40)
+-			panel_rule-&gt;h = 40;
++		sidebar-&gt;w = SIDEBAR_W;
++		sidebar-&gt;padding = 0; /* gap to rule is shell_row margin */
++		sidebar-&gt;flags |= BGTK_FLAG_EXPAND_Y;
+ 	}
+-	if (content_panel) {
+-		content_panel-&gt;w = panel_w;
+-		content_panel-&gt;h = panel_h;
++	if (panel_rule)
++		panel_rule-&gt;flags |= BGTK_FLAG_EXPAND_Y;
++	if (content_panel)
++		content_panel-&gt;flags |= BGTK_FLAG_FILL;
++
++	if (shell_row) {
++		shell_row-&gt;w = inner_w;
++		shell_row-&gt;h = inner_h;
++		shell_row-&gt;margin = gap;
++		/* Same expand pass as draw — content_panel gets free width. */
++		bgtk_list_layout_expand(shell_row);
+ 	}
+ }
+ 
+ static void rebuild_content(void)
+ {
+-	int panel_w, panel_h;
+ 	struct BGTK_Widget *page = NULL;
+ 	struct BGTK_Widget *old;
+ 
+@@ -1517,21 +1572,20 @@ static void rebuild_content(void)
+ 		font_list_count = scan_fonts(&amp;font_list_cache);
+ 
+ 	reflow_shell();
+-	panel_w = content_panel ? content_panel-&gt;w : 80;
+-	panel_h = content_panel ? content_panel-&gt;h : 40;
+ 
+ 	switch (current_page) {
+-	case 0: page = build_background_page(panel_w, panel_h); break;
+-	case 1: page = build_cursor_page(panel_w, panel_h); break;
+-	case 2: page = build_shortcuts_page(panel_w, panel_h); break;
+-	case 3: page = build_font_page(panel_w, panel_h); break;
+-	case 4: page = build_theme_page(panel_w, panel_h); break;
++	case 0: page = build_background_page(); break;
++	case 1: page = build_cursor_page(); break;
++	case 2: page = build_shortcuts_page(); break;
++	case 3: page = build_font_page(); break;
++	case 4: page = build_theme_page(); break;
+ 	}
+ 	if (!page)
+ 		page = ui_text("Error loading page");
+ 
+ 	old = content_panel-&gt;data.frame.child;
+ 	content_panel-&gt;data.frame.child = page;
++	bgtk_widget_set_parent(page, content_panel);
+ 	bgtk_widget_destroy(old);
+ 	bgtk_draw_widgets(ctx);
+ }
+@@ -1540,8 +1594,10 @@ static void sidebar_spacing(int *pad, int *mar, int *scroll_pad, int *btn_w)
+ {
+ 	int p = theme_outer_pad();
+ 	int m = (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin / 2 : 4;
+-	int sp = panel_inset();
+-	int bw = SIDEBAR_W - 2 * sp;
++	/* No side pad on the scroll — button↔rule gap comes from shell_row
++	 * margin (= edge_inset), matching content↔window chrome. */
++	int sp = 0;
++	int bw = SIDEBAR_W;
+ 
+ 	if (bw &lt; 40)
+ 		bw = 40;
+@@ -1558,8 +1614,9 @@ static void sidebar_spacing(int *pad, int *mar, int *scroll_pad, int *btn_w)
+ static struct BGTK_Widget *make_nav_button(int i, int btn_w)
+ {
+ 	int selected = (i == current_page);
+-	int pad, bw;
+-	BGTK_Options to = {.padding = 2};
++	int pad, bw, hpad;
++	BGTK_Options to = {.padding = 2, .text_align = BGTK_ALIGN_LEFT,
++			   .text_v_align = BGTK_VALIGN_CENTER};
+ 	struct BGTK_Widget *lbl, *btn;
+ 
+ 	sidebar_spacing(&amp;pad, NULL, NULL, &amp;bw);
+@@ -1568,8 +1625,13 @@ static struct BGTK_Widget *make_nav_button(int i, int btn_w)
+ 	if (selected)
+ 		to.text_style = BGTK_TEXT_BOLD;
+ 	lbl = bgtk_text(ctx, (char *)page_names[i], to);
++	hpad = pad / 2 + 2;
++	if (hpad &lt; 6)
++		hpad = 6;
+ 	btn = bgtk_button(ctx, lbl, page_cb, (void *)(intptr_t)i,
+-			  (BGTK_Options){.padding = pad / 2 + 2, .margin = 0});
++			  (BGTK_Options){.padding = hpad, .margin = 0,
++					 .text_align = BGTK_ALIGN_LEFT,
++					 .text_v_align = BGTK_VALIGN_CENTER});
+ 	btn-&gt;w = bw;
+ 	if (selected) {
+ 		uint32_t hi = ctx-&gt;theme.highlight ? ctx-&gt;theme.highlight
+@@ -1599,8 +1661,9 @@ static void rebuild_sidebar(void)
+ 	free(btns);
+ 	sidebar-&gt;data.scrollable.items[0] = sidebar_list;
+ 	sidebar-&gt;data.scrollable.widget_count = 1;
+-	sidebar-&gt;padding = panel_inset();
++	sidebar-&gt;padding = 0;
+ 	sidebar-&gt;margin = 0;
++	bgtk_widget_set_parent(sidebar_list, sidebar);
+ 	if (old &amp;&amp; old != sidebar_list)
+ 		bgtk_widget_destroy(old);
+ }
+@@ -1608,16 +1671,10 @@ static void rebuild_sidebar(void)
+ static struct BGTK_Widget *build_sidebar(void)
+ {
+ 	int pad, mar, scroll_pad, btn_w, i;
+-	int bw = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
+-	int fmar = ctx &amp;&amp; ctx-&gt;theme.frame_margin &gt;= 0 ? ctx-&gt;theme.frame_margin
+-						       : 0;
+-	int rpad = root_pad();
+ 	struct BGTK_Widget **btns;
+ 	struct BGTK_Widget *scroll;
+ 
+ 	sidebar_spacing(&amp;pad, &amp;mar, &amp;scroll_pad, &amp;btn_w);
+-	if (bw &lt; 0)
+-		bw = 0;
+ 	btns = malloc(NUM_PAGES * sizeof(*btns));
+ 	if (!btns)
+ 		return NULL;
+@@ -1630,7 +1687,8 @@ static struct BGTK_Widget *build_sidebar(void)
+ 	scroll = bgtk_scrollable(ctx, &amp;sidebar_list, 1,
+ 		(BGTK_Options){.padding = scroll_pad, .margin = 0});
+ 	scroll-&gt;w = SIDEBAR_W;
+-	scroll-&gt;h = app_h - 2 * (fmar + bw + rpad);
++	scroll-&gt;h = 40; /* reflow_shell / EXPAND_Y set real height */
++	scroll-&gt;flags |= BGTK_FLAG_EXPAND_Y;
+ 	return scroll;
+ }
+ 
+@@ -1648,40 +1706,35 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
+ 		int rpad = root_pad();
+ 		int fmar = cfg.theme.frame_margin &gt;= 0 ? cfg.theme.frame_margin
+ 							: 0;
+-		int bw = (int)cfg.theme.frame_border_size;
+-		int chrome, panel_w, panel_h;
+ 		struct BGTK_Widget *placeholder;
+ 		struct BGTK_Widget *cols[3];
+-		struct BGTK_Widget *row;
+ 
+-		if (bw &lt; 0)
+-			bw = 0;
+-		chrome = 2 * (fmar + bw + rpad);
+ 		sidebar = build_sidebar();
+ 		panel_rule = bgtk_rule(ctx, BGTK_LIST_VERTICAL, 1,
+ 				       (BGTK_Options){.margin = 0, .padding = 0});
+ 		panel_rule-&gt;w = 1;
+ 		panel_rule-&gt;data.rule.thickness = 1;
+ 		panel_rule-&gt;data.rule.color = 0;
+-		panel_rule-&gt;h = app_h - chrome;
+-		panel_w = app_w - sidebar-&gt;w - panel_rule-&gt;w - chrome;
+-		panel_h = app_h - chrome;
+-		if (panel_w &lt; 80)
+-			panel_w = 80;
++		panel_rule-&gt;flags |= BGTK_FLAG_EXPAND_Y;
+ 		placeholder = bgtk_text(ctx, "Select a category",
+ 			(BGTK_Options){.padding = theme_outer_pad(), .margin = 0});
+-		content_panel = bgtk_frame(ctx, placeholder, panel_w, panel_h,
++		/* Size seeded in reflow_shell; FILL takes free width/height. */
++		content_panel = bgtk_frame(ctx, placeholder, 80, 40,
+ 			(BGTK_Options){.padding = 0, .margin = 0});
+ 		content_panel-&gt;data.frame.border_w = 0;
++		content_panel-&gt;flags |= BGTK_FLAG_FILL;
+ 		cols[0] = sidebar;
+ 		cols[1] = panel_rule;
+ 		cols[2] = content_panel;
+-		row = bgtk_list(ctx, cols, 3,
++		/* margin set in reflow_shell to match edge_inset (button↔rule). */
++		shell_row = bgtk_list(ctx, cols, 3,
+ 			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+-				       .margin = 0, .padding = 0});
+-		root_frame = bgtk_frame(ctx, row, app_w, app_h,
++				       .margin = (edge_inset() + 1) / 2,
++				       .padding = 0});
++		root_frame = bgtk_frame(ctx, shell_row, app_w, app_h,
+ 			(BGTK_Options){.padding = rpad, .margin = fmar});
+ 		ctx-&gt;root_widget = root_frame;
++		reflow_shell();
+ 	}
+ 	current_page = 0;
+ 	rebuild_content();
+diff --git a/bgtk.h b/bgtk.h
+index 02d59f5..159513f 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -269,7 +269,13 @@ enum BGTK_Widget_Type {
+ };
+ 
+ // Widget flags
+-#define BGTK_FLAG_CENTER (1 &lt;&lt; 0)  // Center child widgets horizontally (containers)
++#define BGTK_FLAG_CENTER (1 &lt;&lt; 0) /* Center children on cross-axis (lists). */
++/* Grow into free space along parent list main/cross axis (see layout). */
++#define BGTK_FLAG_EXPAND_X (1 &lt;&lt; 1)
++#define BGTK_FLAG_EXPAND_Y (1 &lt;&lt; 2)
++#define BGTK_FLAG_FILL (BGTK_FLAG_EXPAND_X | BGTK_FLAG_EXPAND_Y)
++/* x/y are parent-relative; abs_x/abs_y hold screen position after layout. */
++#define BGTK_FLAG_RELATIVE (1 &lt;&lt; 3)
+ 
+ /* Text style bits (bgtk_text / BGTK_Options.text_style). Synthetic via FreeType. */
+ #define BGTK_TEXT_BOLD   (1 &lt;&lt; 0)
+@@ -311,7 +317,11 @@ typedef struct {
+ struct BGTK_Widget {
+ 	struct BGTK_Context* ctx;
+ 	enum BGTK_Widget_Type type;
+-	int x, y, w, h;      // Absolute position and size
++	/* Position: absolute by default. With BGTK_FLAG_RELATIVE, x/y are
++	 * parent-relative and abs_x/abs_y are the screen origin after layout. */
++	int x, y, w, h;
++	int abs_x, abs_y;
++	struct BGTK_Widget *parent; /* set by list/frame/scrollable constructors */
+ 	int flags;          // Flags for widget behavior
+ 	int padding;        // Internal spacing (pixels)
+ 	int margin;         // External spacing (pixels)
+@@ -397,6 +407,15 @@ struct BGTK_Widget {
+ /* Free a widget subtree (safe on NULL). Clears ctx focus if it was inside. */
+ void bgtk_widget_destroy(struct BGTK_Widget *w);
+ 
++/* Screen-space origin after the last layout/draw (handles RELATIVE). */
++void bgtk_widget_screen_pos(const struct BGTK_Widget *w, int *x, int *y);
++/* 1 if screen point (x,y) is inside the widget's outer box. */
++int bgtk_widget_hit(const struct BGTK_Widget *w, int x, int y);
++/* Link child→parent (constructors do this; use when re-homing a subtree). */
++void bgtk_widget_set_parent(struct BGTK_Widget *child, struct BGTK_Widget *parent);
++/* Apply EXPAND_X/Y / FILL to list children using list's current w/h. */
++void bgtk_list_layout_expand(struct BGTK_Widget *list);
++
+ // --- Logging (dedicated files under ~/.cache/bgtk/, not shared with BGCE) ---
+ // Open $XDG_CACHE_HOME/bgtk/&lt;app_name&gt;.log (or ~/.cache/bgtk/...). Creates dirs.
+ // Call once at process start with a per-app name (e.g. "terminal", "launcher").
+diff --git a/drawing.c b/drawing.c
+index 1fa3a2d..82c8e54 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -376,14 +376,17 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 	case BGTK_WIDGET_LIST: {
+ 		int max_width = 0;
+ 		int max_height = 0;
+-		int inset = 2 * (w-&gt;margin + w-&gt;padding);
+ 		int n = w-&gt;data.list_widget.widget_count;
++		int keep_w = w-&gt;w;
++		int keep_h = w-&gt;h;
+ 
+ 		w-&gt;data.list_widget.content_width = 0;
+ 		w-&gt;data.list_widget.content_height = 0;
+ 		for (int i = 0; i &lt; n; i++) {
+ 			struct BGTK_Widget *child =
+ 			    w-&gt;data.list_widget.items[i];
++			if (!child)
++				continue;
+ 			calculate_widget_size(ctx, child);
+ 			if (w-&gt;data.list_widget.orientation ==
+ 			    BGTK_LIST_VERTICAL) {
+@@ -407,7 +410,8 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 				w-&gt;data.list_widget.content_width -=
+ 				    2 * w-&gt;margin;
+ 		}
+-		/* Outer size: content + padding; margin is inter-item gap only. */
++		/* Outer size: content + padding; margin is inter-item gap only.
++		 * Keep a larger pre-set size so EXPAND children have free space. */
+ 		if (w-&gt;data.list_widget.orientation == BGTK_LIST_VERTICAL) {
+ 			w-&gt;data.list_widget.content_width = max_width;
+ 			w-&gt;w = max_width + 2 * w-&gt;padding;
+@@ -419,7 +423,10 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 			w-&gt;w = w-&gt;data.list_widget.content_width +
+ 			       2 * w-&gt;padding;
+ 		}
+-		(void)inset;
++		if (keep_w &gt; w-&gt;w)
++			w-&gt;w = keep_w;
++		if (keep_h &gt; w-&gt;h)
++			w-&gt;h = keep_h;
+ 		break;
+ 	}
+ 	case BGTK_WIDGET_IMAGE:
+@@ -845,9 +852,13 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
+ 		struct BGTK_Widget *child = w-&gt;data.scrollable.items[i];
+ 		int bottom;
++		int inner_w = w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
+ 
+ 		if (!child)
+ 			continue;
++		/* EXPAND_X: fill content width (scroll body). */
++		if ((child-&gt;flags &amp; BGTK_FLAG_EXPAND_X) &amp;&amp; inner_w &gt; 0)
++			child-&gt;w = inner_w;
+ 		child-&gt;x = w-&gt;margin + w-&gt;padding;
+ 		if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+ 			child-&gt;x =
+@@ -855,6 +866,10 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		}
+ 		/* Padding insets content on all sides (was X-only — Y ignored). */
+ 		child-&gt;y = current_y + w-&gt;margin + w-&gt;padding;
++		/* Content-space coords (events transform into this space). */
++		child-&gt;abs_x = child-&gt;x;
++		child-&gt;abs_y = child-&gt;y;
++		child-&gt;parent = w;
+ 		bottom = child-&gt;y + child-&gt;h;
+ 		/* Skip draw if entirely past buffer (defensive). */
+ 		if (child-&gt;y &lt; content_height &amp;&amp; bottom &gt; 0)
+@@ -898,35 +913,143 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	}
+ }
+ 
++/* Grow EXPAND_* children into free space inside a list's content box. */
++void bgtk_list_layout_expand(struct BGTK_Widget *w)
++{
++	int n, pad, gap, inner_w, inner_h, i, n_exp, fixed, free_sp, share, rem;
++	int vert;
++
++	if (!w || w-&gt;type != BGTK_WIDGET_LIST)
++		return;
++	n = w-&gt;data.list_widget.widget_count;
++	pad = w-&gt;padding;
++	gap = 2 * w-&gt;margin;
++	inner_w = w-&gt;w - 2 * pad;
++	inner_h = w-&gt;h - 2 * pad;
++	n_exp = 0;
++	fixed = 0;
++	vert = (w-&gt;data.list_widget.orientation == BGTK_LIST_VERTICAL);
++
++	if (inner_w &lt; 0)
++		inner_w = 0;
++	if (inner_h &lt; 0)
++		inner_h = 0;
++
++	if (vert) {
++		for (i = 0; i &lt; n; i++) {
++			struct BGTK_Widget *c = w-&gt;data.list_widget.items[i];
++
++			if (!c)
++				continue;
++			if (c-&gt;flags &amp; BGTK_FLAG_EXPAND_X)
++				c-&gt;w = inner_w;
++			if (c-&gt;flags &amp; BGTK_FLAG_EXPAND_Y)
++				n_exp++;
++			else
++				fixed += c-&gt;h;
++		}
++		if (n &gt; 1)
++			fixed += (n - 1) * gap;
++		free_sp = inner_h - fixed;
++		if (n_exp &gt; 0 &amp;&amp; free_sp &gt; 0) {
++			share = free_sp / n_exp;
++			rem = free_sp % n_exp;
++			for (i = 0; i &lt; n; i++) {
++				struct BGTK_Widget *c =
++					w-&gt;data.list_widget.items[i];
++				if (c &amp;&amp; (c-&gt;flags &amp; BGTK_FLAG_EXPAND_Y)) {
++					c-&gt;h = share + (rem &gt; 0 ? 1 : 0);
++					if (rem &gt; 0)
++						rem--;
++				}
++			}
++		}
++	} else {
++		for (i = 0; i &lt; n; i++) {
++			struct BGTK_Widget *c = w-&gt;data.list_widget.items[i];
++
++			if (!c)
++				continue;
++			if (c-&gt;flags &amp; BGTK_FLAG_EXPAND_Y)
++				c-&gt;h = inner_h;
++			if (c-&gt;flags &amp; BGTK_FLAG_EXPAND_X)
++				n_exp++;
++			else
++				fixed += c-&gt;w;
++		}
++		if (n &gt; 1)
++			fixed += (n - 1) * gap;
++		free_sp = inner_w - fixed;
++		if (n_exp &gt; 0 &amp;&amp; free_sp &gt; 0) {
++			share = free_sp / n_exp;
++			rem = free_sp % n_exp;
++			for (i = 0; i &lt; n; i++) {
++				struct BGTK_Widget *c =
++					w-&gt;data.list_widget.items[i];
++				if (c &amp;&amp; (c-&gt;flags &amp; BGTK_FLAG_EXPAND_X)) {
++					c-&gt;w = share + (rem &gt; 0 ? 1 : 0);
++					if (rem &gt; 0)
++						rem--;
++				}
++			}
++		}
++	}
++}
++
++/* Place a child: relative or absolute. ox/oy are parent content origin (draw space). */
++static void place_child(struct BGTK_Widget *parent, struct BGTK_Widget *child,
++			int ox, int oy, int rel_x, int rel_y)
++{
++	int use_rel = (parent-&gt;flags &amp; BGTK_FLAG_RELATIVE) ||
++		      (child-&gt;flags &amp; BGTK_FLAG_RELATIVE);
++
++	child-&gt;parent = parent;
++	if (use_rel) {
++		child-&gt;flags |= BGTK_FLAG_RELATIVE;
++		child-&gt;x = rel_x;
++		child-&gt;y = rel_y;
++		child-&gt;abs_x = ox + rel_x;
++		child-&gt;abs_y = oy + rel_y;
++	} else {
++		child-&gt;x = ox + rel_x;
++		child-&gt;y = oy + rel_y;
++		child-&gt;abs_x = child-&gt;x;
++		child-&gt;abs_y = child-&gt;y;
++	}
++}
++
+ static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		      uint32_t *pixels)
+ {
+-	// Draw list widget children directly
+-	// (no scrolling)
+ 	int current_x = 0;
+ 	int current_y = 0;
++	int ox = w-&gt;x;
++	int oy = w-&gt;y;
++	int i, n = w-&gt;data.list_widget.widget_count;
++
++	bgtk_list_layout_expand(w);
+ 
+-	for (int i = 0; i &lt; w-&gt;data.list_widget.widget_count; i++) {
++	for (i = 0; i &lt; n; i++) {
+ 		struct BGTK_Widget *child = w-&gt;data.list_widget.items[i];
++		int rel_x, rel_y;
++
++		if (!child)
++			continue;
+ 
+ 		if (w-&gt;data.list_widget.orientation == BGTK_LIST_VERTICAL) {
+-			/* Margin is row gap only — not a left inset (kept L/R even). */
+-			child-&gt;x = w-&gt;x + w-&gt;padding;
+-			if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+-				child-&gt;x =
+-				    w-&gt;x +
+-				    (w-&gt;w - child-&gt;w) / 2;
+-			}
+-			child-&gt;y = w-&gt;y + w-&gt;padding + current_y;
++			/* Margin is row gap only — not a left inset. */
++			rel_x = w-&gt;padding;
++			if (w-&gt;flags &amp; BGTK_FLAG_CENTER)
++				rel_x = (w-&gt;w - child-&gt;w) / 2;
++			rel_y = w-&gt;padding + current_y;
++			place_child(w, child, ox, oy, rel_x, rel_y);
+ 			current_y += child-&gt;h + 2 * w-&gt;margin;
+-		} else {	// BGTK_LIST_HORIZONTAL
+-			child-&gt;x = w-&gt;x + w-&gt;padding + current_x;
+-			child-&gt;y = w-&gt;y + w-&gt;padding;
+-			if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+-				child-&gt;y =
+-				    w-&gt;y +
+-				    (w-&gt;h - child-&gt;h) / 2;
+-			}
++		} else {
++			rel_x = w-&gt;padding + current_x;
++			rel_y = w-&gt;padding;
++			if (w-&gt;flags &amp; BGTK_FLAG_CENTER)
++				rel_y = (w-&gt;h - child-&gt;h) / 2;
++			place_child(w, child, ox, oy, rel_x, rel_y);
+ 			current_x += child-&gt;w + 2 * w-&gt;margin;
+ 		}
+ 
+@@ -987,13 +1110,20 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 
+ 	// Draw child widget inside the frame
+ 	if (w-&gt;data.frame.child) {
+-		w-&gt;data.frame.child-&gt;x = w-&gt;x + w-&gt;margin + bw + w-&gt;padding;
+-		w-&gt;data.frame.child-&gt;y = w-&gt;y + w-&gt;margin + bw + w-&gt;padding;
+-		w-&gt;data.frame.child-&gt;w =
+-		    w-&gt;w - 2 * (w-&gt;margin + bw + w-&gt;padding);
+-		w-&gt;data.frame.child-&gt;h =
+-		    w-&gt;h - 2 * (w-&gt;margin + bw + w-&gt;padding);
+-		draw_widget(ctx, w-&gt;data.frame.child, pixels);
++		struct BGTK_Widget *ch = w-&gt;data.frame.child;
++		int rel_x = w-&gt;margin + bw + w-&gt;padding;
++		int rel_y = w-&gt;margin + bw + w-&gt;padding;
++		int cw = w-&gt;w - 2 * (w-&gt;margin + bw + w-&gt;padding);
++		int chh = w-&gt;h - 2 * (w-&gt;margin + bw + w-&gt;padding);
++
++		/* Default: fill frame content box. EXPAND flags same; without
++		 * FILL a fixed child still gets the box (historical behavior). */
++		if (cw &gt; 0)
++			ch-&gt;w = cw;
++		if (chh &gt; 0)
++			ch-&gt;h = chh;
++		place_child(w, ch, w-&gt;x, w-&gt;y, rel_x, rel_y);
++		draw_widget(ctx, ch, pixels);
+ 	}
+ }
+ 
+@@ -1269,14 +1399,15 @@ static void draw_switch(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	track_h = kn + 4;
+ 	if (track_h &gt; ih)
+ 		track_h = ih;
+-	track_w = kn * 5 / 2;
+-	if (track_w &lt; kn + 16)
+-		track_w = kn + 16;
++	/* Wider pill (≈ 4.5× knob); matches bgtk_switch sizing. */
++	track_w = kn * 9 / 2;
++	if (track_w &lt; kn + 40)
++		track_w = kn + 40;
+ 	/* Keep room for both labels. */
+ 	if (lw + gap + track_w + gap + rw &gt; iw)
+ 		track_w = iw - lw - rw - gap * 2;
+-	if (track_w &lt; kn + 8)
+-		track_w = kn + 8;
++	if (track_w &lt; kn + 16)
++		track_w = kn + 16;
+ 
+ 	track_x = x0 + lw + gap;
+ 	track_y = y0 + (ih - track_h) / 2;
+@@ -1317,6 +1448,24 @@ static void draw_switch(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		 uint32_t *pixels)
+ {
++	int saved_x = 0, saved_y = 0;
++	int rel = w &amp;&amp; (w-&gt;flags &amp; BGTK_FLAG_RELATIVE);
++
++	if (!w)
++		return;
++	/* Ensure abs is set for non-relative / root widgets. */
++	if (!rel) {
++		w-&gt;abs_x = w-&gt;x;
++		w-&gt;abs_y = w-&gt;y;
++	}
++	/* Draw uses screen (or content-buffer) absolute coords. */
++	if (rel) {
++		saved_x = w-&gt;x;
++		saved_y = w-&gt;y;
++		w-&gt;x = w-&gt;abs_x;
++		w-&gt;y = w-&gt;abs_y;
++	}
++
+ 	switch (w-&gt;type) {
+ 	case BGTK_WIDGET_LABEL:
+ 		draw_label(ctx, w, pixels);
+@@ -1352,4 +1501,9 @@ void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		puts("can't draw unknown widget");
+ 		break;
+ 	}
++
++	if (rel) {
++		w-&gt;x = saved_x;
++		w-&gt;y = saved_y;
++	}
+ }
+diff --git a/test/headless.c b/test/headless.c
+index 78f3fe9..981138c 100644
+--- a/test/headless.c
++++ b/test/headless.c
+@@ -498,6 +498,111 @@ int main(void)
+ 		bgtk_destroy_mock(sctx);
+ 	}
+ 
++	/* 09: Expand/fill + relative positioning.
++	 * Horizontal row: fixed sidebar + EXPAND_X content.
++	 * Content is a RELATIVE vertical list with a FILL body. */
++	{
++		struct BGTK_Context *lctx = bgtk_init_mock(480, 240);
++		struct BGTK_Widget *side, *body, *row, *frame, *title, *fill;
++		struct BGTK_Widget *side_items[2], *body_items[2], *row_items[2];
++		struct InputEvent click = {0};
++		int sx, sy;
++
++		if (!lctx) {
++			fprintf(stderr, "headless: layout scene init failed\n");
++			return 1;
++		}
++		side_items[0] = bgtk_text(lctx, "Nav A",
++					  (BGTK_Options){.padding = 4});
++		side_items[1] = bgtk_text(lctx, "Nav B",
++					  (BGTK_Options){.padding = 4});
++		side = bgtk_list(lctx, side_items, 2,
++				 (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++						.margin = 4, .padding = 4});
++		if (side)
++			side-&gt;w = 100;
++
++		title = bgtk_text(lctx, "expand content",
++				  (BGTK_Options){.padding = 4});
++		fill = bgtk_frame(lctx, bgtk_text(lctx, "FILL",
++						  (BGTK_Options){.padding = 8}),
++				  40, 40, (BGTK_Options){.padding = 4});
++		if (fill)
++			fill-&gt;flags |= BGTK_FLAG_FILL;
++		body_items[0] = title;
++		body_items[1] = fill;
++		body = bgtk_list(lctx, body_items, 2,
++				 (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++						.margin = 4, .padding = 4,
++						.flags = BGTK_FLAG_RELATIVE});
++		if (body)
++			body-&gt;flags |= BGTK_FLAG_EXPAND_X | BGTK_FLAG_EXPAND_Y |
++				       BGTK_FLAG_RELATIVE;
++
++		row_items[0] = side;
++		row_items[1] = body;
++		row = bgtk_list(lctx, row_items, 2,
++				(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
++					       .margin = 6, .padding = 4});
++		if (row) {
++			row-&gt;w = 480;
++			row-&gt;h = 240;
++		}
++		frame = bgtk_frame(lctx, row, 480, 240,
++				   (BGTK_Options){.padding = 0, .margin = 0});
++		if (frame)
++			frame-&gt;data.frame.border_w = 0;
++		lctx-&gt;root_widget = frame;
++		bgtk_draw_widgets(lctx);
++		take_screenshot(lctx, "headless_09_expand_relative.png");
++
++		/* Content list should be relative and wider than sidebar. */
++		if (!body || !(body-&gt;flags &amp; BGTK_FLAG_RELATIVE)) {
++			fprintf(stderr, "headless: body not RELATIVE\n");
++			bgtk_destroy_mock(lctx);
++			return 1;
++		}
++		if (body-&gt;w &lt; 200) {
++			fprintf(stderr, "headless: body did not EXPAND_X (w=%d)\n",
++				body-&gt;w);
++			bgtk_destroy_mock(lctx);
++			return 1;
++		}
++		if (fill &amp;&amp; fill-&gt;h &lt; 80) {
++			fprintf(stderr, "headless: fill did not EXPAND_Y (h=%d)\n",
++				fill-&gt;h);
++			bgtk_destroy_mock(lctx);
++			return 1;
++		}
++		/* Relative: x/y parent-local; abs_* screen after layout. */
++		if (body-&gt;x != body-&gt;abs_x) {
++			/* body.x is relative offset within row; abs is screen. */
++			if (body-&gt;abs_x &lt;= body-&gt;x) {
++				fprintf(stderr,
++					"headless: relative abs_x expected &gt; rel x "
++					"(rel=%d abs=%d)\n",
++					body-&gt;x, body-&gt;abs_x);
++				bgtk_destroy_mock(lctx);
++				return 1;
++			}
++		}
++		bgtk_widget_screen_pos(body, &amp;sx, &amp;sy);
++		click.type = EV_KEY;
++		click.code = BTN_LEFT;
++		click.value = 1;
++		click.x = sx + 20;
++		click.y = sy + 10;
++		if (!bgtk_widget_hit(body, click.x, click.y)) {
++			fprintf(stderr, "headless: hit test missed body at %d,%d\n",
++				click.x, click.y);
++			bgtk_destroy_mock(lctx);
++			return 1;
++		}
++		bgtk_inject_event(lctx, click);
++		take_screenshot(lctx, "headless_09b_expand_clicked.png");
++		bgtk_destroy_mock(lctx);
++	}
++
+ 	printf("headless test complete. PNG frames written.\n");
+ 	return 0;
+ }
+diff --git a/test/test_gemini_browser.c b/test/test_gemini_browser.c
+index d1cb2e1..4ec5f7e 100644
+--- a/test/test_gemini_browser.c
++++ b/test/test_gemini_browser.c
+@@ -43,6 +43,28 @@ static BGTK_Options line_opts(void)
+ 	return (BGTK_Options){.padding = 1, .margin = 1};
+ }
+ 
++#define GEM_V_BEFORE_HEADER 18
++#define GEM_V_AFTER_HEADER  12
++#define GEM_V_AFTER_PARA    14
++#define GEM_V_EMPTY_LINE    12
++
++static void gemini_recompute_scroll_height(void)
++{
++	int cy = 0, i, n;
++
++	if (!content_scroll)
++		return;
++	n = content_scroll-&gt;data.scrollable.widget_count;
++	for (i = 0; i &lt; n; i++) {
++		struct BGTK_Widget *ch = content_scroll-&gt;data.scrollable.items[i];
++
++		if (ch)
++			cy += ch-&gt;h + 2 * content_scroll-&gt;margin;
++	}
++	content_scroll-&gt;data.scrollable.content_height =
++		cy + 2 * (content_scroll-&gt;margin + content_scroll-&gt;padding);
++}
++
+ /* Root chrome: [frame_margin][border][padding][content]… */
+ static void gemini_chrome(int *pad, int *fmar, int *bw)
+ {
+@@ -558,9 +580,8 @@ static void rebuild_content_from_gemtext(const char *body)
+ 		if (is_link)
+ 			resolve_url(current_url, link_to, resolved, sizeof(resolved));
+ 
+-		if (header_level &gt; 0 &amp;&amp; cnt &gt; 0) {
+-			new_items[cnt-1]-&gt;h += 5;  /* increase the top spacing a little before headings */
+-		}
++		if (header_level &gt; 0 &amp;&amp; cnt &gt; 0)
++			new_items[cnt - 1]-&gt;h += GEM_V_BEFORE_HEADER;
+ 
+ 		if (header_level &gt; 0) {
+ 			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size + 4 - header_level);
+@@ -584,10 +605,14 @@ static void rebuild_content_from_gemtext(const char *body)
+ 					tw-&gt;handle_event = gemini_link_handler;
+ 				}
+ 				if (s &lt; nsubs - 1) {
+-					tw-&gt;h -= 3;  /* decrease a little for lines in the same paragraph (tighter leading between wraps) */
+-				}
+-				if (s == nsubs - 1) {
+-					tw-&gt;h += 5;  /* extra vertical space after this logical block */
++					if (tw-&gt;h &gt; 4)
++						tw-&gt;h -= 2;
++				} else if (header_level &gt; 0) {
++					tw-&gt;h += GEM_V_AFTER_HEADER;
++				} else if (!vis[0]) {
++					tw-&gt;h += GEM_V_EMPTY_LINE;
++				} else {
++					tw-&gt;h += GEM_V_AFTER_PARA;
+ 				}
+ 				if (cnt &gt;= cap) {
+ 					cap = cap ? cap*2 : 32;
+@@ -624,6 +649,7 @@ static void rebuild_content_from_gemtext(const char *body)
+ 	content_scroll-&gt;data.scrollable.items = new_items;
+ 	content_scroll-&gt;data.scrollable.widget_count = cnt;
+ 	content_scroll-&gt;data.scrollable.scroll_y = 0;
++	gemini_recompute_scroll_height();
+ }
+ 
+ /* Real navigation using live capsule */
+@@ -722,6 +748,50 @@ static void demo_addr_on_enter(void)
+ 	load_real_url(addr_input-&gt;data.text_input.text);
+ }
+ 
++/*
++ * Mirror apps/gemini_browser.c key chords (must stay in sync).
++ * Returns: 0 pass-through, 1 handled, -1 quit.
++ */
++static int gemini_browser_key(struct InputEvent ev)
++{
++	int addr_focus, mods, scroll_key = 0;
++
++	bgtk_update_modifiers(ctx, ev);
++	if (ev.type != EV_KEY || (ev.value != 1 &amp;&amp; ev.value != 2))
++		return 0;
++	addr_focus = (ctx-&gt;focused_widget == addr_input);
++	mods = bgtk_mods_from_ctx(ctx);
++	if ((mods &amp; BGTK_MOD_CTRL) &amp;&amp; ev.code == KEY_L) {
++		bgtk_set_focus(ctx, addr_input);
++		return 1;
++	}
++	if ((mods &amp; BGTK_MOD_CTRL) &amp;&amp; ev.code == KEY_R)
++		return 1;
++	if (ev.code == KEY_ESC) {
++		if (addr_focus) {
++			bgtk_set_focus(ctx, content_scroll);
++			return 1;
++		}
++		return -1;
++	}
++	if ((mods &amp; BGTK_MOD_CTRL) &amp;&amp; ev.code == KEY_C)
++		return -1;
++	if (ev.code == KEY_PAGEUP || ev.code == KEY_PAGEDOWN)
++		scroll_key = 1;
++	else if (!addr_focus &amp;&amp;
++		 (ev.code == KEY_UP || ev.code == KEY_DOWN ||
++		  ev.code == KEY_HOME || ev.code == KEY_END ||
++		  ev.code == KEY_SPACE || ev.code == KEY_J ||
++		  ev.code == KEY_K))
++		scroll_key = 1;
++	if (scroll_key &amp;&amp; content_scroll &amp;&amp; content_scroll-&gt;handle_event) {
++		gemini_recompute_scroll_height();
++		if (content_scroll-&gt;handle_event(content_scroll, ev))
++			return 1;
++	}
++	return 0;
++}
++
+ int main(void)
+ {
+ 	if (tls_init() == -1) {
+@@ -911,6 +981,51 @@ int main(void)
+ 	}
+ 	take_screenshot(ctx, "gemini_browser_02_typing_in_bar.png");
+ 
++	/* Esc while URL focused must blur to content — not quit the app. */
++	{
++		struct InputEvent k = {0};
++		int r;
++
++		k.type = EV_KEY;
++		k.value = 1;
++		k.code = KEY_ESC;
++		r = gemini_browser_key(k);
++		if (r != 1 || ctx-&gt;focused_widget != content_scroll) {
++			fprintf(stderr,
++				"test_gemini_browser: Esc blur failed "
++				"(ret=%d focus=%p want content_scroll)\n",
++				r, (void *)ctx-&gt;focused_widget);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		take_screenshot(ctx, "gemini_browser_02b_esc_blur.png");
++	}
++
++	/* Ctrl+L focuses the URL bar again. */
++	{
++		struct InputEvent k = {0};
++		int r;
++
++		k.type = EV_KEY;
++		k.value = 1;
++		k.code = KEY_LEFTCTRL;
++		gemini_browser_key(k);
++		k.code = KEY_L;
++		r = gemini_browser_key(k);
++		if (r != 1 || ctx-&gt;focused_widget != addr_input) {
++			fprintf(stderr,
++				"test_gemini_browser: Ctrl+L focus failed "
++				"(ret=%d ctrl=%d focus=%p)\n",
++				r, ctx-&gt;ctrl_held, (void *)ctx-&gt;focused_widget);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		k.code = KEY_LEFTCTRL;
++		k.value = 0;
++		gemini_browser_key(k);
++		take_screenshot(ctx, "gemini_browser_02c_ctrl_l.png");
++	}
++
+ 	/* ENTER -&gt; real fetch of the (re)typed capsule URL via on_enter */
+ 	{
+ 		struct InputEvent k = {0};
+diff --git a/widgets.c b/widgets.c
+index 9282c50..53633b0 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -7,13 +7,47 @@
+ #include "bgtk.h"
+ #include "internal.h"
+ 
++void bgtk_widget_screen_pos(const struct BGTK_Widget *w, int *x, int *y)
++{
++	int sx = 0, sy = 0;
++
++	if (w) {
++		if (w-&gt;flags &amp; BGTK_FLAG_RELATIVE) {
++			sx = w-&gt;abs_x;
++			sy = w-&gt;abs_y;
++		} else {
++			sx = w-&gt;x;
++			sy = w-&gt;y;
++		}
++	}
++	if (x)
++		*x = sx;
++	if (y)
++		*y = sy;
++}
++
++int bgtk_widget_hit(const struct BGTK_Widget *w, int x, int y)
++{
++	int sx, sy;
++
++	if (!w)
++		return 0;
++	bgtk_widget_screen_pos(w, &amp;sx, &amp;sy);
++	return x &gt;= sx &amp;&amp; x &lt; sx + w-&gt;w &amp;&amp; y &gt;= sy &amp;&amp; y &lt; sy + w-&gt;h;
++}
++
++void bgtk_widget_set_parent(struct BGTK_Widget *child,
++			    struct BGTK_Widget *parent)
++{
++	if (child)
++		child-&gt;parent = parent;
++}
++
+ // Default event handler for widgets
+ static int
+ default_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ {
+-	// Check if the event coordinates are within the widget's bounds
+-	if (ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+-	    ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h)) {
++	if (bgtk_widget_hit(widget, ev.x, ev.y)) {
+ 		if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
+ 			bgtk_set_focus(widget-&gt;ctx, widget);
+ 			return 1;
+@@ -25,8 +59,7 @@ default_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ // Button event handler
+ static int button_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ {
+-	int inside = (ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+-		      ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h));
++	int inside = bgtk_widget_hit(widget, ev.x, ev.y);
+ 
+ 	// Mouse down: set pressed state if inside.
+ 	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
+@@ -122,8 +155,7 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 	// For non-pointer events (keyboard), coordinates may be 0/undefined,
+ 	// so we only hit-test when a position is actually provided.
+ 	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
+-		if (ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+-		    ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h)) {
++		if (bgtk_widget_hit(widget, ev.x, ev.y)) {
+ 			bgtk_set_focus(widget-&gt;ctx, widget);
+ 			return 1;	// Event handled
+ 		}
+@@ -300,9 +332,10 @@ static int scrollable_nudge(struct BGTK_Widget *widget, int delta)
+ static int scrollable_handle_event(struct BGTK_Widget *widget,
+ 				   struct InputEvent ev)
+ {
+-	int in_bounds =
+-	    (ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+-	     ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h));
++	int sx, sy;
++	int in_bounds = bgtk_widget_hit(widget, ev.x, ev.y);
++
++	bgtk_widget_screen_pos(widget, &amp;sx, &amp;sy);
+ 
+ 	/* Keyboard scroll when this widget (or nothing texty) has focus. */
+ 	if (ev.type == EV_KEY &amp;&amp; (ev.value == 1 || ev.value == 2) &amp;&amp;
+@@ -360,13 +393,14 @@ static int scrollable_handle_event(struct BGTK_Widget *widget,
+ 	/* Pass pointer events to children in content coordinates. */
+ 	{
+ 		struct InputEvent cev = ev;
+-		cev.x = ev.x - widget-&gt;x;
+-		cev.y = ev.y - widget-&gt;y + widget-&gt;data.scrollable.scroll_y;
++		cev.x = ev.x - sx;
++		cev.y = ev.y - sy + widget-&gt;data.scrollable.scroll_y;
+ 
+ 		for (int i = 0; i &lt; widget-&gt;data.scrollable.widget_count; i++) {
+ 			struct BGTK_Widget *child =
+ 				widget-&gt;data.scrollable.items[i];
+ 
++			/* Scroll content children are always content-relative. */
+ 			if (!(cev.x &gt;= child-&gt;x &amp;&amp; cev.x &lt; child-&gt;x + child-&gt;w &amp;&amp;
+ 			      cev.y &gt;= child-&gt;y &amp;&amp; cev.y &lt; child-&gt;y + child-&gt;h))
+ 				continue;
+@@ -401,19 +435,11 @@ static int frame_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 	if (ev.type == EV_REL &amp;&amp; ev.code == REL_WHEEL &amp;&amp; child &amp;&amp;
+ 	    child-&gt;handle_event)
+ 		return child-&gt;handle_event(child, ev);
+-	// First check if the event is within the frame's bounds
+-	if (!(ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+-	      ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h))) {
+-		return 0;	// Event not in this widget
+-	}
++	if (!bgtk_widget_hit(widget, ev.x, ev.y))
++		return 0;
+ 	// Pass event to child widget if it exists and the point is in the child
+ 	if (child) {
+-		int cx0 = child-&gt;x;
+-		int cy0 = child-&gt;y;
+-		int cx1 = cx0 + child-&gt;w;
+-		int cy1 = cy0 + child-&gt;h;
+-
+-		if (ev.x &gt;= cx0 &amp;&amp; ev.x &lt; cx1 &amp;&amp; ev.y &gt;= cy0 &amp;&amp; ev.y &lt; cy1) {
++		if (bgtk_widget_hit(child, ev.x, ev.y)) {
+ 			if (child-&gt;handle_event(child, ev))
+ 				return 1;
+ 		}
+@@ -576,14 +602,17 @@ static int switch_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ {
+ 	int inside, mid, new_v;
+ 
+-	inside = (ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; widget-&gt;x + widget-&gt;w &amp;&amp;
+-		  ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; widget-&gt;y + widget-&gt;h);
++	inside = bgtk_widget_hit(widget, ev.x, ev.y);
+ 	if (ev.code != BTN_LEFT || ev.value != 1 || !inside)
+ 		return 0;
+ 
+ 	/* Center of content box (labels + track). */
+-	mid = widget-&gt;x + widget-&gt;margin + widget-&gt;padding +
+-	      (widget-&gt;w - 2 * (widget-&gt;margin + widget-&gt;padding)) / 2;
++	{
++		int sx, sy;
++		bgtk_widget_screen_pos(widget, &amp;sx, &amp;sy);
++		mid = sx + widget-&gt;margin + widget-&gt;padding +
++		      (widget-&gt;w - 2 * (widget-&gt;margin + widget-&gt;padding)) / 2;
++	}
+ 	new_v = (ev.x &gt;= mid) ? 1 : 0;
+ 	if (new_v != widget-&gt;data.switch_w.value) {
+ 		widget-&gt;data.switch_w.value = new_v;
+@@ -635,8 +664,8 @@ struct BGTK_Widget *bgtk_switch(struct BGTK_Context *ctx, const char *left,
+ 		kn = 12;
+ 	gap = 8;
+ 	track_h = kn + 6;
+-	/* Track wide enough for knob travel (≈ 2.5× knob). */
+-	w-&gt;w = lw + rw + kn * 5 / 2 + gap * 2 + 2 * (w-&gt;padding + w-&gt;margin);
++	/* Track ≈ 4.5× knob so the pill reads clearly between labels. */
++	w-&gt;w = lw + rw + kn * 9 / 2 + gap * 2 + 2 * (w-&gt;padding + w-&gt;margin);
+ 	w-&gt;h = (track_h &gt; lh ? track_h : lh) + 2 * (w-&gt;padding + w-&gt;margin);
+ 	return w;
+ }
+@@ -667,6 +696,7 @@ struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,
+ 	// size)
+ 	widget-&gt;w = label-&gt;w + 2 * (widget-&gt;padding + widget-&gt;margin);
+ 	widget-&gt;h = label-&gt;h + 2 * (widget-&gt;padding + widget-&gt;margin);
++	bgtk_widget_set_parent(label, widget);
+ 	return widget;
+ }
+ 
+@@ -695,6 +725,7 @@ struct BGTK_Widget *bgtk_scrollable(struct BGTK_Context *ctx,
+ 	widget-&gt;data.scrollable.content_height = 0;
+ 	for (int i = 0; i &lt; widget_count; i++) {
+ 		widget-&gt;data.scrollable.items[i] = items[i];
++		bgtk_widget_set_parent(items[i], widget);
+ 		widget-&gt;data.scrollable.content_height += items[i]-&gt;h + 5 + 2 * widget-&gt;margin;	// 5px spacing + margin
+ 	}
+ 
+@@ -727,28 +758,21 @@ list_widget_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 		for (int i = 0; i &lt; widget-&gt;data.list_widget.widget_count; i++) {
+ 			struct BGTK_Widget *child =
+ 				widget-&gt;data.list_widget.items[i];
+-			if (ev.x &gt;= child-&gt;x &amp;&amp; ev.x &lt; child-&gt;x + child-&gt;w &amp;&amp;
+-			    ev.y &gt;= child-&gt;y &amp;&amp; ev.y &lt; child-&gt;y + child-&gt;h &amp;&amp;
++			if (bgtk_widget_hit(child, ev.x, ev.y) &amp;&amp;
+ 			    child-&gt;handle_event &amp;&amp;
+ 			    child-&gt;handle_event(child, ev))
+ 				return 1;
+ 		}
+ 		return 0;
+ 	}
+-	// First check if the event is within the list's bounds
+-	if (!(ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+-	      ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h))) {
+-		return 0;	// Event not in this widget
+-	}
+-	// Pass event to child widget if it exists
+-	// Events use absolute coordinates.
++	if (!bgtk_widget_hit(widget, ev.x, ev.y))
++		return 0;
++	/* Screen coordinates (or content-relative inside scrollables). */
+ 	for (int i = 0; i &lt; widget-&gt;data.list_widget.widget_count; i++) {
+ 		struct BGTK_Widget *child = widget-&gt;data.list_widget.items[i];
+ 
+-		if (!(ev.x &gt;= child-&gt;x &amp;&amp; ev.x &lt; child-&gt;x + child-&gt;w &amp;&amp;
+-		      ev.y &gt;= child-&gt;y &amp;&amp; ev.y &lt; child-&gt;y + child-&gt;h)) {
++		if (!bgtk_widget_hit(child, ev.x, ev.y))
+ 			continue;
+-		}
+ 
+ 		if (child-&gt;handle_event(child, ev)) {
+ 			return 1;	// Event was handled by a child
+@@ -795,6 +819,7 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
+ 	int pad2 = 2 * widget-&gt;padding;
+ 	for (int i = 0; i &lt; widget_count; i++) {
+ 		widget-&gt;data.list_widget.items[i] = items[i];
++		bgtk_widget_set_parent(items[i], widget);
+ 		if (options.orientation == BGTK_LIST_VERTICAL) {
+ 			widget-&gt;h += items[i]-&gt;h + 2 * widget-&gt;margin;
+ 			if (items[i]-&gt;w &gt; max_width) {
+@@ -881,6 +906,7 @@ struct BGTK_Widget *bgtk_frame(struct BGTK_Context *ctx,
+ 
+ 	frame-&gt;data.frame.child = child;
+ 	frame-&gt;data.frame.border_w = ctx-&gt;theme.frame_border_size;
++	bgtk_widget_set_parent(child, frame);
+ 
+ 	// Set the event handler for the frame
+ 	frame-&gt;handle_event = frame_handle_event;
+</pre>

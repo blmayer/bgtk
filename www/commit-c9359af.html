@@ -1,0 +1,1215 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk c9359af</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit c9359af
+parent <a href=commit-81ad12f.html>81ad12f</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-06-10T14:04:10-03:00
+
+    Refactored init/config separation and improved headless/mock testing support
+
+    - Moved default configuration (theme, font size) and platform font
+      selection (with #ifdefs) into init_config_defaults() so that
+      bgtk_init and bgtk_init_resources only perform loading.
+    - bgtk_init_mock is now a complete, standalone implementation.
+    - Added bgtk_destroy_mock() and simplified bgtk_destroy() (buffer
+      ownership is now handled explicitly by the mock path).
+    - Added FT_Select_Charmap(FT_ENCODING_UNICODE), safe unsigned casts
+      for character lookup, and post-load glyph validation for more
+      robust font handling across platforms.
+    - Updated README.md and the header in test/headless.c with
+      documentation and examples for testing with mocks (bgtk_init_mock,
+      take_screenshot, bgtk_inject_event, bgtk_destroy_mock).
+    - Updated test/headless.c to use the new mock init/destroy and
+      take_screenshot APIs.
+    - Removed dead DEFAULT_FONT_SIZE define and other minor cleanups.
+    
+    This makes isolated widget development and visual regression testing
+    (via PNG snapshots) much more practical without requiring a running
+    BGCE server.
+
+<a href=tree-c9359af.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/Makefile b/Makefile
+index da64ce1..a6103d9 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,9 +1,26 @@
+ # Makefile for BGTK
+ 
+-CFLAGS = -Wall -Wextra -Werror -I. -I/usr/include/freetype2 -fPIC
++# Base flags. Freetype path is discovered via pkg-config when available
++# (works on Linux and on macOS with Homebrew). The hardcoded fallback is
++# the common Linux location.
++FREETYPE_CFLAGS := $(shell pkg-config --cflags freetype2 2&gt;/dev/null)
++ifeq ($(FREETYPE_CFLAGS),)
++  FREETYPE_CFLAGS := -I/usr/include/freetype2
++endif
++
++FREETYPE_LIBS := $(shell pkg-config --libs freetype2 2&gt;/dev/null)
++ifeq ($(FREETYPE_LIBS),)
++  # Common fallbacks: Linux default + macOS Homebrew (Apple Silicon + Intel)
++  FREETYPE_LIBS := -lfreetype
++  FREETYPE_LIBDIRS := -L/opt/homebrew/lib -L/usr/local/lib
++endif
++
++CFLAGS = -Wall -Wextra -Werror -I. $(FREETYPE_CFLAGS) -fPIC
++
++# Full LDFLAGS are only for real (Linux + bgce server) binaries.
+ LDFLAGS = -lfreetype -lbgce -lm
+ 
+-TARGET = libbgtk.so test_app image_viewer launcher
++TARGET = libbgtk.so test_app image_viewer launcher headless
+ INSTALL_LIB = /usr/lib
+ INSTALL_INCLUDE = /usr/include
+ 
+@@ -13,6 +30,18 @@ TEST_APP_OBJ = apps/test_app.o
+ IMAGE_VIEWER_OBJ = apps/image_viewer.o
+ LAUNCHER_OBJ = apps/launcher.o
+ 
++# ---------- Headless / mock testing support ----------
++# "make headless" builds a standalone binary that uses bgtk_init_mock +
++# bgtk_write_frame_png + bgtk_inject_event. It does not require a running
++# bgce server or Linux input/DRI headers at runtime.
++#
++# On macOS (or any dev machine) this is the intended way to exercise the
++# widget tree and visually inspect output by looking at the generated PNGs.
++COMPAT_DIR := compat
++HEADLESS_CFLAGS := $(CFLAGS) -I$(COMPAT_DIR)
++HEADLESS_LDFLAGS := $(FREETYPE_LIBS) $(FREETYPE_LIBDIRS) -lm
++HEADLESS_STUB := $(COMPAT_DIR)/bgce_stub.o
++HEADLESS_OBJ := test/headless.o
+ 
+ .PHONY: all clean test
+ 
+@@ -30,12 +59,27 @@ image_viewer: $(IMAGE_VIEWER_OBJ) $(LIB_OBJS)
+ launcher: $(LAUNCHER_OBJ) $(LIB_OBJS)
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+ 
++# Headless target links the bgce stub instead of the real library and
++# pulls in the compat headers via -I so that &lt;bgce.h&gt; and &lt;linux/input.h&gt;
++# resolve on non-Linux platforms.
++#
++# We attach -Icompat to the specific object files only when they are
++# prerequisites of the "headless" target. This way normal Linux server
++# binaries (test_app, image_viewer, ...) continue to use the real system
++# bgce headers if present.
++$(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB): CFLAGS += -I$(COMPAT_DIR)
++
++$(HEADLESS_STUB): $(COMPAT_DIR)/bgce_stub.c
++	$(CC) $(HEADLESS_CFLAGS) -c -o $@ $&lt;
++
++headless: $(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
++	$(CC) $(HEADLESS_CFLAGS) -o $@ $^ $(HEADLESS_LDFLAGS)
+ 
+ %.o: %.c
+ 	$(CC) $(CFLAGS) -c -o $@ $&lt;
+ 
+ clean:
+-	rm -f $(TARGET) $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ)
++	rm -f $(TARGET) $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB)
+ 
+ 
+ .PHONY: install
+diff --git a/README.md b/README.md
+index 1224e01..2622fa6 100644
+--- a/README.md
++++ b/README.md
+@@ -20,6 +20,64 @@ create graphical user interfaces by directly writing to a shared graphical buffe
+ - Image: bgtk_image(ctx, path, width, height, options)  (use 0,0 for intrinsic size)
+ - Frame: bgtk_frame(ctx, child, width, height, options)
+ - Text input: bgtk_text_input(ctx, initial_text, width, height, options)
++
++## Key Testing APIs
++
++When using mocks, the following functions are the primary tools:
++
++- `bgtk_init_mock(width, height)` — create a context with its own in-memory framebuffer.
++- `take_screenshot(ctx, "name.png")` — dump the current buffer to a PNG (pass `NULL` for a timestamped name).
++- `bgtk_inject_event(ctx, ev)` — feed synthetic mouse/keyboard events.
++- `bgtk_destroy_mock(ctx)` — clean up a mock context (frees the internal buffer).
++
++## Testing with Mocks (Headless Mode)
++
++BGTK supports a mock/headless mode so you can develop, debug, and visually inspect UIs **without** a running BGCE server, real display, or input devices.
++
++This is the recommended way to test widgets in isolation:
++
++```c
++struct BGTK_Context *ctx = bgtk_init_mock(600, 400);
++
++// Build your widget tree exactly as you would in a real app
++ctx-&gt;root_widget = my_ui_builder(ctx);
++bgtk_draw_widgets(ctx);
++
++// Dump the current rendered state to a PNG you can open in any viewer
++take_screenshot(ctx, "before.png");
++
++// Simulate user input (mouse clicks, keyboard, etc.)
++struct InputEvent click = {
++    .type = EV_KEY,
++    .code = BTN_LEFT,
++    .value = 1,
++    .x = 120,
++    .y = 80,
++};
++bgtk_inject_event(ctx, click);
++
++take_screenshot(ctx, "after_click.png");
++
++bgtk_destroy_mock(ctx);
++```
++
++### Built-in headless test
++
++```sh
++make headless
++./headless
++```
++
++This builds `test/headless.c` and generates several `headless_*.png` files demonstrating:
++- Layout and widget sizing
++- Button press / callback
++- Text input focus + typing (via injected key events)
++- Backspace, etc.
++
++Open the PNGs to see exactly what the UI looked like at each step. This is extremely useful for catching layout or rendering bugs quickly on a development machine (works on both Linux and macOS).
++
++No `bgce` process or special permissions are required.
++
+ ## Themes
+ Theme config files allow customizing the appearance of BGTK applications.
+ To use a theme:
+@@ -38,26 +96,39 @@ font = /opt/fonts/.../DejaVu Sans.otf
+ Requirements:
+ - A C compiler (GCC or Clang).
+ - FreeType development libraries.
+-- BGCE.
+ 
+ ```sh
+ make
+ ```
+ 
++Note: A running BGCE server is only required for real applications. The headless/mock test binary (`make headless`) does not require BGCE at all.
++
+ 
+ ## Running
+ 
+-Start the BGCE server, then run the demo application:
++### Real applications (with BGCE)
++
++You need a running BGCE compositor. See the example programs in `apps/` (e.g. `image_viewer`, `launcher`, `test_app`).
++
++### Headless testing / development (recommended for UI work)
++
++No server or display needed. Use the built-in test:
+ 
+ ```sh
+-./app
++make headless
++./headless
+ ```
+ 
++This produces `headless_*.png` files you can open to visually inspect the rendered UI at each step (layout, interaction, text input, etc.).
++
++See the "Testing with Mocks" section above for how to integrate this style of testing into your own code.
++
+ 
+ ## Project Structure
+ - `bgtk.h`: Public API and type definitions.
+-- `bgtk.c`: Core implementation.
+-- `app.c`: Demo application.
+-- `Makefile`: Build system.
++- `bgtk.c`, `drawing.c`, `widgets.c`, `config.c`: Core implementation.
++- `apps/`: Example real applications (require BGCE).
++- `test/headless.c`: Standalone headless test (no BGCE required). Produces PNG snapshots.
++- `Makefile`: Build system (including `make headless`).
+ - `.clang-format`: Code style configuration.
+ 
+diff --git a/bgtk.c b/bgtk.c
+index d630aca..3a797e5 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -13,38 +13,36 @@
+ #include "config.h"
+ #include "internal.h"
+ 
+-// The font path is hardcoded for simplicity.
+-#define DEFAULT_FONT_PATH                                 \
+-	"/usr/share/fonts/ttf-input/InputMono/InputMono/" \
+-	"InputMono-Regular.ttf"
+-#define DEFAULT_FONT_SIZE 12
+-
+-int take_screenshot(struct BGTK_Context ctx)
++int take_screenshot(struct BGTK_Context *ctx, const char *path)
+ {
+-	if (!ctx.shm_buffer) {
+-		fprintf(stderr, "No framebuffer available for screenshot.\n");
++	if (!ctx || !ctx-&gt;shm_buffer) {
+ 		return -1;
+ 	}
+-	// Write the framebuffer to a PNG file
+-	struct timeval tv;
+-	gettimeofday(&amp;tv, NULL);
+ 	char filename[256];
+-	snprintf(filename, sizeof(filename), "screenshot_%ld_%06ld.png",
+-		 tv.tv_sec, tv.tv_usec);
+-	int result = stbi_write_png(filename, ctx.width, ctx.height,
+-				    BGCE_BYTES_PER_PIXEL, ctx.shm_buffer,
+-				    ctx.width * BGCE_BYTES_PER_PIXEL);
+-
++	const char *out_path = path;
++	if (!out_path) {
++		// Timestamped name for SYSRQ / convenience
++		struct timeval tv;
++		gettimeofday(&amp;tv, NULL);
++		snprintf(filename, sizeof(filename), "screenshot_%ld_%06d.png",
++			 (long)tv.tv_sec, (int)tv.tv_usec);
++		out_path = filename;
++	}
++	int result = stbi_write_png(out_path, ctx-&gt;width, ctx-&gt;height,
++				    BGCE_BYTES_PER_PIXEL, ctx-&gt;shm_buffer,
++				    ctx-&gt;width * BGCE_BYTES_PER_PIXEL);
+ 	if (!result) {
+-		fprintf(stderr, "Failed to save screenshot to %s.\n", filename);
++		fprintf(stderr, "Failed to save frame to %s.\n", out_path);
+ 		return -1;
+ 	}
+-
+-	printf("Screenshot saved to %s.\n", filename);
++	printf("Frame written to %s.\n", out_path);
+ 	return 0;
+ }
+ 
+-struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
++static void bgtk_init_resources(struct BGTK_Context *ctx);
++
++// Public mock init: full implementation for headless/testing. Owns its framebuffer.
++struct BGTK_Context *bgtk_init_mock(int width, int height)
+ {
+ 	struct BGTK_Context *ctx =
+ 	    (struct BGTK_Context *)calloc(1, sizeof(struct BGTK_Context));
+@@ -53,55 +51,126 @@ struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
+ 		return NULL;
+ 	}
+ 
+-	ctx-&gt;conn_fd = conn_fd;
+-	ctx-&gt;shm_buffer = buffer;
+-	ctx-&gt;font_size = DEFAULT_FONT_SIZE;
++	ctx-&gt;conn_fd = -1;
+ 	ctx-&gt;width = width;
+ 	ctx-&gt;height = height;
++	ctx-&gt;shm_buffer = calloc((size_t)width * height * BGCE_BYTES_PER_PIXEL, 1);
++	if (!ctx-&gt;shm_buffer) {
++		perror("calloc framebuffer");
++		free(ctx);
++		return NULL;
++	}
++
++	bgtk_init_resources(ctx);
++	if (!ctx-&gt;ft_library) {
++		free(ctx-&gt;shm_buffer);
++		free(ctx);
++		return NULL;
++	}
++	return ctx;
++}
++
++// Public: feed a synthetic event for testing (clicks, keys, etc).
++// Redraws automatically if the handler requests it.
++int bgtk_inject_event(struct BGTK_Context *ctx, struct InputEvent ev)
++{
++	if (!ctx) {
++		return 0;
++	}
++	int res = bgtk_handle_input_event(ctx, ev);
++	if (res) {
++		bgtk_draw_widgets(ctx);
++	}
++	return res;
++}
++
++// Common resource setup (config, freetype, font) after buffer/conn/ dims are set.
++// Used by both real bgtk_init and bgtk_init_mock.
++static void bgtk_init_resources(struct BGTK_Context *ctx)
++{
+ 	ctx-&gt;root_widget = NULL;
+ 	ctx-&gt;window_focused = 1;
+ 	ctx-&gt;shift_held = 0;
+ 
+-	// Load config file
+-	struct config config;
+-	if (parse_config(&amp;config) == 0) {
+-		// Store theme data
+-		ctx-&gt;theme = config.theme;
+-		strncpy(ctx-&gt;font_path, config.font_path, MAX_PATH_LEN - 1);
+-		ctx-&gt;font_path[MAX_PATH_LEN - 1] = '\0';
+-		ctx-&gt;font_size = config.font_size;
+-	} else {
+-		// Use defaults if config file is missing or invalid
+-		ctx-&gt;theme.background = 0xAAAAAAAA;	// Default gray
+-		ctx-&gt;theme.button = 0x88888888;	// Default button color
+-		ctx-&gt;theme.button_text = 0xFFFFFFFF;	// Default white text
+-		ctx-&gt;theme.frame_border_size = 4;	// Default frame border size
+-		ctx-&gt;theme.frame_border_color = 0xFFFFFFFF;
+-		ctx-&gt;theme.button_border_size = 1;
+-		ctx-&gt;theme.input_border_size = 1;
+-
+-		strncpy(ctx-&gt;font_path, DEFAULT_FONT_PATH, MAX_PATH_LEN - 1);
+-		ctx-&gt;font_path[MAX_PATH_LEN - 1] = '\0';
+-	}
++	// Load config (parse_config now always starts from defaults via init_config_defaults).
++	struct config config = {0};
++	parse_config(&amp;config);
++	ctx-&gt;theme = config.theme;
++	strncpy(ctx-&gt;font_path, config.font_path, MAX_PATH_LEN - 1);
++	ctx-&gt;font_path[MAX_PATH_LEN - 1] = '\0';
++	ctx-&gt;font_size = config.font_size;
+ 
+ 	// 1. Initialize FreeType
+ 	if (FT_Init_FreeType(&amp;ctx-&gt;ft_library)) {
+ 		fprintf(stderr,
+ 			"bgtk_init: Could not init FreeType library.\n");
+-		free(ctx);
++	}
++	if (!ctx-&gt;ft_library) {
++		return;
++	}
++
++	// 2. The actual FT loading (New_Face, Select, sizing, validation) lives here
++	//    in init_resources. The default *selection* (with #ifdefs) was done in
++	//    init_config_defaults.
++	if (ctx-&gt;font_path[0] != '\0') {
++		if (FT_New_Face(ctx-&gt;ft_library, ctx-&gt;font_path, 0, &amp;ctx-&gt;ft_face) != 0) {
++			fprintf(stderr, "bgtk_init: Could not load font from config: %s\n"
++			                "             Using placeholder drawing.\n",
++			        ctx-&gt;font_path);
++			ctx-&gt;font_path[0] = '\0';
++		} else {
++			fprintf(stderr, "bgtk_init: Using font: %s\n", ctx-&gt;font_path);
++		}
++	}
++
++	if (ctx-&gt;ft_face) {
++		// Force a Unicode charmap if the font has one. This prevents
++		// "symbol" or other cmap encodings from mapping ASCII to the
++		// wrong glyphs (which often look like triangles/boxes for .notdef).
++		FT_Select_Charmap(ctx-&gt;ft_face, FT_ENCODING_UNICODE);
++
++		FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
++
++		// Validate that the loaded face actually produces glyph metrics.
++		// Catches .ttc wrong face, symbol fonts, or broken files that
++		// "load" without error but produce no visible text.
++		int tw = 0, th = 0;
++		measure_text(ctx-&gt;ft_face, "Ag", &amp;tw, &amp;th);
++		if (tw &lt;= 0 || th &lt;= 0) {
++			fprintf(stderr, "bgtk_init: Font '%s' loaded but has no usable glyphs. "
++			                "Using placeholder drawing.\n", ctx-&gt;font_path);
++			FT_Done_Face(ctx-&gt;ft_face);
++			ctx-&gt;ft_face = NULL;
++			ctx-&gt;font_path[0] = '\0';
++		}
++	}
++}
++
++struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
++{
++	struct BGTK_Context *ctx =
++	    (struct BGTK_Context *)calloc(1, sizeof(struct BGTK_Context));
++	if (!ctx) {
++		perror("calloc");
+ 		return NULL;
+ 	}
+-	// 2. Load Font
+-	if (FT_New_Face(ctx-&gt;ft_library, ctx-&gt;font_path, 0, &amp;ctx-&gt;ft_face)) {
+-		fprintf(stderr,
+-			"bgtk_init: Could not load font %s. Falling back "
+-			"to simple " "drawing.\n", ctx-&gt;font_path);
++
++	ctx-&gt;conn_fd = conn_fd;
++	ctx-&gt;shm_buffer = buffer;
++	if (!ctx-&gt;shm_buffer) {
++		// Real server path requires caller-provided buffer.
+ 		free(ctx);
+ 		return NULL;
+ 	}
+-	// Set font size
+-	FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
++	ctx-&gt;width = width;
++	ctx-&gt;height = height;
+ 
++	bgtk_init_resources(ctx);
++	if (!ctx-&gt;ft_library) {
++		// freetype failed; buffer is caller-owned for real init.
++		free(ctx);
++		return NULL;
++	}
+ 	return ctx;
+ }
+ 
+@@ -117,7 +186,8 @@ void bgtk_destroy(struct BGTK_Context *ctx)
+ 		ctx-&gt;root_widget = NULL;
+ 		ctx-&gt;focused_widget = NULL;
+ 	}
+-	// Free FreeType resources
++	// Free FreeType resources (buffer ownership is with caller for real init,
++	// or handled in bgtk_destroy_mock for headless).
+ 	if (ctx-&gt;ft_face) {
+ 		FT_Done_Face(ctx-&gt;ft_face);
+ 	}
+@@ -128,6 +198,17 @@ void bgtk_destroy(struct BGTK_Context *ctx)
+ 	free(ctx);
+ }
+ 
++void bgtk_destroy_mock(struct BGTK_Context *ctx)
++{
++	if (ctx) {
++		if (ctx-&gt;shm_buffer) {
++			free(ctx-&gt;shm_buffer);
++			ctx-&gt;shm_buffer = NULL;
++		}
++	}
++	bgtk_destroy(ctx);
++}
++
+ static void destroy_widget(struct BGTK_Widget *w)
+ {
+ 	if (!w) {
+@@ -203,7 +284,9 @@ void bgtk_draw_widgets(struct BGTK_Context *ctx)
+ 	clear_buffer(ctx);
+ 	calculate_widget_size(ctx, ctx-&gt;root_widget);
+ 	draw_widget(ctx, ctx-&gt;root_widget, ctx-&gt;shm_buffer);
+-	bgce_draw(ctx-&gt;conn_fd);
++	if (ctx &amp;&amp; ctx-&gt;conn_fd &gt;= 0) {
++		bgce_draw(ctx-&gt;conn_fd);
++	}
+ }
+ 
+ // Handles a single event and returns whether a redraw is needed.
+@@ -211,7 +294,7 @@ int bgtk_handle_input_event(struct BGTK_Context *ctx, struct InputEvent ev)
+ {
+ 	// Handle some keys
+ 	if (ev.code == KEY_SYSRQ) {
+-		take_screenshot(*ctx);
++		take_screenshot(ctx, NULL);
+ 		return 1;
+ 	}
+ 	// Track shift for text input uppercase support. Do not consume the event.
+diff --git a/bgtk.h b/bgtk.h
+index 78acdb4..89b824f 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -149,13 +149,26 @@ struct BGTK_Widget {
+ void bgtk_draw_widgets(struct BGTK_Context* ctx);
+ 
+ void bgtk_destroy(struct BGTK_Context* ctx);
++void bgtk_destroy_mock(struct BGTK_Context* ctx);
+ 
+-// Initializes BGTK with given dimensions.
++// Initializes BGTK with given dimensions (real server path, caller provides buffer).
+ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width, int height);
+ 
++// Initializes BGTK in mock/headless mode for testing. Owns an internal framebuffer.
++// Use take_screenshot(ctx, "foo.png") after draws to inspect rendered output as an image.
++struct BGTK_Context* bgtk_init_mock(int width, int height);
++
+ // Handles a single event and returns whether a redraw is needed.
+ int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev);
+ 
++// Take a screenshot of the current framebuffer to a PNG file.
++// If path is NULL, a timestamped name is generated automatically (for KEY_SYSRQ).
++int take_screenshot(struct BGTK_Context* ctx, const char* path);
++
++// Inject a synthetic input event (for testing). Coordinates are absolute widget coords.
++// Returns non-zero if a redraw was triggered.
++int bgtk_inject_event(struct BGTK_Context* ctx, struct InputEvent ev);
++
+ // --- Widget Creation Functions ---
+ // Creates a label widget.
+ struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text, BGTK_Options options);
+diff --git a/compat/bgce.h b/compat/bgce.h
+new file mode 100644
+index 0000000..6d8f654
+--- /dev/null
++++ b/compat/bgce.h
+@@ -0,0 +1,112 @@
++/* compat/bgce.h
++ *
++ * Tiny portable stand-in for ../bgce/bgce.h .
++ * Only the parts that BGTK's public API and internal code actually
++ * reference are defined here. This lets you build and run the
++ * headless / mock tests on macOS (or any non-Linux machine) without
++ * needing the full bgce tree or Linux headers at compile time.
++ *
++ * On real Linux builds the original &lt;bgce.h&gt; (from libbgce) is used.
++ */
++
++#ifndef BGTK_COMPAT_BGCE_H
++#define BGTK_COMPAT_BGCE_H
++
++#include &lt;stddef.h&gt;
++#include &lt;stdint.h&gt;
++#include &lt;sys/types.h&gt;
++
++#define SOCKET_PATH "/tmp/bgce.sock"
++#define BGCE_BYTES_PER_PIXEL 4
++#define MAX_INPUT_DEVICES 4
++
++/* Message types (only a few are referenced in apps; included for completeness) */
++enum {
++	MSG_GET_SERVER_INFO = 1,
++	MSG_GET_BUFFER,
++	MSG_DRAW,
++	MSG_INPUT_EVENT,
++	MSG_BUFFER_CHANGE,
++	MSG_FOCUS_CHANGE,
++	MSG_SUBSCRIBE_INPUT,
++	MSG_MOVE
++};
++
++/* Input device description (present in InputEvent in the real header) */
++struct InputDevice {
++	uint16_t id;
++	uint16_t type_mask;
++	char name[256];
++};
++
++/* The event struct that BGTK's public API uses (bgtk_handle_input_event etc.) */
++struct InputEvent {
++	int32_t type;  /* EV_KEY, EV_REL, ... */
++	int32_t value;
++	uint32_t code;
++	int32_t x;
++	int32_t y;
++	struct InputDevice device;  /* carried for protocol compatibility; BGTK ignores it */
++};
++
++/* Focus event */
++struct FocusEvent {
++	int32_t state;
++};
++
++/* Buffer / server info structures (used by real apps, not by core BGTK) */
++struct ServerInfo {
++	uint32_t width;
++	uint32_t height;
++	uint32_t color_depth;
++	uint16_t input_device_count;
++	struct InputDevice devices[MAX_INPUT_DEVICES];
++};
++
++struct BufferRequest {
++	uint32_t width;
++	uint32_t height;
++};
++
++struct BufferReply {
++	int status;
++	char shm_name[64];
++	uint32_t width;
++	uint32_t height;
++};
++
++struct MoveRequest {
++	int32_t x;
++	int32_t y;
++};
++
++struct ResizeRequest {
++	uint32_t width;
++	uint32_t height;
++};
++
++struct BGCEMessage {
++	uint32_t type;
++	union {
++		struct ServerInfo server_info;
++		struct BufferRequest buffer_request;
++		struct BufferReply buffer_reply;
++		struct InputEvent input_event;
++		struct FocusEvent focus_event;
++		struct MoveRequest move_request;
++	} data;
++};
++
++/* Client-side API surface (only bgce_draw is called from the BGTK core;
++ * the rest are used by the example apps. We provide prototypes so link
++ * succeeds when using the stub. */
++ssize_t bgce_send_msg(int conn, struct BGCEMessage *msg);
++ssize_t bgce_recv_msg(int conn, struct BGCEMessage *msg);
++int bgce_connect(void);
++int bgce_get_server_info(int fd, struct ServerInfo *out_info);
++void *bgce_get_buffer(int conn, struct BufferRequest req);
++int bgce_move(int fd, int x, int y);
++int bgce_draw(int fd);
++void bgce_disconnect(int fd);
++
++#endif /* BGTK_COMPAT_BGCE_H */
+diff --git a/compat/bgce_stub.c b/compat/bgce_stub.c
+new file mode 100644
+index 0000000..279c0da
+--- /dev/null
++++ b/compat/bgce_stub.c
+@@ -0,0 +1,57 @@
++/* compat/bgce_stub.c
++ *
++ * No-op implementations of the bgce client API.
++ * Linked only for "headless" / mock test binaries so that you don't
++ * need the real libbgce (or a running server) just to exercise BGTK
++ * widgets and dump PNG frames.
++ *
++ * On Linux with a real build you link the genuine objects instead.
++ */
++
++#include "bgce.h"
++
++ssize_t bgce_send_msg(int conn, struct BGCEMessage *msg)
++{
++	(void)conn; (void)msg;
++	return -1;
++}
++
++ssize_t bgce_recv_msg(int conn, struct BGCEMessage *msg)
++{
++	(void)conn; (void)msg;
++	return 0;  /* simulate clean EOF so real loops would exit */
++}
++
++int bgce_connect(void)
++{
++	return -1;
++}
++
++int bgce_get_server_info(int fd, struct ServerInfo *out_info)
++{
++	(void)fd; (void)out_info;
++	return -1;
++}
++
++void *bgce_get_buffer(int conn, struct BufferRequest req)
++{
++	(void)conn; (void)req;
++	return NULL;
++}
++
++int bgce_move(int fd, int x, int y)
++{
++	(void)fd; (void)x; (void)y;
++	return -1;
++}
++
++int bgce_draw(int fd)
++{
++	(void)fd;
++	return 0;  /* success, but does nothing in mock */
++}
++
++void bgce_disconnect(int fd)
++{
++	(void)fd;
++}
+diff --git a/compat/linux/input.h b/compat/linux/input.h
+new file mode 100644
+index 0000000..5ee180a
+--- /dev/null
++++ b/compat/linux/input.h
+@@ -0,0 +1,153 @@
++/* compat/linux_input.h
++ *
++ * Minimal set of linux/input.h constants so BGTK (and its mock tests)
++ * can be compiled on non-Linux systems (e.g. macOS) for development and
++ * headless PNG-based testing.
++ *
++ * Only the values actually used by the widget/input handling code are
++ * provided. On real Linux the native &lt;linux/input.h&gt; is preferred.
++ */
++
++#ifndef BGTK_COMPAT_LINUX_INPUT_H
++#define BGTK_COMPAT_LINUX_INPUT_H
++
++/* Event types */
++#define EV_KEY 1
++#define EV_REL 2
++#define EV_ABS 3
++
++/* Relative axes */
++#define REL_WHEEL 8
++
++/* Buttons (normally BTN_LEFT etc.) */
++#define BTN_LEFT  0x110
++#define BTN_RIGHT 0x111
++#define BTN_MISC  0x100
++
++/* A selection of common keys used in text input + special handling.
++ * Values match the Linux kernel input-event-codes.h on typical platforms.
++ */
++#define KEY_RESERVED          0
++#define KEY_ESC               1
++#define KEY_1                 2
++#define KEY_2                 3
++#define KEY_3                 4
++#define KEY_4                 5
++#define KEY_5                 6
++#define KEY_6                 7
++#define KEY_7                 8
++#define KEY_8                 9
++#define KEY_9                 10
++#define KEY_0                 11
++#define KEY_MINUS             12
++#define KEY_EQUAL             13
++#define KEY_BACKSPACE         14
++#define KEY_TAB               15
++#define KEY_Q                 16
++#define KEY_W                 17
++#define KEY_E                 18
++#define KEY_R                 19
++#define KEY_T                 20
++#define KEY_Y                 21
++#define KEY_U                 22
++#define KEY_I                 23
++#define KEY_O                 24
++#define KEY_P                 25
++#define KEY_LEFTBRACE         26
++#define KEY_RIGHTBRACE        27
++#define KEY_ENTER             28
++#define KEY_LEFTCTRL          29
++#define KEY_A                 30
++#define KEY_S                 31
++#define KEY_D                 32
++#define KEY_F                 33
++#define KEY_G                 34
++#define KEY_H                 35
++#define KEY_J                 36
++#define KEY_K                 37
++#define KEY_L                 38
++#define KEY_SEMICOLON         39
++#define KEY_APOSTROPHE        40
++#define KEY_GRAVE             41
++#define KEY_LEFTSHIFT         42
++#define KEY_BACKSLASH         43
++#define KEY_Z                 44
++#define KEY_X                 45
++#define KEY_C                 46
++#define KEY_V                 47
++#define KEY_B                 48
++#define KEY_N                 49
++#define KEY_M                 50
++#define KEY_COMMA             51
++#define KEY_DOT               52
++#define KEY_SLASH             53
++#define KEY_RIGHTSHIFT        54
++#define KEY_KPASTERISK        55
++#define KEY_LEFTALT           56
++#define KEY_SPACE             57
++#define KEY_CAPSLOCK          58
++#define KEY_F1                59
++#define KEY_F2                60
++#define KEY_F3                61
++#define KEY_F4                62
++#define KEY_F5                63
++#define KEY_F6                64
++#define KEY_F7                65
++#define KEY_F8                66
++#define KEY_F9                67
++#define KEY_F10               68
++#define KEY_NUMLOCK           69
++#define KEY_SCROLLLOCK        70
++#define KEY_KP7               71
++#define KEY_KP8               72
++#define KEY_KP9               73
++#define KEY_KPMINUS           74
++#define KEY_KP4               75
++#define KEY_KP5               76
++#define KEY_KP6               77
++#define KEY_KPPLUS            78
++#define KEY_KP1               79
++#define KEY_KP2               80
++#define KEY_KP3               81
++#define KEY_KP0               82
++#define KEY_KPDOT             83
++#define KEY_ZENKAKUHANKAKU    85
++#define KEY_102ND             86
++#define KEY_F11               87
++#define KEY_F12               88
++#define KEY_RO                89
++#define KEY_KATAKANA          90
++#define KEY_HIRAGANA          91
++#define KEY_HENKAN            92
++#define KEY_KATAKANAHIRAGANA  93
++#define KEY_MUHENKAN          94
++#define KEY_KPJPCOMMA         95
++#define KEY_KPENTER           96
++#define KEY_RIGHTCTRL         97
++#define KEY_KPSLASH           98
++#define KEY_SYSRQ             99
++#define KEY_RIGHTALT          100
++#define KEY_LINEFEED          101
++#define KEY_HOME              102
++#define KEY_UP                103
++#define KEY_PAGEUP            104
++#define KEY_LEFT              105
++#define KEY_RIGHT             106
++#define KEY_END               107
++#define KEY_DOWN              108
++#define KEY_PAGEDOWN          109
++#define KEY_INSERT            110
++#define KEY_DELETE            111
++#define KEY_MACRO             112
++#define KEY_MUTE              113
++#define KEY_VOLUMEDOWN        114
++#define KEY_VOLUMEUP          115
++#define KEY_POWER             116
++#define KEY_KPEQUAL           117
++#define KEY_KPPLUSMINUS       118
++#define KEY_PAUSE             119
++#define KEY_SCALE             120
++
++/* Add more here only if new key handling is added to the widget code. */
++
++#endif /* BGTK_COMPAT_LINUX_INPUT_H */
+diff --git a/config.c b/config.c
+index 2d54e20..3ecf05d 100644
+--- a/config.c
++++ b/config.c
+@@ -1,9 +1,13 @@
+ #include "config.h"
+ 
++#include "bgtk.h"
++#include "internal.h"
++
+ #include &lt;ctype.h&gt;
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
++#include &lt;unistd.h&gt;  // for access() in default font selection
+ 
+ // Helper: trim whitespace
+ static char *trim(char *str)
+@@ -43,9 +47,61 @@ static uint32_t parse_hex_color(const char *str)
+ 	return (a &lt;&lt; 24) | (r &lt;&lt; 16) | (g &lt;&lt; 8) | b;
+ }
+ 
++void init_config_defaults(struct config *config)
++{
++	config-&gt;type = BG_COLOR;
++	config-&gt;color = 0xAAAAAAAA;	// Default gray
++
++	// Theme defaults
++	config-&gt;theme.background = 0xAAAAAAAA;
++	config-&gt;theme.button = 0x88888888;
++	config-&gt;theme.button_text = 0xFFFFFFFF;
++	config-&gt;theme.button_border_size = 1;
++	config-&gt;theme.input_border_size = 1;
++	config-&gt;theme.frame_border_size = 4;
++	config-&gt;theme.frame_border_color = 0xFFFFFFFF;
++
++	// Font defaults (loaded at runtime from the config file under [font]).
++	// If the user does not provide a path, we select a sane platform default here
++	// (the #ifdefs live in the config package).
++	config-&gt;font_path[0] = '\0';
++	config-&gt;font_size = 12;
++
++	// Background image fields (safe defaults)
++	config-&gt;path[0] = '\0';
++	config-&gt;mode = IMAGE_TILED;
++
++	// Default font selection (platform-specific). This used to be "n2" in
++	// bgtk_init_resources. We pick the first accessible one if no path was
++	// given in the config file.
++	if (config-&gt;font_path[0] == '\0') {
++		static const char *d[] = {
++#ifdef __linux__
++			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
++			"/usr/share/fonts/TTF/DejaVuSans.ttf",
++#endif
++#ifdef __APPLE__
++			"/System/Library/Fonts/SFNSMono.ttf",
++#endif
++			NULL
++		};
++		for (int i = 0; d[i]; i++) {
++			if (access(d[i], R_OK) == 0) {
++				strncpy(config-&gt;font_path, d[i], MAX_PATH_LEN - 1);
++				config-&gt;font_path[MAX_PATH_LEN - 1] = '\0';
++				break;
++			}
++		}
++	}
++}
++
++
++
+ // Parse config file
+ int parse_config(struct config *config)
+ {
++	init_config_defaults(config);
++
+ 	const char *home = getenv("HOME");
+ 	char user_config[512];
+ 	if (!home) {
+@@ -58,18 +114,6 @@ int parse_config(struct config *config)
+ 		perror("[BGTK] Open config file");
+ 		return -1;
+ 	}
+-	// Initialize with defaults
+-	config-&gt;type = BG_COLOR;
+-	config-&gt;color = 0xAAAAAAAA;	// Default gray
+-
+-	// Theme defaults
+-	config-&gt;theme.background = 0xAAAAAAAA;
+-	config-&gt;theme.button = 0x88888888;
+-	config-&gt;theme.button_text = 0xFFFFFFFF;
+-	config-&gt;theme.button_border_size = 1;
+-	config-&gt;theme.input_border_size = 1;
+-	config-&gt;theme.frame_border_size = 4;
+-	config-&gt;theme.frame_border_color = 0xFFFFFFFF;
+ 
+ 	char line[1024];
+ 	char current_section[256] = "";
+diff --git a/config.h b/config.h
+index 0a5bbf7..6d55003 100644
+--- a/config.h
++++ b/config.h
+@@ -5,6 +5,10 @@
+ 
+ #define MAX_PATH_LEN 512
+ 
++// Forward declaration so config can declare functions that take BGTK_Context
++// without including the full bgtk.h (avoids include-order issues).
++struct BGTK_Context;
++
+ // Background type
+ typedef enum {
+ 	BG_COLOR,
+@@ -43,5 +47,9 @@ struct config {
+ 
+ int parse_config(struct config* config);
+ 
++// Initialize a config struct with built-in sane defaults (theme, font size, etc.).
++// Called by parse_config and bgtk_init so that init only loads/overrides.
++void init_config_defaults(struct config *config);
++
+ #endif // CONFIG_H
+ 
+diff --git a/drawing.c b/drawing.c
+index da61efa..123206c 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -56,10 +56,18 @@ void draw_rect(struct BGTK_Context *ctx, uint32_t *pixels, int x, int y, int w,
+ void measure_text(FT_Face face, const char *text, int *out_width,
+ 		  int *out_height)
+ {
++	if (!face || !text) {
++		/* Degraded / no-font fallback: rough width from strlen */
++		int n = text ? (int)strlen(text) : 0;
++		*out_width = n * 7;   /* ~7px per char at typical size */
++		*out_height = 12;
++		return;
++	}
++
+ 	int width = 0;
+ 
+ 	for (const char *p = text; *p; p++) {
+-		if (FT_Load_Char(face, *p, FT_LOAD_DEFAULT)) {
++		if (FT_Load_Char(face, (unsigned char)*p, FT_LOAD_DEFAULT)) {
+ 			continue;
+ 		}
+ 
+@@ -202,7 +210,7 @@ void draw_text(struct BGTK_Context *ctx, uint32_t *pixels, const char *text,
+ 
+ 	int stride = ctx-&gt;width;
+ 	for (const char *p = text; *p; p++) {
+-		FT_UInt index = FT_Get_Char_Index(ctx-&gt;ft_face, *p);
++		FT_UInt index = FT_Get_Char_Index(ctx-&gt;ft_face, (unsigned char)*p);
+ 
+ 		if (FT_Load_Glyph(ctx-&gt;ft_face, index,
+ 				  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
+@@ -630,7 +638,7 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	int pen_y = text_y + (ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6);
+ 
+ 	for (const char *p = full; *p; p++) {
+-		FT_UInt index = FT_Get_Char_Index(ctx-&gt;ft_face, *p);
++		FT_UInt index = FT_Get_Char_Index(ctx-&gt;ft_face, (unsigned char)*p);
+ 		if (FT_Load_Glyph(ctx-&gt;ft_face, index,
+ 				  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
+ 			continue;
+@@ -697,7 +705,7 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		for (uint32_t i = 0; i &lt; w-&gt;data.text_input.cursor_pos; i++) {
+ 			FT_UInt index =
+ 			    FT_Get_Char_Index(ctx-&gt;ft_face,
+-					      w-&gt;data.text_input.text[i]);
++					      (unsigned char)w-&gt;data.text_input.text[i]);
+ 			if (FT_Load_Glyph(ctx-&gt;ft_face, index, FT_LOAD_DEFAULT)) {
+ 				continue;
+ 			}
+diff --git a/test/headless.c b/test/headless.c
+new file mode 100644
+index 0000000..10bfa87
+--- /dev/null
++++ b/test/headless.c
+@@ -0,0 +1,112 @@
++/* Minimal headless (mock) test for BGTK.
++ *
++ * Build with:
++ *     make headless
++ *     ./headless
++ *
++ * Produces headless_*.png files you can open to visually inspect the UI.
++ *
++ * Key APIs demonstrated:
++ *   - bgtk_init_mock(w, h)          : create a context with an owned in-memory buffer
++ *   - take_screenshot(ctx, "foo.png") or take_screenshot(ctx, NULL)
++ *   - bgtk_inject_event(ctx, ev)    : simulate clicks and key presses
++ *   - bgtk_destroy_mock(ctx)
++ *
++ * No BGCE server, DRM, or real input devices are required.
++ * This is the recommended workflow for developing and debugging widgets.
++ */
++
++#include &lt;stdio.h&gt;
++#include &lt;string.h&gt;
++#include &lt;linux/input.h&gt;
++
++#include "bgtk.h"
++
++static int clicks = 0;
++static struct BGTK_Widget *counter_label = NULL;
++
++static void on_click(void)
++{
++	clicks++;
++	if (counter_label &amp;&amp; counter_label-&gt;data.label.set_label) {
++		char buf[64];
++		snprintf(buf, sizeof(buf), "clicks: %d", clicks);
++		counter_label-&gt;data.label.set_label(counter_label, buf);
++	}
++}
++
++int main(void)
++{
++	/* 1. Headless init: no server, we get a plain malloc framebuffer */
++	struct BGTK_Context *ctx = bgtk_init_mock(420, 260);
++	if (!ctx) {
++		fprintf(stderr, "headless: init failed\n");
++		return 1;
++	}
++
++	/* 2. Build a tiny widget tree (similar to image_viewer bits) */
++	struct BGTK_Widget *title = bgtk_text(ctx, "headless test", (BGTK_Options){.padding = 4, .margin = 2});
++
++	struct BGTK_Widget *btn_label = bgtk_text(ctx, "click me", (BGTK_Options){.padding = 2});
++	struct BGTK_Widget *btn = bgtk_button(ctx, btn_label, on_click, (BGTK_Options){.padding = 8, .margin = 4});
++
++	counter_label = bgtk_label(ctx, "clicks: 0", (BGTK_Options){.padding = 2, .margin = 2});
++
++	struct BGTK_Widget *ti = bgtk_text_input(ctx, "type here", 200, 0, (BGTK_Options){.padding = 6, .margin = 4});
++
++	struct BGTK_Widget *row[2] = {btn, ti};
++	struct BGTK_Widget *roww = bgtk_list(ctx, row, 2, (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .margin = 4});
++
++	struct BGTK_Widget *col[3] = {title, roww, counter_label};
++	struct BGTK_Widget *root = bgtk_list(ctx, col, 3, (BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = 6});
++
++	ctx-&gt;root_widget = root;
++	bgtk_draw_widgets(ctx);
++
++	/* 3. Observe initial render */
++	take_screenshot(ctx, "headless_00_init.png");
++
++	/* 4. Simulate a click on the button via inject (absolute coords after layout) */
++	/* We know approx positions; for real tests query widget x/y after calculate. */
++	struct InputEvent click = {0};
++	click.type = EV_KEY;
++	click.code = BTN_LEFT;
++	click.value = 1;
++	click.x = btn-&gt;x + 10;
++	click.y = btn-&gt;y + 10;
++	bgtk_inject_event(ctx, click);
++	click.value = 0;
++	bgtk_inject_event(ctx, click);
++
++	take_screenshot(ctx, "headless_01_clicked.png");
++
++	/* 5. Focus the text input and type some chars (tests the keyboard path) */
++	bgtk_set_focus(ctx, ti);
++	take_screenshot(ctx, "headless_02_focused.png");
++
++	struct InputEvent key = {0};
++	key.type = EV_KEY;
++	key.value = 1;
++	key.code = KEY_H; bgtk_inject_event(ctx, key);
++	key.code = KEY_E; bgtk_inject_event(ctx, key);
++	key.code = KEY_L; bgtk_inject_event(ctx, key);
++	key.code = KEY_L; bgtk_inject_event(ctx, key);
++	key.code = KEY_O; bgtk_inject_event(ctx, key);
++	key.code = KEY_SPACE; bgtk_inject_event(ctx, key);
++	key.code = KEY_W; bgtk_inject_event(ctx, key);
++	key.code = KEY_O; bgtk_inject_event(ctx, key);
++	key.code = KEY_R; bgtk_inject_event(ctx, key);
++	key.code = KEY_L; bgtk_inject_event(ctx, key);
++	key.code = KEY_D; bgtk_inject_event(ctx, key);
++
++	take_screenshot(ctx, "headless_03_typed.png");
++
++	/* 6. Backspace a couple chars */
++	key.code = KEY_BACKSPACE; bgtk_inject_event(ctx, key);
++	key.code = KEY_BACKSPACE; bgtk_inject_event(ctx, key);
++	take_screenshot(ctx, "headless_04_backspaced.png");
++
++	printf("headless test complete. PNG frames written.\n");
++	bgtk_destroy_mock(ctx);
++	return 0;
++}
+diff --git a/test/server_client.sh b/test/server_client.sh
+new file mode 100755
+index 0000000..913de2a
+--- /dev/null
++++ b/test/server_client.sh
+@@ -0,0 +1,15 @@
++#!/bin/bash
++
++bgce &gt; bgce.log 2&gt;&amp;1 &amp;
++sleep 1
++echo "[TEST] Server running"
++
++echo "[TEST] Running test client..."
++./app &gt; app.log 2&gt;&amp;1
++
++sleep 2
++echo "[TEST] Stopping server..."
++killall bgce
++
++echo "[TEST] Test finished."
++
+diff --git a/widgets.c b/widgets.c
+index 8d5eeba..7fa4b3d 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -77,12 +77,12 @@ void bgtk_set_focus(struct BGTK_Context *ctx, struct BGTK_Widget *widget)
+ // Returns pixel width of text[0..len-1]
+ static int measure_prefix_width(FT_Face face, const char *text, int len)
+ {
+-	int width = 0;
+ 	if (!face || !text || len &lt;= 0) {
+-		return 0;
++		return len &gt; 0 ? len * 7 : 0;  /* crude fallback */
+ 	}
++	int width = 0;
+ 	for (int i = 0; i &lt; len &amp;&amp; text[i]; i++) {
+-		if (FT_Load_Char(face, text[i], FT_LOAD_DEFAULT)) {
++		if (FT_Load_Char(face, (unsigned char)text[i], FT_LOAD_DEFAULT)) {
+ 			continue;
+ 		}
+ 		width += face-&gt;glyph-&gt;advance.x;
+</pre>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk fa733d9</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit fa733d9
+parent <a href=commit-0215c17.html>0215c17</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-06T16:29:52-03:00
+
+    Revert rpath embedding; rely on LD_LIBRARY_PATH for home installs.
+
+    Apps stay linked with -L. -lbgtk only so the dynamic linker uses the
+    environment (and system paths), matching PREFIX=$HOME/.local workflows.
+
+<a href=tree-fa733d9.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/Makefile b/Makefile
+index 9543b56..f9caa42 100644
+--- a/Makefile
++++ b/Makefile
+@@ -50,13 +50,9 @@ endif
+ # Full LDFLAGS are only for real (Linux + bgce server) binaries.
+ LDFLAGS = $(FREETYPE_LIBDIRS) $(FREETYPE_LIBS) $(LIBXML2_LIBS) -lbgce -lm
+ # Prefer in-tree libbgtk.so when linking apps (before any system copy).
+-# RPATH so the runtime linker finds libbgtk.so without LD_LIBRARY_PATH:
+-#   - $(INSTALL_LIB) for installed layout (/lib or PREFIX/lib)
+-#   - $$ORIGIN so a co-located lib next to the binary also works
+-#   - . for running from the build tree (./launcher after make)
+-# Yes, LD_LIBRARY_PATH is still honored by the dynamic linker if set.
+-RPATH_FLAGS = -Wl,-rpath,$(INSTALL_LIB) -Wl,-rpath,'$$ORIGIN' -Wl,-rpath,.
+-APP_LDFLAGS = -L. -lbgtk $(RPATH_FLAGS) $(LDFLAGS)
++# Runtime search is left to the dynamic linker / LD_LIBRARY_PATH (e.g. home
++# PREFIX installs); we do not bake rpath into the binaries.
++APP_LDFLAGS = -L. -lbgtk $(LDFLAGS)
+ 
+ # openpty() lives in libutil on Linux; on macOS it is in libSystem.
+ PTY_LIBS :=
+@@ -152,12 +148,6 @@ help:
+ 	@echo "  INSTALL_INCLUDE=$(INSTALL_INCLUDE)"
+ 	@echo "  INSTALL_BIN=$(INSTALL_BIN)"
+ 	@echo ""
+-	@echo "Runtime library search (libbgtk.so)"
+-	@echo "  Apps link with -lbgtk and rpath: $(INSTALL_LIB), \$$ORIGIN, and ."
+-	@echo "  The dynamic linker also honors LD_LIBRARY_PATH if set, e.g.:"
+-	@echo "    LD_LIBRARY_PATH=. ./launcher"
+-	@echo "  After 'make install' (+ ldconfig on Linux), /lib is enough."
+-	@echo ""
+ 	@echo "Examples"
+ 	@echo "  make"
+ 	@echo "  make CC=cc"
+@@ -165,9 +155,9 @@ help:
+ 	@echo "  make headless &amp;&amp; ./headless"
+ 	@echo "  make install"
+ 	@echo "  make install PREFIX=/usr/local"
++	@echo "  make install PREFIX=\$$HOME/.local"
+ 	@echo "  make install INSTALL_LIB=/opt/bgtk/lib INSTALL_INCLUDE=/opt/bgtk/include"
+ 	@echo "  make snapshot"
+-	@echo "  LD_LIBRARY_PATH=. ./launcher"
+ 
+ # Shared library objects need -fPIC; app objects must not (TinyCC).
+ $(LIB_OBJS): CFLAGS += -fPIC
+</pre>

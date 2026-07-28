@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 9e6dc92</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 9e6dc92
+parent <a href=commit-8a5a588.html>8a5a588</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-06T19:37:46-03:00
+
+    feat: quit GUI apps with Esc or Ctrl+C.
+
+    Add bgtk_is_app_quit_event and use it in settings, launcher, test_app,
+    image_viewer, and gemini_browser. Terminal still sends Ctrl+C to the PTY.
+
+<a href=tree-9e6dc92.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/gemini_browser.c b/apps/gemini_browser.c
+index 6ece0c5..7ed9877 100644
+--- a/apps/gemini_browser.c
++++ b/apps/gemini_browser.c
+@@ -680,18 +680,22 @@ int main(void)
+ 		bytes = bgce_recv_msg(ctx-&gt;conn_fd, &amp;msg);
+ 		if (bytes &lt;= 0) {
+ 			if (bytes == 0)
+-				fprintf(stderr, "gemini_browser: Server closed connection.\n");
++				bgtk_log("server closed connection");
+ 			else if (errno != EINTR)
+-				perror("gemini_browser: bgce_recv_msg");
++				bgtk_log_errno("bgce_recv_msg");
+ 			break;
+ 		}
+ 
+ 		int res = 0;
+ 		switch (msg.type) {
+ 		case MSG_INPUT_EVENT:
+-			if (msg.data.input_event.type != EV_REL &amp;&amp; msg.data.input_event.type != EV_ABS) {
+-				res = bgtk_handle_input_event(ctx, msg.data.input_event);
+-			}
++			if (msg.data.input_event.type == EV_REL ||
++			    msg.data.input_event.type == EV_ABS)
++				break;
++			bgtk_update_modifiers(ctx, msg.data.input_event);
++			if (bgtk_is_app_quit_event(ctx, msg.data.input_event))
++				goto done;
++			res = bgtk_handle_input_event(ctx, msg.data.input_event);
+ 			break;
+ 		case MSG_FOCUS_CHANGE:
+ 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
+@@ -709,9 +713,9 @@ int main(void)
+ 			break;
+ 		}
+ 		if (res)
+-			bgce_draw(conn_fd);
++			bgtk_draw_widgets(ctx);
+ 	}
+-
++done:
+ 	bgtk_destroy(ctx);
+ 	return 0;
+ }
+diff --git a/apps/image_viewer.c b/apps/image_viewer.c
+index 494ba29..4ad1b10 100644
+--- a/apps/image_viewer.c
++++ b/apps/image_viewer.c
+@@ -140,51 +140,45 @@ int main(void) {
+ 	while (1) {
+ 		bytes = bgce_recv_msg(ctx-&gt;conn_fd, &amp;msg);
+ 		if (bytes &lt;= 0) {
+-			if (bytes == 0) {
+-				fprintf(stderr,
+-					"image_viewer: Server closed "
+-					"connection.\n");
+-			} else if (errno != EINTR) {
+-				perror("image_viewer: bgce_recv_msg");
+-			}
++			if (bytes == 0)
++				bgtk_log("server closed connection");
++			else if (errno != EINTR)
++				bgtk_log_errno("bgce_recv_msg");
+ 			break;
+ 		}
+ 
+ 		int res = 0;
+ 		switch (msg.type) {
+-			case MSG_INPUT_EVENT:
+-				// Ignore mouse movement
+-				if (msg.data.input_event.type != EV_REL &amp;&amp;
+-				    msg.data.input_event.type != EV_ABS) {
+-					res = bgtk_handle_input_event(
+-					    ctx,
+-					    msg.data.input_event);
+-				}
+-				break;
+-			case MSG_FOCUS_CHANGE:
+-				bgtk_set_window_focus(
+-				    ctx,
+-				    msg.data.focus_event.state);
++		case MSG_INPUT_EVENT:
++			if (msg.data.input_event.type == EV_REL ||
++			    msg.data.input_event.type == EV_ABS)
+ 				break;
+-			case MSG_BUFFER_CHANGE:
+-				if (bgtk_handle_buffer_change(ctx, &amp;msg.data.buffer_reply) == 0) {
+-					if (ctx-&gt;root_widget) {
+-						ctx-&gt;root_widget-&gt;w = ctx-&gt;width;
+-						ctx-&gt;root_widget-&gt;h = ctx-&gt;height;
+-					}
+-					bgtk_draw_widgets(ctx);
+-					res = 0;
++			bgtk_update_modifiers(ctx, msg.data.input_event);
++			if (bgtk_is_app_quit_event(ctx, msg.data.input_event))
++				goto done;
++			res = bgtk_handle_input_event(ctx, msg.data.input_event);
++			break;
++		case MSG_FOCUS_CHANGE:
++			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
++			break;
++		case MSG_BUFFER_CHANGE:
++			if (bgtk_handle_buffer_change(ctx, &amp;msg.data.buffer_reply) == 0) {
++				if (ctx-&gt;root_widget) {
++					ctx-&gt;root_widget-&gt;w = ctx-&gt;width;
++					ctx-&gt;root_widget-&gt;h = ctx-&gt;height;
+ 				}
+-				break;
+-			default:
+-				break;
++				bgtk_draw_widgets(ctx);
++				res = 0;
++			}
++			break;
++		default:
++			break;
+ 		}
+ 
+-		if (res) {
+-			bgce_draw(conn_fd);
+-		}
++		if (res)
++			bgtk_draw_widgets(ctx);
+ 	}
+-
++done:
+ 	bgtk_destroy(ctx);
+ 	return 0;
+ }
+diff --git a/apps/launcher.c b/apps/launcher.c
+index 02b97a8..9e38ebb 100644
+--- a/apps/launcher.c
++++ b/apps/launcher.c
+@@ -292,16 +292,15 @@ int main(void)
+ 		int need_draw = 0;
+ 		switch (msg.type) {
+ 		case MSG_INPUT_EVENT:
+-			if (msg.data.input_event.type == EV_KEY &amp;&amp;
+-			    msg.data.input_event.code == KEY_ESC &amp;&amp;
+-			    msg.data.input_event.value == 1) {
++			if (msg.data.input_event.type == EV_REL ||
++			    msg.data.input_event.type == EV_ABS)
++				break;
++			bgtk_update_modifiers(ctx, msg.data.input_event);
++			if (bgtk_is_app_quit_event(ctx, msg.data.input_event)) {
+ 				quit = 1;
+ 				break;
+ 			}
+-			if (msg.data.input_event.type != EV_REL &amp;&amp;
+-			    msg.data.input_event.type != EV_ABS) {
+-				need_draw = bgtk_handle_input_event(ctx, msg.data.input_event);
+-			}
++			need_draw = bgtk_handle_input_event(ctx, msg.data.input_event);
+ 			break;
+ 		case MSG_FOCUS_CHANGE:
+ 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
+diff --git a/apps/settings.c b/apps/settings.c
+index bac7dc9..b599e05 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -1109,17 +1109,18 @@ int main(void)
+ 	struct BGCEMessage msg;
+ 	while (bgce_recv_msg(conn, &amp;msg) &gt; 0) {
+ 		if (msg.type == MSG_INPUT_EVENT) {
++			struct InputEvent *ev = &amp;msg.data.input_event;
+ 			/* Ignore pure pointer motion — redrawing every move
+-			 * freezes the UI under hover. Only key/button (and
+-			 * wheel, handled inside widgets) need handling. */
+-			if (msg.data.input_event.type == EV_REL ||
+-			    msg.data.input_event.type == EV_ABS)
++			 * freezes the UI under hover. */
++			if (ev-&gt;type == EV_REL || ev-&gt;type == EV_ABS)
+ 				continue;
+-			if (bgtk_handle_input_event(c, msg.data.input_event))
++			bgtk_update_modifiers(c, *ev);
++			if (bgtk_is_app_quit_event(c, *ev))
++				break;
++			if (bgtk_handle_input_event(c, *ev))
+ 				bgtk_draw_widgets(c);
+ 		} else if (msg.type == MSG_FOCUS_CHANGE) {
+ 			bgtk_set_window_focus(c, msg.data.focus_event.state);
+-			/* set_window_focus already redraws */
+ 		} else if (msg.type == MSG_BUFFER_CHANGE) {
+ 			if (bgtk_handle_buffer_change(c, &amp;msg.data.buffer_reply) == 0)
+ 				bgtk_draw_widgets(c);
+diff --git a/apps/test_app.c b/apps/test_app.c
+index 29c0d44..a878430 100644
+--- a/apps/test_app.c
++++ b/apps/test_app.c
+@@ -170,46 +170,41 @@ int main(void) {
+ 	while (1) {
+ 		bytes = bgce_recv_msg(ctx-&gt;conn_fd, &amp;msg);
+ 		if (bytes &lt;= 0) {
+-			if (bytes == 0) {
+-				fprintf(stderr,
+-					"bgtk_main_loop: Server closed "
+-					"connection.\n");
+-			} else if (errno != EINTR) {
+-				perror("bgtk_main_loop: bgce_recv_msg");
+-			}
++			if (bytes == 0)
++				bgtk_log("server closed connection");
++			else if (errno != EINTR)
++				bgtk_log_errno("bgce_recv_msg");
+ 			break;
+ 		}
+ 
+ 		int res = 0;
+ 		switch (msg.type) {
+-			case MSG_INPUT_EVENT:
+-				// Ignore mouse movement for now to avoid excessive redraw/event spam
+-				if (msg.data.input_event.type != EV_REL &amp;&amp;
+-				    msg.data.input_event.type != EV_ABS) {
+-					res = bgtk_handle_input_event(
+-					    ctx, msg.data.input_event);
+-				}
+-				break;
+-			case MSG_FOCUS_CHANGE:
+-				bgtk_set_window_focus(ctx, msg.data.focus_event.state);
+-				break;
+-			case MSG_BUFFER_CHANGE:
+-				if (bgtk_handle_buffer_change(ctx, &amp;msg.data.buffer_reply) == 0) {
+-					bgtk_draw_widgets(ctx);
+-					res = 0; /* draw already submitted */
+-				}
+-				break;
+-			default:
+-				// Ignore other messages for now
+-				printf("Ignoring message\n");
++		case MSG_INPUT_EVENT:
++			if (msg.data.input_event.type == EV_REL ||
++			    msg.data.input_event.type == EV_ABS)
+ 				break;
++			bgtk_update_modifiers(ctx, msg.data.input_event);
++			if (bgtk_is_app_quit_event(ctx, msg.data.input_event))
++				goto done;
++			res = bgtk_handle_input_event(ctx, msg.data.input_event);
++			break;
++		case MSG_FOCUS_CHANGE:
++			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
++			break;
++		case MSG_BUFFER_CHANGE:
++			if (bgtk_handle_buffer_change(ctx, &amp;msg.data.buffer_reply) == 0) {
++				bgtk_draw_widgets(ctx);
++				res = 0;
++			}
++			break;
++		default:
++			break;
+ 		}
+ 
+-		if (res) {
+-			bgce_draw(conn_fd);
+-		}
++		if (res)
++			bgtk_draw_widgets(ctx);
+ 	}
+-
++done:
+ 	bgtk_destroy(ctx);
+ 	return 0;
+ }
+diff --git a/bgtk.h b/bgtk.h
+index bed5847..9f038be 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -221,6 +221,11 @@ int bgtk_mods_from_ctx(const struct BGTK_Context *ctx);
+ // US QWERTY keycode → bytes. Returns length written (0 if unmapped).
+ int bgtk_key_to_bytes(int code, int mods, int mode, char *out, int max);
+ 
++// True if this key should exit a normal GUI app: Esc, or Ctrl+C.
++// Call after bgtk_update_modifiers (or bgtk_handle_input_event's mod update).
++// Do NOT use in the terminal emulator (Ctrl+C must go to the PTY).
++int bgtk_is_app_quit_event(const struct BGTK_Context *ctx, struct InputEvent ev);
++
+ // Sets the focused widget for keyboard input.
+ // Passing NULL clears focus.
+ void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget);
+diff --git a/keys.c b/keys.c
+index f642456..088d110 100644
+--- a/keys.c
++++ b/keys.c
+@@ -34,6 +34,18 @@ int bgtk_mods_from_ctx(const struct BGTK_Context *ctx)
+ 	return m;
+ }
+ 
++int bgtk_is_app_quit_event(const struct BGTK_Context *ctx, struct InputEvent ev)
++{
++	if (ev.type != EV_KEY || (ev.value != 1 &amp;&amp; ev.value != 2))
++		return 0;
++	if (ev.code == KEY_ESC)
++		return 1;
++	/* Ctrl+C: quit normal apps (terminal must not call this). */
++	if (ev.code == KEY_C &amp;&amp; ctx &amp;&amp; ctx-&gt;ctrl_held)
++		return 1;
++	return 0;
++}
++
+ static int letter_index(int code)
+ {
+ 	static const int kmap[] = {
+</pre>

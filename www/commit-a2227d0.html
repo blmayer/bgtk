@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk a2227d0</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit a2227d0
+parent <a href=commit-bc9d633.html>bc9d633</a> 
+author myr &lt;myr@terminal.pink&gt;
+date   2025-12-18T12:18:06-03:00
+
+    split files
+
+<a href=tree-a2227d0.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/Makefile b/Makefile
+index 997b6a9..1d777b4 100644
+--- a/Makefile
++++ b/Makefile
+@@ -4,7 +4,7 @@ CFLAGS = -Wall -Wextra -Werror -I. -I/usr/include/freetype2 -I/usr/local/include
+ LDFLAGS = -lfreetype -lbgce
+ 
+ TARGET = app
+-SRC = app.c bgtk.c
++SRC = app.c bgtk.c drawing.c widgets.c
+ OBJ = $(SRC:.c=.o)
+ 
+ .PHONY: all clean test
+diff --git a/bgtk.c b/bgtk.c
+index f40ca75..1f2795b 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -4,36 +4,16 @@
+ #include &lt;linux/input.h&gt;
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+-#include &lt;string.h&gt;
+ #include &lt;unistd.h&gt;
+ 
++#include "internal.h"
++
+ // The font path is hardcoded for simplicity.
+ #define DEFAULT_FONT_PATH                                 \
+ 	"/usr/share/fonts/ttf-input/InputMono/InputMono/" \
+ 	"InputMono-Regular.ttf"
+ #define DEFAULT_FONT_SIZE 12
+ 
+-// A few basic colors (0xAARRGGBB)
+-#define BGTK_COLOR_BG 0xFFCCCCCC     // Light Gray
+-#define BGTK_COLOR_BTN 0xFF007BFF    // Blue
+-#define BGTK_COLOR_TEXT 0xFF000000   // Black
+-#define BGTK_COLOR_WHITE 0xFFFFFFFF  // White
+-
+-// Helper to create a generic widget
+-static struct BGTK_Widget* widget_new(struct BGTK_Context* ctx,
+-				      enum BGTK_Widget_Type type, int flags) {
+-	struct BGTK_Widget* widget =
+-	    (struct BGTK_Widget*)calloc(1, sizeof(struct BGTK_Widget));
+-	if (!widget) {
+-		perror("calloc");
+-		return NULL;
+-	}
+-	widget-&gt;ctx = ctx;
+-	widget-&gt;type = type;
+-	widget-&gt;flags = flags;
+-	return widget;
+-}
+-
+ // --- Core Functions ---
+ 
+ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
+@@ -135,306 +115,9 @@ void bgtk_destroy(struct BGTK_Context* ctx) {
+ 
+ // --- Drawing Primitives &amp; Widgets ---
+ 
+-static void clear_buffer(struct BGTK_Context* ctx, uint32_t color) {
+-	uint32_t* pixels = (uint32_t*)ctx-&gt;shm_buffer;
+-	size_t size = (size_t)ctx-&gt;width * ctx-&gt;height;
+-	for (size_t i = 0; i &lt; size; i++) {
+-		pixels[i] = color;
+-	}
+-}
+-
+-static void draw_rect(struct BGTK_Context* ctx, uint32_t* pixels, int x, int y,
+-		      int w, int h, uint32_t color) {
+-	// Basic clipping and drawing
+-	int x1 = x;
+-	int y1 = y;
+-	int x2 = x + w;
+-	int y2 = y + h;
+-
+-	// Clip to buffer bounds
+-	if (x1 &lt; 0) {
+-		x1 = 0;
+-	}
+-	if (y1 &lt; 0) {
+-		y1 = 0;
+-	}
+-	if (x2 &gt; (int)ctx-&gt;width) {
+-		x2 = ctx-&gt;width;
+-	}
+-	if (y2 &gt; (int)ctx-&gt;height) {
+-		y2 = ctx-&gt;height;
+-	}
+-
+-	int stride = ctx-&gt;width;
+-
+-	for (int j = y1; j &lt; y2; j++) {
+-		for (int i = x1; i &lt; x2; i++) {
+-			pixels[j * stride + i] = color;
+-		}
+-	}
+-}
+-
+-void measure_text(FT_Face face, const char* text, int* out_width,
+-		  int* out_height) {
+-	int width = 0;
+-
+-	for (const char* p = text; *p; p++) {
+-		if (FT_Load_Char(face, *p, FT_LOAD_DEFAULT)) {
+-			continue;
+-		}
+-
+-		width += face-&gt;glyph-&gt;advance.x;  // 26.6 units
+-	}
+-
+-	width &gt;&gt;= 6;
+-
+-	int ascent = face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
+-	int descent = -face-&gt;size-&gt;metrics.descender &gt;&gt; 6;
+-	int height = ascent + descent;
+-
+-	*out_width = width;
+-	*out_height = height;
+-}
+-
+-static void calculate_widget_size(struct BGTK_Context* ctx,
+-				  struct BGTK_Widget* w) {
+-	if (!w) {
+-		return;
+-	}
+-
+-	switch (w-&gt;type) {
+-		case BGTK_WIDGET_LABEL:
+-			if (w-&gt;data.label.text) {
+-				calculate_widget_size(ctx, w-&gt;data.label.text);
+-				w-&gt;w =
+-				    w-&gt;data.label.text-&gt;w + 10;	 // Add padding
+-				w-&gt;h =
+-				    w-&gt;data.label.text-&gt;h + 10;	 // Add padding
+-			}
+-			break;
+-		case BGTK_WIDGET_TEXT:
+-			if (w-&gt;data.text.text) {
+-				measure_text(ctx-&gt;ft_face, w-&gt;data.text.text,
+-					     &amp;w-&gt;w, &amp;w-&gt;h);
+-			}
+-			printf("calcutated text size: %ux%u\n", w-&gt;w, w-&gt;h);
+-			break;
+-		case BGTK_WIDGET_BUTTON:
+-			if (w-&gt;data.button.label) {
+-				calculate_widget_size(ctx,
+-						      w-&gt;data.button.label);
+-				w-&gt;w = w-&gt;data.button.label-&gt;w +
+-				       20;  // Add padding
+-				w-&gt;h = w-&gt;data.button.label-&gt;h +
+-				       20;  // Add padding
+-			}
+-			printf("calcutated button size: %ux%u\n", w-&gt;w, w-&gt;h);
+-			break;
+-		case BGTK_WIDGET_SCROLLABLE:
+-			w-&gt;data.scrollable.content_height = 0;
+-			for (int i = 0; i &lt; w-&gt;data.scrollable.widget_count;
+-			     i++) {
+-				struct BGTK_Widget* child =
+-				    w-&gt;data.scrollable.widgets[i];
+-				calculate_widget_size(ctx, child);
+-				w-&gt;data.scrollable.content_height +=
+-				    child-&gt;h + 5;  // 5px spacing
+-			}
+-			printf("calcutated scrollable size: %ux%u\n", w-&gt;w,
+-			       w-&gt;data.scrollable.content_height);
+-			break;
+-		default:
+-			break;
+-	}
+-}
+-
+-static void draw_text(struct BGTK_Context* ctx, uint32_t* pixels,
+-		      const char* text, int x, int y, uint32_t color) {
+-	if (!ctx-&gt;ft_face) {
+-		// Fallback to simple placeholder if font didn't load
+-		draw_rect(ctx, pixels, x, y, 5, 5, color);
+-		return;
+-	}
+-
+-	// Set font size for drawing context
+-	FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
+-
+-	int pen_x = x;
+-	int pen_y = y + (ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6);
+-
+-	int stride = ctx-&gt;width;
+-
+-	for (const char* p = text; *p; p++) {
+-		FT_UInt index = FT_Get_Char_Index(ctx-&gt;ft_face, *p);
+-
+-		if (FT_Load_Glyph(ctx-&gt;ft_face, index,
+-				  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
+-			continue;
+-		}
+-
+-		FT_Render_Glyph(ctx-&gt;ft_face-&gt;glyph, FT_RENDER_MODE_NORMAL);
+-
+-		FT_GlyphSlot slot = ctx-&gt;ft_face-&gt;glyph;
+-		FT_Bitmap* bitmap = &amp;slot-&gt;bitmap;
+-
+-		int gx = pen_x + slot-&gt;bitmap_left;
+-		int gy = pen_y - slot-&gt;bitmap_top;
+-
+-		for (unsigned int row = 0; row &lt; bitmap-&gt;rows; row++) {
+-			for (unsigned int col = 0; col &lt; bitmap-&gt;width; col++) {
+-				uint8_t a =
+-				    bitmap-&gt;buffer[row * bitmap-&gt;pitch + col];
+-				if (a == 0) {
+-					continue;
+-				}
+-
+-				int32_t dx = gx + col;
+-				int32_t dy = gy + row;
+-				if (dx &lt; 0 || dx &gt;= (int)ctx-&gt;width || dy &lt; 0 ||
+-				    dy &gt;= (int)ctx-&gt;height) {
+-					continue;
+-				}
+-
+-				// Blend
+-				uint32_t dst = pixels[dy * stride + dx];
+-				uint8_t inv = 255 - a;
+-
+-				uint8_t r_dst = (dst &gt;&gt; 16) &amp; 0xFF;
+-				uint8_t g_dst = (dst &gt;&gt; 8) &amp; 0xFF;
+-				uint8_t b_dst = (dst) &amp; 0xFF;
+-
+-				uint8_t r_src = (color &gt;&gt; 16) &amp; 0xFF;
+-				uint8_t g_src = (color &gt;&gt; 8) &amp; 0xFF;
+-				uint8_t b_src = (color) &amp; 0xFF;
+-
+-				uint8_t r = (r_src * a + r_dst * inv) / 255;
+-				uint8_t g = (g_src * a + g_dst * inv) / 255;
+-				uint8_t b = (b_src * a + b_dst * inv) / 255;
+-
+-				pixels[dy * stride + dx] =
+-				    (r &lt;&lt; 16) | (g &lt;&lt; 8) | b;
+-			}
+-		}
+-
+-		pen_x += slot-&gt;advance.x &gt;&gt; 6;
+-	}
+-}
+-
+-static void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
+-			uint32_t* pixels) {
+-	switch (w-&gt;type) {
+-		case BGTK_WIDGET_LABEL:
+-
+-			// Draw label background
+-			draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, w-&gt;h,
+-				  BGTK_COLOR_BG);
+-			// Draw text widget (offset for padding)
+-			if (w-&gt;data.label.text) {
+-				w-&gt;data.label.text-&gt;x = w-&gt;x + 5;
+-				w-&gt;data.label.text-&gt;y = w-&gt;y + 5;
+-				draw_widget(ctx, w-&gt;data.label.text, pixels);
+-			}
+-			break;
+-		case BGTK_WIDGET_TEXT:
+-			puts("drawing text widget");
+-			draw_text(ctx, pixels, w-&gt;data.text.text, w-&gt;x, w-&gt;y,
+-				  BGTK_COLOR_TEXT);
+-			break;
+-		case BGTK_WIDGET_BUTTON:
+-			puts("drawing button widget");
+-			// Draw button background
+-			draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, w-&gt;h,
+-				  BGTK_COLOR_BTN);
+-
+-			// Draw button border (1px black)
+-			draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, 1,
+-				  BGTK_COLOR_TEXT);  // Top
+-			draw_rect(ctx, pixels, w-&gt;x, w-&gt;y + w-&gt;h - 1, w-&gt;w, 1,
+-				  BGTK_COLOR_TEXT);  // Bottom
+-			draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, 1, w-&gt;h,
+-				  BGTK_COLOR_TEXT);  // Left
+-			draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - 1, w-&gt;y, 1, w-&gt;h,
+-				  BGTK_COLOR_TEXT);  // Right
+-
+-			// Draw label widget (offset for padding)
+-			if (w-&gt;data.button.label) {
+-				w-&gt;data.button.label-&gt;x = w-&gt;x + 10;
+-				w-&gt;data.button.label-&gt;y = w-&gt;y + 10;
+-				draw_widget(ctx, w-&gt;data.button.label, pixels);
+-			}
+-			break;
+-		case BGTK_WIDGET_SCROLLABLE:
+-			puts("drawing scrollable widget");
+-			// Allocate or update the off-screen buffer if
+-			// needed
+-			if (!w-&gt;data.scrollable.tmp) {
+-				int content_height =
+-				    w-&gt;data.scrollable.content_height;
+-				if (w-&gt;h &gt; content_height) {
+-					content_height = w-&gt;h;
+-				}
+-
+-				// Allocate the off-screen buffer
+-				w-&gt;data.scrollable.tmp = calloc(
+-				    w-&gt;w * content_height, sizeof(uint32_t));
+-				if (!w-&gt;data.scrollable.tmp) {
+-					fprintf(stderr,
+-						"Failed to allocate "
+-						"off-screen "
+-						"buffer\n");
+-					break;
+-				}
+-				draw_rect(ctx, w-&gt;data.scrollable.tmp, 0, 0,
+-					  w-&gt;w,
+-					  w-&gt;data.scrollable.content_height,
+-					  BGTK_COLOR_BG);
+-
+-				// Draw child widgets into the
+-				// off-screen buffer
+-				int current_y = 0;
+-				for (int i = 0;
+-				     i &lt; w-&gt;data.scrollable.widget_count; i++) {
+-					struct BGTK_Widget* child =
+-					    w-&gt;data.scrollable.widgets[i];
+-
+-					child-&gt;x = w-&gt;x + 5;  // 5px padding
+-					if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+-						child-&gt;x =
+-						    w-&gt;x +
+-						    (w-&gt;w - child-&gt;w) / 2;
+-					}
+-					child-&gt;y = current_y;
+-					draw_widget(ctx, child,
+-						    w-&gt;data.scrollable.tmp);
+-					current_y +=
+-					    child-&gt;h + 5;  // 5px spacing
+-				}
+-			}
+-
+-			// Copy the off-screen buffer to the framebuffer
+-			// according to scroll position
+-			uint32_t* buff = ctx-&gt;shm_buffer;
+-			uint32_t* tmp = w-&gt;data.scrollable.tmp;
+-			for (int row = 0; row &lt; w-&gt;h; row++) {
+-				if (w-&gt;data.scrollable.scroll_y + row &lt;
+-				    w-&gt;data.scrollable.content_height) {
+-					memcpy(
+-					    &amp;buff[(w-&gt;y + row) * ctx-&gt;width +
+-						  w-&gt;x],
+-					    &amp;tmp[(w-&gt;data.scrollable.scroll_y +
+-						  row) *
+-						 w-&gt;w],
+-					    w-&gt;w * 4);
+-				}
+-			}
+-
+-			break;
+-	}
+-}
+-
+ void bgtk_draw_widgets(struct BGTK_Context* ctx) {
+ 	puts("got draw widgets request");
+-	clear_buffer(ctx, BGTK_COLOR_BG);
++	clear_buffer(ctx);
+ 	calculate_widget_size(ctx, ctx-&gt;root_widget);
+ 	draw_widget(ctx, ctx-&gt;root_widget, ctx-&gt;shm_buffer);
+ 	bgce_draw(ctx-&gt;conn_fd);
+@@ -512,23 +195,26 @@ int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev) {
+ 				return 0;
+ 			case BGTK_WIDGET_SCROLLABLE: {
+ 				printf("clicked in a scrollable widget\n");
+-				w = NULL;
+-				struct BGTK_Widget* item = NULL;
++				int found = 0;
+ 				for (int i = 0;
+ 				     i &lt; w-&gt;data.scrollable.widget_count; i++) {
+-					item = w-&gt;data.scrollable.widgets[i];
++					struct BGTK_Widget* item =
++					    w-&gt;data.scrollable.widgets[i];
+ 					if (ev.x &gt;= item-&gt;x &amp;&amp;
+ 					    ev.x &lt; (item-&gt;x + item-&gt;w) &amp;&amp;
+ 					    ev.y &gt;= item-&gt;y &amp;&amp;
+ 					    ev.y &lt; (item-&gt;y + item-&gt;h)) {
+ 						printf(
+-						    "clicked in the %d "
+-						    "widget\n",
++						    "clicked in the %d item\n",
+ 						    i);
+ 						w = item;
++						found = 1;
+ 						break;
+ 					}
+ 				}
++				if (!found) {
++					return 0;
++				}
+ 				break;
+ 			}
+ 			default:
+@@ -538,143 +224,3 @@ int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev) {
+ 	}
+ 	return 0;
+ }
+-
+-/*
+- * Widget Creation Functions
+- * ^^^^^^^^^^^^^^^^^^^^^^^^^
+- */
+-
+-void set_label(struct BGTK_Widget* widget, char* label) {
+-	printf("BGTK: setting label: %s\n", label);
+-	if (widget-&gt;data.label.text) {
+-		free(widget-&gt;data.label.text-&gt;data.text.text);
+-		free(widget-&gt;data.label.text);
+-	}
+-
+-	// Create a new text widget for the label
+-	struct BGTK_Widget* text_widget = bgtk_text(widget-&gt;ctx, label, 0);
+-	if (!text_widget) {
+-		perror(
+-		    "BGTK Failed to create text widget for "
+-		    "label");
+-		return;
+-	}
+-
+-	widget-&gt;data.label.text = text_widget;
+-
+-	// Calculate size based on text widget
+-	widget-&gt;w = text_widget-&gt;w + 10;  // Add padding
+-	widget-&gt;h = text_widget-&gt;h + 10;  // Add padding
+-
+-	draw_widget(widget-&gt;ctx, widget, widget-&gt;ctx-&gt;shm_buffer);
+-	printf("BGTK label set\n");
+-}
+-
+-struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text) {
+-	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_LABEL, 0);
+-	printf("BGTK allocated label\n");
+-	if (!widget) {
+-		perror("BGTK Failed to create new widget");
+-		return NULL;
+-	}
+-
+-	widget-&gt;set_label = set_label;
+-
+-	// Create a text widget for the label
+-	struct BGTK_Widget* text_widget = bgtk_text(ctx, text, 0);
+-	if (!text_widget) {
+-		perror(
+-		    "BGTK Failed to create text widget for "
+-		    "label");
+-		free(widget);
+-		return NULL;
+-	}
+-
+-	widget-&gt;data.label.text = text_widget;
+-
+-	// Calculate size based on text widget
+-	widget-&gt;w = text_widget-&gt;w + 10;  // Add padding
+-	widget-&gt;h = text_widget-&gt;h + 10;  // Add padding
+-
+-	return widget;
+-}
+-
+-struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, int flags) {
+-	printf("BGTK creating text widget\n");
+-	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_TEXT, flags);
+-	printf("BGTK allocated text widget\n");
+-	if (!widget) {
+-		perror("BGTK Failed to create new widget");
+-		return NULL;
+-	}
+-
+-	char* ptr = calloc(1, strlen(text) + 1);
+-	sprintf(ptr, "%s", text);
+-	widget-&gt;data.text.text = ptr;
+-
+-	// Calculate size based on text
+-	measure_text(widget-&gt;ctx-&gt;ft_face, widget-&gt;data.text.text, &amp;widget-&gt;w,
+-		     &amp;widget-&gt;h);
+-
+-	return widget;
+-}
+-
+-struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
+-				struct BGTK_Widget* label,
+-				BGTK_Callback callback, int flags) {
+-	printf("BGTK creating button widget\n");
+-	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_BUTTON, flags);
+-	if (!widget) {
+-		perror("BGTK Failed to create new widget");
+-		return NULL;
+-	}
+-
+-	widget-&gt;data.button.callback = callback;
+-	widget-&gt;data.button.label = label;
+-
+-	// Calculate size based on label widget
+-	widget-&gt;w = label-&gt;w + 20;  // Add padding
+-	widget-&gt;h = label-&gt;h + 20;  // Add padding
+-	return widget;
+-}
+-
+-// --- Layout/Management Functions ---
+-
+-// Helper to recalculate the content height of a scrollable
+-// widget
+-struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
+-				    struct BGTK_Widget** widgets,
+-				    int widget_count, int flags) {
+-	printf("BGTK creating scrollable widget\n");
+-	struct BGTK_Widget* widget =
+-	    widget_new(ctx, BGTK_WIDGET_SCROLLABLE, flags);
+-	if (!widget) {
+-		perror("BGTK Failed to create scrollable widget");
+-		return NULL;
+-	}
+-
+-	widget-&gt;data.scrollable.widgets = (struct BGTK_Widget**)calloc(
+-	    widget_count, sizeof(struct BGTK_Widget*));
+-	if (!widget-&gt;data.scrollable.widgets) {
+-		perror("calloc");
+-		free(widget);
+-		return NULL;
+-	}
+-
+-	// Copy the input widgets into the scrollable container
+-	widget-&gt;data.scrollable.widget_count = widget_count;
+-	widget-&gt;data.scrollable.scroll_y = 0;
+-	widget-&gt;data.scrollable.content_height = 0;
+-	for (int i = 0; i &lt; widget_count; i++) {
+-		widget-&gt;data.scrollable.widgets[i] = widgets[i];
+-		widget-&gt;data.scrollable.content_height +=
+-		    widgets[i]-&gt;h + 5;	// 5px spacing
+-	}
+-
+-	// Initialize tmp buffer to NULL, it will be allocated
+-	// during drawing
+-	widget-&gt;data.scrollable.tmp = NULL;
+-	printf("BGTK allocated scrollable widget\n");
+-
+-	return widget;
+-}
+diff --git a/drawing.c b/drawing.c
+new file mode 100644
+index 0000000..daf0688
+--- /dev/null
++++ b/drawing.c
+@@ -0,0 +1,308 @@
++#include "bgtk.h"
++#include "internal.h"
++#include &lt;stdio.h&gt;
++
++// A few basic colors (0xAARRGGBB)
++#define BGTK_COLOR_BG 0xFFCCCCCC     // Light Gray
++#define BGTK_COLOR_BTN 0xFF007BFF    // Blue
++#define BGTK_COLOR_TEXT 0xFF000000   // Black
++#define BGTK_COLOR_WHITE 0xFFFFFFFF  // White
++
++void clear_buffer(struct BGTK_Context* ctx) {
++	uint32_t* pixels = (uint32_t*)ctx-&gt;shm_buffer;
++	size_t size = (size_t)ctx-&gt;width * ctx-&gt;height;
++	for (size_t i = 0; i &lt; size; i++) {
++		pixels[i] = BGTK_COLOR_BG;
++	}
++}
++
++void draw_rect(struct BGTK_Context* ctx, uint32_t* pixels, int x, int y,
++		      int w, int h, uint32_t color) {
++	// Basic clipping and drawing
++	int x1 = x;
++	int y1 = y;
++	int x2 = x + w;
++	int y2 = y + h;
++
++	// Clip to buffer bounds
++	if (x1 &lt; 0) {
++		x1 = 0;
++	}
++	if (y1 &lt; 0) {
++		y1 = 0;
++	}
++	if (x2 &gt; (int)ctx-&gt;width) {
++		x2 = ctx-&gt;width;
++	}
++	if (y2 &gt; (int)ctx-&gt;height) {
++		y2 = ctx-&gt;height;
++	}
++
++	int stride = ctx-&gt;width;
++
++	for (int j = y1; j &lt; y2; j++) {
++		for (int i = x1; i &lt; x2; i++) {
++			pixels[j * stride + i] = color;
++		}
++	}
++}
++
++void measure_text(FT_Face face, const char* text, int* out_width,
++		  int* out_height) {
++	int width = 0;
++
++	for (const char* p = text; *p; p++) {
++		if (FT_Load_Char(face, *p, FT_LOAD_DEFAULT)) {
++			continue;
++		}
++
++		width += face-&gt;glyph-&gt;advance.x;  // 26.6 units
++	}
++
++	width &gt;&gt;= 6;
++
++	int ascent = face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
++	int descent = -face-&gt;size-&gt;metrics.descender &gt;&gt; 6;
++	int height = ascent + descent;
++
++	*out_width = width;
++	*out_height = height;
++}
++
++void calculate_widget_size(struct BGTK_Context* ctx,
++				  struct BGTK_Widget* w) {
++	if (!w) {
++		return;
++	}
++
++	switch (w-&gt;type) {
++		case BGTK_WIDGET_LABEL:
++			if (w-&gt;data.label.text) {
++				calculate_widget_size(ctx, w-&gt;data.label.text);
++				w-&gt;w =
++				    w-&gt;data.label.text-&gt;w + 10;	 // Add padding
++				w-&gt;h =
++				    w-&gt;data.label.text-&gt;h + 10;	 // Add padding
++			}
++			break;
++		case BGTK_WIDGET_TEXT:
++			if (w-&gt;data.text.text) {
++				measure_text(ctx-&gt;ft_face, w-&gt;data.text.text,
++					     &amp;w-&gt;w, &amp;w-&gt;h);
++			}
++			printf("calcutated text size: %ux%u\n", w-&gt;w, w-&gt;h);
++			break;
++		case BGTK_WIDGET_BUTTON:
++			if (w-&gt;data.button.label) {
++				calculate_widget_size(ctx,
++						      w-&gt;data.button.label);
++				w-&gt;w = w-&gt;data.button.label-&gt;w +
++				       20;  // Add padding
++				w-&gt;h = w-&gt;data.button.label-&gt;h +
++				       20;  // Add padding
++			}
++			printf("calcutated button size: %ux%u\n", w-&gt;w, w-&gt;h);
++			break;
++		case BGTK_WIDGET_SCROLLABLE:
++			w-&gt;data.scrollable.content_height = 0;
++			for (int i = 0; i &lt; w-&gt;data.scrollable.widget_count;
++			     i++) {
++				struct BGTK_Widget* child =
++				    w-&gt;data.scrollable.widgets[i];
++				calculate_widget_size(ctx, child);
++				w-&gt;data.scrollable.content_height +=
++				    child-&gt;h + 5;  // 5px spacing
++			}
++			printf("calcutated scrollable size: %ux%u\n", w-&gt;w,
++			       w-&gt;data.scrollable.content_height);
++			break;
++		default:
++			break;
++	}
++}
++
++void draw_text(struct BGTK_Context* ctx, uint32_t* pixels,
++		      const char* text, int x, int y, uint32_t color) {
++	if (!ctx-&gt;ft_face) {
++		// Fallback to simple placeholder if font didn't load
++		draw_rect(ctx, pixels, x, y, 5, 5, color);
++		return;
++	}
++
++	// Set font size for drawing context
++	FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
++
++	int pen_x = x;
++	int pen_y = y + (ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6);
++
++	int stride = ctx-&gt;width;
++
++	for (const char* p = text; *p; p++) {
++		FT_UInt index = FT_Get_Char_Index(ctx-&gt;ft_face, *p);
++
++		if (FT_Load_Glyph(ctx-&gt;ft_face, index,
++				  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
++			continue;
++		}
++
++		FT_Render_Glyph(ctx-&gt;ft_face-&gt;glyph, FT_RENDER_MODE_NORMAL);
++
++		FT_GlyphSlot slot = ctx-&gt;ft_face-&gt;glyph;
++		FT_Bitmap* bitmap = &amp;slot-&gt;bitmap;
++
++		int gx = pen_x + slot-&gt;bitmap_left;
++		int gy = pen_y - slot-&gt;bitmap_top;
++
++		for (unsigned int row = 0; row &lt; bitmap-&gt;rows; row++) {
++			for (unsigned int col = 0; col &lt; bitmap-&gt;width; col++) {
++				uint8_t a =
++				    bitmap-&gt;buffer[row * bitmap-&gt;pitch + col];
++				if (a == 0) {
++					continue;
++				}
++
++				int32_t dx = gx + col;
++				int32_t dy = gy + row;
++				if (dx &lt; 0 || dx &gt;= (int)ctx-&gt;width || dy &lt; 0 ||
++				    dy &gt;= (int)ctx-&gt;height) {
++					continue;
++				}
++
++				// Blend
++				uint32_t dst = pixels[dy * stride + dx];
++				uint8_t inv = 255 - a;
++
++				uint8_t r_dst = (dst &gt;&gt; 16) &amp; 0xFF;
++				uint8_t g_dst = (dst &gt;&gt; 8) &amp; 0xFF;
++				uint8_t b_dst = (dst) &amp; 0xFF;
++
++				uint8_t r_src = (color &gt;&gt; 16) &amp; 0xFF;
++				uint8_t g_src = (color &gt;&gt; 8) &amp; 0xFF;
++				uint8_t b_src = (color) &amp; 0xFF;
++
++				uint8_t r = (r_src * a + r_dst * inv) / 255;
++				uint8_t g = (g_src * a + g_dst * inv) / 255;
++				uint8_t b = (b_src * a + b_dst * inv) / 255;
++
++				pixels[dy * stride + dx] =
++				    (r &lt;&lt; 16) | (g &lt;&lt; 8) | b;
++			}
++		}
++
++		pen_x += slot-&gt;advance.x &gt;&gt; 6;
++	}
++}
++
++void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
++			uint32_t* pixels) {
++	switch (w-&gt;type) {
++		case BGTK_WIDGET_LABEL:
++
++			// Draw label background
++			draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, w-&gt;h,
++				  BGTK_COLOR_BG);
++			// Draw text widget (offset for padding)
++			if (w-&gt;data.label.text) {
++				w-&gt;data.label.text-&gt;x = w-&gt;x + 5;
++				w-&gt;data.label.text-&gt;y = w-&gt;y + 5;
++				draw_widget(ctx, w-&gt;data.label.text, pixels);
++			}
++			break;
++		case BGTK_WIDGET_TEXT:
++			puts("drawing text widget");
++			draw_text(ctx, pixels, w-&gt;data.text.text, w-&gt;x, w-&gt;y,
++				  BGTK_COLOR_TEXT);
++			break;
++		case BGTK_WIDGET_BUTTON:
++			puts("drawing button widget");
++			// Draw button background
++			draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, w-&gt;h,
++				  BGTK_COLOR_BTN);
++
++			// Draw button border (1px black)
++			draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, 1,
++				  BGTK_COLOR_TEXT);  // Top
++			draw_rect(ctx, pixels, w-&gt;x, w-&gt;y + w-&gt;h - 1, w-&gt;w, 1,
++				  BGTK_COLOR_TEXT);  // Bottom
++			draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, 1, w-&gt;h,
++				  BGTK_COLOR_TEXT);  // Left
++			draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - 1, w-&gt;y, 1, w-&gt;h,
++				  BGTK_COLOR_TEXT);  // Right
++
++			// Draw label widget (offset for padding)
++			if (w-&gt;data.button.label) {
++				w-&gt;data.button.label-&gt;x = w-&gt;x + 10;
++				w-&gt;data.button.label-&gt;y = w-&gt;y + 10;
++				draw_widget(ctx, w-&gt;data.button.label, pixels);
++			}
++			break;
++		case BGTK_WIDGET_SCROLLABLE:
++			puts("drawing scrollable widget");
++			// Allocate or update the off-screen buffer if
++			// needed
++			if (!w-&gt;data.scrollable.tmp) {
++				int content_height =
++				    w-&gt;data.scrollable.content_height;
++				if (w-&gt;h &gt; content_height) {
++					content_height = w-&gt;h;
++				}
++
++				// Allocate the off-screen buffer
++				w-&gt;data.scrollable.tmp = calloc(
++				    w-&gt;w * content_height, sizeof(uint32_t));
++				if (!w-&gt;data.scrollable.tmp) {
++					fprintf(stderr,
++						"Failed to allocate "
++						"off-screen "
++						"buffer\n");
++					break;
++				}
++				draw_rect(ctx, w-&gt;data.scrollable.tmp, 0, 0,
++					  w-&gt;w,
++					  w-&gt;data.scrollable.content_height,
++					  BGTK_COLOR_BG);
++
++				// Draw child widgets into the
++				// off-screen buffer
++				int current_y = 0;
++				for (int i = 0;
++				     i &lt; w-&gt;data.scrollable.widget_count; i++) {
++					struct BGTK_Widget* child =
++					    w-&gt;data.scrollable.widgets[i];
++
++					child-&gt;x = w-&gt;x + 5;  // 5px padding
++					if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
++						child-&gt;x =
++						    w-&gt;x +
++						    (w-&gt;w - child-&gt;w) / 2;
++					}
++					child-&gt;y = current_y;
++					draw_widget(ctx, child,
++						    w-&gt;data.scrollable.tmp);
++					current_y +=
++					    child-&gt;h + 5;  // 5px spacing
++				}
++			}
++
++			// Copy the off-screen buffer to the framebuffer
++			// according to scroll position
++			uint32_t* buff = ctx-&gt;shm_buffer;
++			uint32_t* tmp = w-&gt;data.scrollable.tmp;
++			for (int row = 0; row &lt; w-&gt;h; row++) {
++				if (w-&gt;data.scrollable.scroll_y + row &lt;
++				    w-&gt;data.scrollable.content_height) {
++					memcpy(
++					    &amp;buff[(w-&gt;y + row) * ctx-&gt;width +
++						  w-&gt;x],
++					    &amp;tmp[(w-&gt;data.scrollable.scroll_y +
++						  row) *
++						 w-&gt;w],
++					    w-&gt;w * 4);
++				}
++			}
++
++			break;
++	}
++}
++
++
+diff --git a/internal.h b/internal.h
+new file mode 100644
+index 0000000..b74e94f
+--- /dev/null
++++ b/internal.h
+@@ -0,0 +1,31 @@
++#ifndef INTERNAL_H
++#define INTERNAL_H
++
++#include &lt;ft2build.h&gt;
++#include &lt;stddef.h&gt;
++#include &lt;stdint.h&gt;
++#include FT_FREETYPE_H
++#include &lt;bgce.h&gt;
++
++// from drawing.c
++void clear_buffer(struct BGTK_Context* ctx);
++void draw_rect(struct BGTK_Context* ctx, uint32_t* pixels, int x, int y, int w,
++	       int h, uint32_t color);
++void measure_text(FT_Face face, const char* text, int* out_width,
++		  int* out_height);
++void calculate_widget_size(struct BGTK_Context* ctx, struct BGTK_Widget* w);
++void draw_text(struct BGTK_Context* ctx, uint32_t* pixels, const char* text,
++	       int x, int y, uint32_t color);
++void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
++		 uint32_t* pixels);
++
++// from widgets.c
++struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text);
++struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, int flags);
++struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
++				struct BGTK_Widget* label,
++				BGTK_Callback callback, int flags);
++struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
++				    struct BGTK_Widget** widgets,
++				    int widget_count, int flags);
++#endif
+diff --git a/widgets.c b/widgets.c
+new file mode 100644
+index 0000000..0dda419
+--- /dev/null
++++ b/widgets.c
+@@ -0,0 +1,156 @@
++#include "bgtk.h"
++#include "internal.h"
++
++#include &lt;stdio.h&gt;
++#include &lt;stdlib.h&gt;
++#include &lt;bgce.h&gt;
++
++// Helper to create a generic widget
++static struct BGTK_Widget* widget_new(struct BGTK_Context* ctx,
++				      enum BGTK_Widget_Type type, int flags) {
++	struct BGTK_Widget* widget =
++	    (struct BGTK_Widget*)calloc(1, sizeof(struct BGTK_Widget));
++	if (!widget) {
++		perror("calloc");
++		return NULL;
++	}
++	widget-&gt;ctx = ctx;
++	widget-&gt;type = type;
++	widget-&gt;flags = flags;
++	return widget;
++}
++
++void set_label(struct BGTK_Widget* widget, char* label) {
++	printf("BGTK: setting label: %s\n", label);
++	if (widget-&gt;data.label.text) {
++		free(widget-&gt;data.label.text-&gt;data.text.text);
++		free(widget-&gt;data.label.text);
++	}
++
++	// Create a new text widget for the label
++	struct BGTK_Widget* text_widget = bgtk_text(widget-&gt;ctx, label, 0);
++	if (!text_widget) {
++		perror(
++		    "BGTK Failed to create text widget for "
++		    "label");
++		return;
++	}
++
++	widget-&gt;data.label.text = text_widget;
++
++	// Calculate size based on text widget
++	widget-&gt;w = text_widget-&gt;w + 10;  // Add padding
++	widget-&gt;h = text_widget-&gt;h + 10;  // Add padding
++
++	draw_widget(widget-&gt;ctx, widget, widget-&gt;ctx-&gt;shm_buffer);
++	printf("BGTK label set\n");
++}
++
++struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text) {
++	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_LABEL, 0);
++	printf("BGTK allocated label\n");
++	if (!widget) {
++		perror("BGTK Failed to create new widget");
++		return NULL;
++	}
++
++	widget-&gt;set_label = set_label;
++
++	// Create a text widget for the label
++	struct BGTK_Widget* text_widget = bgtk_text(ctx, text, 0);
++	if (!text_widget) {
++		perror(
++		    "BGTK Failed to create text widget for "
++		    "label");
++		free(widget);
++		return NULL;
++	}
++
++	widget-&gt;data.label.text = text_widget;
++
++	// Calculate size based on text widget
++	widget-&gt;w = text_widget-&gt;w + 10;  // Add padding
++	widget-&gt;h = text_widget-&gt;h + 10;  // Add padding
++
++	return widget;
++}
++
++struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, int flags) {
++	printf("BGTK creating text widget\n");
++	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_TEXT, flags);
++	printf("BGTK allocated text widget\n");
++	if (!widget) {
++		perror("BGTK Failed to create new widget");
++		return NULL;
++	}
++
++	char* ptr = calloc(1, strlen(text) + 1);
++	sprintf(ptr, "%s", text);
++	widget-&gt;data.text.text = ptr;
++
++	// Calculate size based on text
++	measure_text(widget-&gt;ctx-&gt;ft_face, widget-&gt;data.text.text, &amp;widget-&gt;w,
++		     &amp;widget-&gt;h);
++
++	return widget;
++}
++
++struct BGTK_Widget* bgtk_button(struct BGTK_Context* ctx,
++				struct BGTK_Widget* label,
++				BGTK_Callback callback, int flags) {
++	printf("BGTK creating button widget\n");
++	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_BUTTON, flags);
++	if (!widget) {
++		perror("BGTK Failed to create new widget");
++		return NULL;
++	}
++
++	widget-&gt;data.button.callback = callback;
++	widget-&gt;data.button.label = label;
++
++	// Calculate size based on label widget
++	widget-&gt;w = label-&gt;w + 20;  // Add padding
++	widget-&gt;h = label-&gt;h + 20;  // Add padding
++	return widget;
++}
++
++// --- Layout/Management Functions ---
++
++// Helper to recalculate the content height of a scrollable
++// widget
++struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
++				    struct BGTK_Widget** widgets,
++				    int widget_count, int flags) {
++	printf("BGTK creating scrollable widget\n");
++	struct BGTK_Widget* widget =
++	    widget_new(ctx, BGTK_WIDGET_SCROLLABLE, flags);
++	if (!widget) {
++		perror("BGTK Failed to create scrollable widget");
++		return NULL;
++	}
++
++	widget-&gt;data.scrollable.widgets = (struct BGTK_Widget**)calloc(
++	    widget_count, sizeof(struct BGTK_Widget*));
++	if (!widget-&gt;data.scrollable.widgets) {
++		perror("calloc");
++		free(widget);
++		return NULL;
++	}
++
++	// Copy the input widgets into the scrollable container
++	widget-&gt;data.scrollable.widget_count = widget_count;
++	widget-&gt;data.scrollable.scroll_y = 0;
++	widget-&gt;data.scrollable.content_height = 0;
++	for (int i = 0; i &lt; widget_count; i++) {
++		widget-&gt;data.scrollable.widgets[i] = widgets[i];
++		widget-&gt;data.scrollable.content_height +=
++		    widgets[i]-&gt;h + 5;	// 5px spacing
++	}
++
++	// Initialize tmp buffer to NULL, it will be allocated
++	// during drawing
++	widget-&gt;data.scrollable.tmp = NULL;
++	printf("BGTK allocated scrollable widget\n");
++
++	return widget;
++}
+</pre>

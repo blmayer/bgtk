@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk f2eee9c</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit f2eee9c
+parent <a href=commit-92058ed.html>92058ed</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-11T14:54:46-03:00
+
+    fix: terminal alt-screen restore and DECAWM for top/vim
+
+    Save/restore primary buffer on CSI ?1049/1047/47, multi-param private
+    modes, DECSC separate from 1049 cursor, no alt scrollback. Implement
+    DECAWM pending wrap so full-width top lines no longer scroll the summary
+    header off-screen.
+
+<a href=tree-f2eee9c.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/term_core.c b/apps/term_core.c
+index 9fd27d6..7bb7442 100644
+--- a/apps/term_core.c
++++ b/apps/term_core.c
+@@ -62,6 +62,8 @@ struct Term_State *term_create(int cols, int rows)
+ 	t-&gt;cur_fg = 7;
+ 	t-&gt;scroll_top = 0;
+ 	t-&gt;scroll_bot = rows - 1;
++	t-&gt;autowrap = 1;
++	t-&gt;wrap_pending = 0;
+ 	t-&gt;pty_fd = -1;
+ 	memcpy(t-&gt;palette, default_palette, sizeof(default_palette));
+ 	t-&gt;sb_cap = TERM_SCROLLBACK_LINES;
+@@ -73,6 +75,9 @@ struct Term_State *term_create(int cols, int rows)
+ 	t-&gt;sb_len = 0;
+ 	t-&gt;sb_start = 0;
+ 	t-&gt;view_off = 0;
++	t-&gt;main_cells = NULL;
++	t-&gt;alt_screen = 0;
++	t-&gt;has_saved_cursor = 0;
+ 	return t;
+ }
+ 
+@@ -95,14 +100,38 @@ void term_destroy(struct Term_State *t)
+ 	if (!t)
+ 		return;
+ 	free(t-&gt;cells);
++	free(t-&gt;main_cells);
+ 	free(t-&gt;sb);
+ 	free(t);
+ }
+ 
++/* Resize one cell grid (preserve overlap); returns new buffer or NULL. */
++static struct Term_Cell *resize_grid(struct Term_Cell *old, int old_cols,
++				     int old_rows, int cols, int rows)
++{
++	struct Term_Cell *nc;
++	int copy_c, copy_r, r, c;
++
++	nc = calloc((size_t)cols * (size_t)rows, sizeof(*nc));
++	if (!nc)
++		return NULL;
++	copy_c = cols &lt; old_cols ? cols : old_cols;
++	copy_r = rows &lt; old_rows ? rows : old_rows;
++	for (r = 0; r &lt; rows; r++) {
++		for (c = 0; c &lt; cols; c++) {
++			if (old &amp;&amp; r &lt; copy_r &amp;&amp; c &lt; copy_c)
++				nc[r * cols + c] = old[r * old_cols + c];
++			else
++				nc[r * cols + c] = default_cell();
++		}
++	}
++	return nc;
++}
++
+ int term_resize(struct Term_State *t, int cols, int rows)
+ {
+-	struct Term_Cell *nc, *nsb = NULL;
+-	int copy_c, copy_r, r, c, i;
++	struct Term_Cell *nc, *nm = NULL, *nsb = NULL;
++	int old_cols, old_rows, i, c;
+ 
+ 	if (!t)
+ 		return -1;
+@@ -113,28 +142,30 @@ int term_resize(struct Term_State *t, int cols, int rows)
+ 	if (cols == t-&gt;cols &amp;&amp; rows == t-&gt;rows)
+ 		return 0;
+ 
+-	nc = calloc((size_t)cols * (size_t)rows, sizeof(*nc));
++	old_cols = t-&gt;cols;
++	old_rows = t-&gt;rows;
++	nc = resize_grid(t-&gt;cells, old_cols, old_rows, cols, rows);
+ 	if (!nc)
+ 		return -1;
+-
+-	copy_c = cols &lt; t-&gt;cols ? cols : t-&gt;cols;
+-	copy_r = rows &lt; t-&gt;rows ? rows : t-&gt;rows;
+-	for (r = 0; r &lt; rows; r++) {
+-		for (c = 0; c &lt; cols; c++) {
+-			if (r &lt; copy_r &amp;&amp; c &lt; copy_c)
+-				nc[r * cols + c] = t-&gt;cells[r * t-&gt;cols + c];
+-			else
+-				nc[r * cols + c] = default_cell();
++	if (t-&gt;main_cells) {
++		nm = resize_grid(t-&gt;main_cells, old_cols, old_rows, cols, rows);
++		if (!nm) {
++			free(nc);
++			return -1;
+ 		}
+ 	}
++
+ 	free(t-&gt;cells);
+ 	t-&gt;cells = nc;
++	if (t-&gt;main_cells) {
++		free(t-&gt;main_cells);
++		t-&gt;main_cells = nm;
++	}
+ 
+ 	/* Rebuild scrollback ring for the new column width. */
+ 	if (t-&gt;sb_cap &gt; 0) {
+ 		nsb = calloc((size_t)t-&gt;sb_cap * (size_t)cols, sizeof(*nsb));
+ 		if (nsb) {
+-			int old_cols = t-&gt;cols;
+ 			for (i = 0; i &lt; t-&gt;sb_len; i++) {
+ 				int src = (t-&gt;sb_start + i) % t-&gt;sb_cap;
+ 				struct Term_Cell *srow =
+@@ -166,6 +197,14 @@ int term_resize(struct Term_State *t, int cols, int rows)
+ 		t-&gt;cur_col = cols - 1;
+ 	if (t-&gt;cur_row &gt;= rows)
+ 		t-&gt;cur_row = rows - 1;
++	if (t-&gt;saved_cur_col &gt;= cols)
++		t-&gt;saved_cur_col = cols - 1;
++	if (t-&gt;saved_cur_row &gt;= rows)
++		t-&gt;saved_cur_row = rows - 1;
++	if (t-&gt;alt_cur_col &gt;= cols)
++		t-&gt;alt_cur_col = cols - 1;
++	if (t-&gt;alt_cur_row &gt;= rows)
++		t-&gt;alt_cur_row = rows - 1;
+ 	t-&gt;scroll_top = 0;
+ 	t-&gt;scroll_bot = rows - 1;
+ 	if (t-&gt;view_off &gt; t-&gt;sb_len)
+@@ -273,8 +312,9 @@ static void scroll_up(struct Term_State *t)
+ 		bot = t-&gt;rows - 1;
+ 	if (top &gt;= bot)
+ 		return;
+-	/* Full primary screen scroll: line leaving the top goes to history. */
+-	if (top == 0 &amp;&amp; bot == t-&gt;rows - 1)
++	/* Full primary screen scroll: line leaving the top goes to history.
++	 * Alternate screen scrolls never feed scrollback (xterm/vim). */
++	if (!t-&gt;alt_screen &amp;&amp; top == 0 &amp;&amp; bot == t-&gt;rows - 1)
+ 		sb_push_row(t, &amp;t-&gt;cells[0]);
+ 	/* Move rows top+1..bot → top..bot-1; clear bot. Overlap-safe. */
+ 	row_bytes = (size_t)(bot - top) * (size_t)t-&gt;cols * sizeof(struct Term_Cell);
+@@ -333,13 +373,24 @@ static void cursor_revindex(struct Term_State *t)
+ 
+ /* Put one Unicode codepoint at the cursor and advance (ambiwidth=single).
+  * Cursor advance is what vim's t_u7 / CSI 6n probe measures after UTF-8 —
+- * ignoring multi-byte chars made CPR report the same cell and broke vi. */
++ * ignoring multi-byte chars made CPR report the same cell and broke vi.
++ *
++ * DECAWM: with autowrap on, writing the last column sets wrap_pending;
++ * the next graphic wraps first (xterm). With autowrap off (top uses
++ * CSI ?7l), the last column is overwritten — never wrap/scroll. Always
++ * wrapping made full-width top lines double-advance and scrolled the
++ * summary header off the screen. */
+ static void term_put_cp(struct Term_State *t, uint32_t cp)
+ {
+ 	struct Term_Cell *c;
+ 
+ 	if (!t || cp == 0)
+ 		return;
++	if (t-&gt;wrap_pending) {
++		t-&gt;wrap_pending = 0;
++		t-&gt;cur_col = 0;
++		cursor_index(t);
++	}
+ 	if (t-&gt;cur_row &lt; 0 || t-&gt;cur_row &gt;= t-&gt;rows ||
+ 	    t-&gt;cur_col &lt; 0 || t-&gt;cur_col &gt;= t-&gt;cols)
+ 		return;
+@@ -348,11 +399,136 @@ static void term_put_cp(struct Term_State *t, uint32_t cp)
+ 	c-&gt;fg = (int8_t)t-&gt;cur_fg;
+ 	c-&gt;bg = (int8_t)t-&gt;cur_bg;
+ 	c-&gt;bold = (int8_t)t-&gt;cur_bold;
+-	t-&gt;cur_col++;
+-	if (t-&gt;cur_col &gt;= t-&gt;cols) {
++	if (t-&gt;cur_col &gt;= t-&gt;cols - 1) {
++		if (t-&gt;autowrap)
++			t-&gt;wrap_pending = 1;
++		t-&gt;cur_col = t-&gt;cols - 1;
++	} else {
++		t-&gt;cur_col++;
++	}
++}
++
++/* ------------------------------------------------------------------ */
++/* Cursor save / alternate screen                                     */
++/* ------------------------------------------------------------------ */
++
++static void term_save_cursor(struct Term_State *t)
++{
++	if (!t)
++		return;
++	t-&gt;saved_cur_row = t-&gt;cur_row;
++	t-&gt;saved_cur_col = t-&gt;cur_col;
++	t-&gt;saved_fg = t-&gt;cur_fg;
++	t-&gt;saved_bg = t-&gt;cur_bg;
++	t-&gt;saved_bold = t-&gt;cur_bold;
++	t-&gt;saved_scroll_top = t-&gt;scroll_top;
++	t-&gt;saved_scroll_bot = t-&gt;scroll_bot;
++	t-&gt;has_saved_cursor = 1;
++}
++
++static void term_restore_cursor(struct Term_State *t)
++{
++	if (!t || !t-&gt;has_saved_cursor)
++		return;
++	t-&gt;cur_row = t-&gt;saved_cur_row;
++	t-&gt;cur_col = t-&gt;saved_cur_col;
++	if (t-&gt;cur_row &lt; 0)
++		t-&gt;cur_row = 0;
++	if (t-&gt;cur_row &gt;= t-&gt;rows)
++		t-&gt;cur_row = t-&gt;rows - 1;
++	if (t-&gt;cur_col &lt; 0)
+ 		t-&gt;cur_col = 0;
+-		cursor_index(t);
++	if (t-&gt;cur_col &gt;= t-&gt;cols)
++		t-&gt;cur_col = t-&gt;cols - 1;
++	t-&gt;cur_fg = t-&gt;saved_fg;
++	t-&gt;cur_bg = t-&gt;saved_bg;
++	t-&gt;cur_bold = t-&gt;saved_bold;
++	t-&gt;scroll_top = t-&gt;saved_scroll_top;
++	t-&gt;scroll_bot = t-&gt;saved_scroll_bot;
++	if (t-&gt;scroll_top &lt; 0)
++		t-&gt;scroll_top = 0;
++	if (t-&gt;scroll_bot &gt;= t-&gt;rows)
++		t-&gt;scroll_bot = t-&gt;rows - 1;
++	if (t-&gt;scroll_top &gt; t-&gt;scroll_bot) {
++		t-&gt;scroll_top = 0;
++		t-&gt;scroll_bot = t-&gt;rows - 1;
++	}
++}
++
++/*
++ * CSI ?1049 h/l — save cursor + switch buffers (vim smcup/rmcup).
++ * CSI ?1047/47 — switch buffers without cursor save (still restore grid).
++ * Enter: stash primary in main_cells, clear live grid.
++ * Leave: restore primary from main_cells so the shell is not blank.
++ * Cursor for 1049 is stored in alt_* (not DECSC slots — vim uses ESC 7).
++ */
++static void alt_screen_set(struct Term_State *t, int enter, int save_cursor)
++{
++	int n, i;
++
++	if (!t)
++		return;
++	n = t-&gt;rows * t-&gt;cols;
++	if (enter) {
++		if (t-&gt;alt_screen)
++			return;
++		if (!t-&gt;main_cells) {
++			t-&gt;main_cells = malloc((size_t)n * sizeof(*t-&gt;main_cells));
++			if (!t-&gt;main_cells)
++				return;
++		}
++		memcpy(t-&gt;main_cells, t-&gt;cells, (size_t)n * sizeof(*t-&gt;cells));
++		if (save_cursor) {
++			t-&gt;alt_cur_row = t-&gt;cur_row;
++			t-&gt;alt_cur_col = t-&gt;cur_col;
++			t-&gt;alt_fg = t-&gt;cur_fg;
++			t-&gt;alt_bg = t-&gt;cur_bg;
++			t-&gt;alt_bold = t-&gt;cur_bold;
++			t-&gt;alt_has_cursor = 1;
++		} else {
++			t-&gt;alt_has_cursor = 0;
++		}
++		for (i = 0; i &lt; n; i++)
++			t-&gt;cells[i] = default_cell();
++		t-&gt;cur_row = t-&gt;cur_col = 0;
++		t-&gt;scroll_top = 0;
++		t-&gt;scroll_bot = t-&gt;rows - 1;
++		t-&gt;view_off = 0;
++		t-&gt;wrap_pending = 0;
++		t-&gt;alt_screen = 1;
++		return;
++	}
++	/* leave */
++	if (!t-&gt;alt_screen)
++		return;
++	if (t-&gt;main_cells) {
++		memcpy(t-&gt;cells, t-&gt;main_cells, (size_t)n * sizeof(*t-&gt;cells));
++		free(t-&gt;main_cells);
++		t-&gt;main_cells = NULL;
++	}
++	t-&gt;alt_screen = 0;
++	t-&gt;view_off = 0;
++	t-&gt;wrap_pending = 0;
++	t-&gt;scroll_top = 0;
++	t-&gt;scroll_bot = t-&gt;rows - 1;
++	if (save_cursor &amp;&amp; t-&gt;alt_has_cursor) {
++		t-&gt;cur_row = t-&gt;alt_cur_row;
++		t-&gt;cur_col = t-&gt;alt_cur_col;
++		if (t-&gt;cur_row &lt; 0)
++			t-&gt;cur_row = 0;
++		if (t-&gt;cur_row &gt;= t-&gt;rows)
++			t-&gt;cur_row = t-&gt;rows - 1;
++		if (t-&gt;cur_col &lt; 0)
++			t-&gt;cur_col = 0;
++		if (t-&gt;cur_col &gt;= t-&gt;cols)
++			t-&gt;cur_col = t-&gt;cols - 1;
++		t-&gt;cur_fg = t-&gt;alt_fg;
++		t-&gt;cur_bg = t-&gt;alt_bg;
++		t-&gt;cur_bold = t-&gt;alt_bold;
++	} else {
++		t-&gt;cur_row = t-&gt;cur_col = 0;
+ 	}
++	t-&gt;alt_has_cursor = 0;
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -370,6 +546,7 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 	case 'A': /* CUU — move only; never scroll. Screen edges (not
+ 		   * DECSTBM): origin mode is not implemented, so the
+ 		   * cursor may leave the scroll region (vim status line). */
++		t-&gt;wrap_pending = 0;
+ 		t-&gt;cur_row -= p0 ? p0 : 1;
+ 		if (t-&gt;cur_row &lt; 0)
+ 			t-&gt;cur_row = 0;
+@@ -377,20 +554,24 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 	case 'B': /* CUD — move only; never scroll. Do not clamp to
+ 		   * scroll_bot (that trapped the cursor off the status
+ 		   * line and pulled it back into the region). */
++		t-&gt;wrap_pending = 0;
+ 		t-&gt;cur_row += p0 ? p0 : 1;
+ 		if (t-&gt;cur_row &gt;= t-&gt;rows)
+ 			t-&gt;cur_row = t-&gt;rows - 1;
+ 		break;
+ 	case 'C':
++		t-&gt;wrap_pending = 0;
+ 		t-&gt;cur_col += p0 ? p0 : 1;
+ 		if (t-&gt;cur_col &gt;= t-&gt;cols) t-&gt;cur_col = t-&gt;cols - 1;
+ 		break;
+ 	case 'D':
++		t-&gt;wrap_pending = 0;
+ 		t-&gt;cur_col -= p0 ? p0 : 1;
+ 		if (t-&gt;cur_col &lt; 0) t-&gt;cur_col = 0;
+ 		break;
+ 	case 'H':
+ 	case 'f':
++		t-&gt;wrap_pending = 0;
+ 		t-&gt;cur_row = (p0 ? p0 : 1) - 1;
+ 		t-&gt;cur_col = (p1 ? p1 : 1) - 1;
+ 		if (t-&gt;cur_row &gt;= t-&gt;rows) t-&gt;cur_row = t-&gt;rows - 1;
+@@ -491,11 +672,13 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 		break;
+ 	}
+ 	case 'd':
++		t-&gt;wrap_pending = 0;
+ 		t-&gt;cur_row = (p0 ? p0 : 1) - 1;
+ 		if (t-&gt;cur_row &gt;= t-&gt;rows) t-&gt;cur_row = t-&gt;rows - 1;
+ 		if (t-&gt;cur_row &lt; 0) t-&gt;cur_row = 0;
+ 		break;
+ 	case 'G':
++		t-&gt;wrap_pending = 0;
+ 		t-&gt;cur_col = (p0 ? p0 : 1) - 1;
+ 		if (t-&gt;cur_col &gt;= t-&gt;cols) t-&gt;cur_col = t-&gt;cols - 1;
+ 		if (t-&gt;cur_col &lt; 0) t-&gt;cur_col = 0;
+@@ -503,6 +686,7 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 	case 'r':
+ 		/* DECSTBM — vim uses e.g. ESC[1;9r then LF to scroll the
+ 		 * text region while the status line stays put. */
++		t-&gt;wrap_pending = 0;
+ 		t-&gt;scroll_top = (p0 ? p0 : 1) - 1;
+ 		t-&gt;scroll_bot = (p1 ? p1 : t-&gt;rows) - 1;
+ 		if (t-&gt;scroll_top &lt; 0)
+@@ -557,22 +741,38 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 		}
+ 		break;
+ 	case 'h':
+-	case 'l':
+-		/* Private modes we care about: alt screen enters a clean
+-		 * live view (vim). Others ignored. */
+-		if (t-&gt;csi_priv &amp;&amp; (p0 == 1049 || p0 == 1047 || p0 == 47)) {
+-			if (final == 'h') {
+-				t-&gt;view_off = 0;
+-				for (int i = 0; i &lt; t-&gt;rows * t-&gt;cols; i++)
+-					t-&gt;cells[i] = default_cell();
+-				t-&gt;cur_row = t-&gt;cur_col = 0;
+-				t-&gt;scroll_top = 0;
+-				t-&gt;scroll_bot = t-&gt;rows - 1;
+-			} else {
+-				t-&gt;view_off = 0;
++	case 'l': {
++		/* Private modes: scan all params (e.g. ?1;1049h). */
++		int enter = (final == 'h');
++		int n = nparam &gt; 0 ? nparam : 1;
++		int i;
++
++		if (!t-&gt;csi_priv)
++			break;
++		for (i = 0; i &lt; n; i++) {
++			int p = (nparam &gt; 0) ? params[i] : 0;
++
++			if (p == 1049)
++				alt_screen_set(t, enter, 1);
++			else if (p == 1047 || p == 47)
++				alt_screen_set(t, enter, 0);
++			else if (p == 7) {
++				/* DECAWM — top disables wrap so full-width
++				 * lines do not scroll the summary away. */
++				t-&gt;autowrap = enter ? 1 : 0;
++				if (!t-&gt;autowrap)
++					t-&gt;wrap_pending = 0;
+ 			}
+ 		}
+ 		break;
++	}
++	case 's':
++		/* ANSI.SYS / SCO save cursor */
++		term_save_cursor(t);
++		break;
++	case 'u':
++		term_restore_cursor(t);
++		break;
+ 	default:
+ 		break;
+ 	}
+@@ -604,17 +804,21 @@ void term_feed(struct Term_State *t, const char *data, int len)
+ 				t-&gt;esc_state = 1;
+ 			} else if (ch == '\n') {
+ 				t-&gt;utf8_partial_len = 0;
++				t-&gt;wrap_pending = 0;
+ 				cursor_index(t);
+ 			} else if (ch == '\r') {
+ 				t-&gt;utf8_partial_len = 0;
++				t-&gt;wrap_pending = 0;
+ 				t-&gt;cur_col = 0;
+ 			} else if (ch == '\t') {
+ 				t-&gt;utf8_partial_len = 0;
++				t-&gt;wrap_pending = 0;
+ 				t-&gt;cur_col = (t-&gt;cur_col + 8) &amp; ~7;
+ 				if (t-&gt;cur_col &gt;= t-&gt;cols)
+ 					t-&gt;cur_col = t-&gt;cols - 1;
+ 			} else if (ch == '\b') {
+ 				t-&gt;utf8_partial_len = 0;
++				t-&gt;wrap_pending = 0;
+ 				if (t-&gt;cur_col &gt; 0) t-&gt;cur_col--;
+ 			} else if (ch == '\a') {
+ 				/* bell */
+@@ -678,19 +882,36 @@ void term_feed(struct Term_State *t, const char *data, int len)
+ 				t-&gt;esc_state = 5;
+ 			} else if (ch == 'D') {
+ 				/* IND */
++				t-&gt;wrap_pending = 0;
+ 				cursor_index(t);
+ 				t-&gt;esc_state = 0;
+ 			} else if (ch == 'M') {
+ 				/* RI */
++				t-&gt;wrap_pending = 0;
+ 				cursor_revindex(t);
+ 				t-&gt;esc_state = 0;
++			} else if (ch == '7') {
++				/* DECSC */
++				term_save_cursor(t);
++				t-&gt;esc_state = 0;
++			} else if (ch == '8') {
++				/* DECRC */
++				term_restore_cursor(t);
++				t-&gt;wrap_pending = 0;
++				t-&gt;esc_state = 0;
+ 			} else if (ch == 'c') {
++				/* RIS — full reset; leave alt screen if active */
++				if (t-&gt;alt_screen)
++					alt_screen_set(t, 0, 0);
+ 				for (int j = 0; j &lt; t-&gt;rows * t-&gt;cols; j++)
+ 					t-&gt;cells[j] = default_cell();
+ 				t-&gt;cur_row = t-&gt;cur_col = 0;
+ 				t-&gt;cur_fg = 7; t-&gt;cur_bg = 0; t-&gt;cur_bold = 0;
+ 				t-&gt;scroll_top = 0; t-&gt;scroll_bot = t-&gt;rows - 1;
++				t-&gt;autowrap = 1;
++				t-&gt;wrap_pending = 0;
+ 				t-&gt;view_off = 0;
++				t-&gt;has_saved_cursor = 0;
+ 				t-&gt;utf8_partial_len = 0;
+ 				t-&gt;esc_state = 0;
+ 			} else {
+diff --git a/apps/terminal.h b/apps/terminal.h
+index 3d7f25b..96006dc 100644
+--- a/apps/terminal.h
++++ b/apps/terminal.h
+@@ -33,6 +33,11 @@ struct Term_State {
+ 	/* Scroll region (DECSTBM); full-screen scrolls feed scrollback */
+ 	int scroll_top, scroll_bot;
+ 
++	/* DECAWM (CSI ?7 h/l): autowrap. Default on. wrap_pending is the
++	 * xterm delayed-wrap latch after writing the last column. */
++	int autowrap;
++	int wrap_pending;
++
+ 	/* Escape sequence parser state */
+ 	int esc_state;
+ 	int csi_params[8];
+@@ -63,6 +68,24 @@ struct Term_State {
+ 	int sb_len;	      /* 0..sb_cap */
+ 	int sb_start;	      /* ring index of oldest row */
+ 	int view_off;	      /* lines above live bottom (0..sb_len) */
++
++	/*
++	 * Alternate screen (CSI ?1049/1047/47 h/l). While active, cells is
++	 * the alt buffer; main_cells holds the primary screen for restore.
++	 * Scrolls on the alt screen do not feed scrollback.
++	 */
++	struct Term_Cell *main_cells; /* primary grid while alt_screen==1 */
++	int alt_screen;		      /* 1 = showing alternate buffer */
++	/* Cursor/attrs saved at 1049 enter (separate from DECSC). */
++	int alt_cur_row, alt_cur_col;
++	int alt_fg, alt_bg, alt_bold;
++	int alt_has_cursor;
++
++	/* DECSC/DECRC (ESC 7 / ESC 8); not mixed with 1049 save. */
++	int saved_cur_row, saved_cur_col;
++	int saved_fg, saved_bg, saved_bold;
++	int saved_scroll_top, saved_scroll_bot;
++	int has_saved_cursor;
+ };
+ 
+ /* Create / destroy terminal state */
+diff --git a/test/test_terminal.c b/test/test_terminal.c
+index 04e23a0..fe683c5 100644
+--- a/test/test_terminal.c
++++ b/test/test_terminal.c
+@@ -669,6 +669,210 @@ int main(void)
+ 		term_destroy(vs);
+ 	}
+ 
++	/*
++	 * Alt screen 1049: main buffer must be restored on leave (shell after
++	 * vim). Multi-param ?1;1049h must enter. Alt scrolls must not feed
++	 * scrollback. DECSC/DECRC must restore cursor.
++	 */
++	{
++		struct Term_State *vs = term_create(20, 6);
++		int c, sb_before;
++		char row0[24];
++
++		term_feed(vs, "\033[H\033[2JSHELL PROMPT $ ", -1);
++		/* Multi-param private modes: application cursor + alt screen */
++		term_feed(vs, "\033[?1;1049h", -1);
++		if (!vs-&gt;alt_screen) {
++			bgtk_log("alt screen not active after ?1;1049h");
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		term_feed(vs, "\033[H\033[2JVIM BUFFER LINE", -1);
++		for (c = 0; c &lt; 15; c++) {
++			char ch = vs-&gt;cells[c].ch;
++			row0[c] = (ch &gt;= 32 &amp;&amp; ch &lt; 127) ? ch : '.';
++		}
++		row0[15] = '\0';
++		if (!strstr(row0, "VIM BUFFER")) {
++			bgtk_log("alt paint missing row0='%s'", row0);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Full-screen LF on alt must not grow scrollback */
++		sb_before = vs-&gt;sb_len;
++		term_feed(vs, "\033[6;1H\n\n\n", -1);
++		if (vs-&gt;sb_len != sb_before) {
++			bgtk_log("alt screen fed scrollback sb %d-&gt;%d",
++				 sb_before, vs-&gt;sb_len);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* DECSC mid-alt must not clobber 1049 cursor save */
++		term_feed(vs, "\033[4;8H\0337", -1);
++		/* Leave alt — shell prompt returns; cursor after prompt */
++		term_feed(vs, "\033[?1049l", -1);
++		if (vs-&gt;alt_screen) {
++			bgtk_log("alt screen stuck after 1049l");
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		for (c = 0; c &lt; 16; c++) {
++			char ch = vs-&gt;cells[c].ch;
++			row0[c] = (ch &gt;= 32 &amp;&amp; ch &lt; 127) ? ch : '.';
++		}
++		row0[16] = '\0';
++		if (!strstr(row0, "SHELL PROMPT")) {
++			bgtk_log("main not restored after 1049l row0='%s'",
++				 row0);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* "SHELL PROMPT $ " is 15 chars → cursor col 15 row 0 */
++		if (vs-&gt;cur_row != 0 || vs-&gt;cur_col != 15) {
++			bgtk_log("1049 cursor restore wrong row=%d col=%d "
++				 "(want 0,15; DECSC must not override)",
++				 vs-&gt;cur_row, vs-&gt;cur_col);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* DECSC / DECRC on primary */
++		term_feed(vs, "\033[3;5H\0337\033[1;1H\0338", -1);
++		if (vs-&gt;cur_row != 2 || vs-&gt;cur_col != 4) {
++			bgtk_log("DECRC failed row=%d col=%d want 2,4",
++				 vs-&gt;cur_row, vs-&gt;cur_col);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Visual: restored shell after alt leave */
++		{
++			int rr, cc;
++			for (rr = 0; rr &lt; ts-&gt;rows * ts-&gt;cols; rr++)
++				ts-&gt;cells[rr] = (struct Term_Cell){
++					.ch = ' ', .fg = 7, .bg = 0, .bold = 0
++				};
++			for (rr = 0; rr &lt; ts-&gt;rows &amp;&amp; rr &lt; vs-&gt;rows; rr++)
++				for (cc = 0; cc &lt; ts-&gt;cols &amp;&amp; cc &lt; vs-&gt;cols;
++				     cc++)
++					ts-&gt;cells[rr * ts-&gt;cols + cc] =
++						vs-&gt;cells[rr * vs-&gt;cols + cc];
++			ts-&gt;view_off = 0;
++			term_render(ts, ctx, img-&gt;data.image.pixels, inner_w,
++				    inner_h);
++			bgtk_draw_widgets(ctx);
++			take_screenshot(ctx, "term_11_alt_restore_shell.png");
++		}
++		term_destroy(vs);
++	}
++
++	/*
++	 * top (procps): CSI ?7l disables autowrap, then writes full-width
++	 * lines with newlines. Immediate wrap on last-col made each line
++	 * double-advance and scrolled the summary header off — only the
++	 * process list remained visible.
++	 */
++	{
++		struct Term_State *vs = term_create(40, 10);
++		char line[48];
++		int c, r;
++		int scrolled_header = 0;
++
++		/* Fill a full-width line pattern */
++		memset(line, 'A', 40);
++		line[40] = '\0';
++
++		term_feed(vs, "\033[?1049h\033[H\033[2J\033[?7l", -1);
++		/* Summary header (must stay on row 0). Real PTY ONLCR → CR LF. */
++		term_feed(vs, "top - summary header line HERE\033[K\r\n", -1);
++		term_feed(vs, "Tasks: 1 total\033[K\r\n", -1);
++		/* Full-width lines like process rows — must not scroll header */
++		for (r = 0; r &lt; 6; r++) {
++			char buf[64];
++			/* 40 cols + CR LF; wrap-off must not double-advance */
++			snprintf(buf, sizeof(buf), "%s\r\n", line);
++			buf[0] = '0' + (r % 10);
++			term_feed(vs, buf, -1);
++		}
++		/* Header still on row 0? */
++		for (c = 0; c &lt; 40; c++) {
++			char ch = vs-&gt;cells[c].ch;
++			line[c] = (ch &gt;= 32 &amp;&amp; ch &lt; 127) ? ch : '.';
++		}
++		line[40] = '\0';
++		if (!strstr(line, "summary header")) {
++			scrolled_header = 1;
++			bgtk_log("top header scrolled away row0='%s'", line);
++		}
++		if (vs-&gt;autowrap != 0) {
++			bgtk_log("DECAWM still on after ?7l");
++			scrolled_header = 1;
++		}
++		/* Pending wrap: wrap on, fill last col, next char wraps once */
++		term_feed(vs, "\033[?7h\033[8;1H", -1);
++		for (c = 0; c &lt; 40; c++)
++			term_feed(vs, "X", 1);
++		if (vs-&gt;cur_row != 7 || vs-&gt;cur_col != 39 || !vs-&gt;wrap_pending) {
++			bgtk_log("pending wrap latch fail row=%d col=%d pend=%d",
++				 vs-&gt;cur_row, vs-&gt;cur_col, vs-&gt;wrap_pending);
++			scrolled_header = 1;
++		}
++		term_feed(vs, "Y", 1);
++		/* After wrap: write Y at (8,0) then advance to col 1 */
++		if (vs-&gt;cur_row != 8 || vs-&gt;cur_col != 1 ||
++		    vs-&gt;cells[8 * 40].ch != 'Y') {
++			bgtk_log("pending wrap advance fail row=%d col=%d ch=%c",
++				 vs-&gt;cur_row, vs-&gt;cur_col,
++				 (char)vs-&gt;cells[8 * 40].ch);
++			scrolled_header = 1;
++		}
++		/* Visual */
++		{
++			int rr, cc;
++			for (rr = 0; rr &lt; ts-&gt;rows * ts-&gt;cols; rr++)
++				ts-&gt;cells[rr] = (struct Term_Cell){
++					.ch = ' ', .fg = 7, .bg = 0, .bold = 0
++				};
++			for (rr = 0; rr &lt; ts-&gt;rows &amp;&amp; rr &lt; vs-&gt;rows; rr++)
++				for (cc = 0; cc &lt; ts-&gt;cols &amp;&amp; cc &lt; vs-&gt;cols;
++				     cc++)
++					ts-&gt;cells[rr * ts-&gt;cols + cc] =
++						vs-&gt;cells[rr * vs-&gt;cols + cc];
++			ts-&gt;view_off = 0;
++			term_render(ts, ctx, img-&gt;data.image.pixels, inner_w,
++				    inner_h);
++			bgtk_draw_widgets(ctx);
++			take_screenshot(ctx, "term_12_top_header_nowrap.png");
++		}
++		term_destroy(vs);
++		if (scrolled_header) {
++			free(img-&gt;data.image.pixels);
++			img-&gt;data.image.pixels = NULL;
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++	}
++
+ 	printf("test_terminal complete. PNG frames written.\n");
+ 
+ 	free(img-&gt;data.image.pixels);
+</pre>

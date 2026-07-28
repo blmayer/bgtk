@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 28d9321</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 28d9321
+parent <a href=commit-18fc69c.html>18fc69c</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-08T20:33:02-03:00
+
+    feat: frame_margin theme key, settings layout, term theme bg.
+
+    Add frame_margin for config-only outer chrome; multi-column Theme page
+    with all spacing fields; top-align content panel. Terminal palette[0]
+    follows theme.background so cells match other apps.
+
+<a href=tree-28d9321.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/gemini_browser.c b/apps/gemini_browser.c
+index 235a4b0..508836c 100644
+--- a/apps/gemini_browser.c
++++ b/apps/gemini_browser.c
+@@ -35,20 +35,20 @@ static BGTK_Options line_opts(void)
+ 	return (BGTK_Options){.padding = 1, .margin = 1};
+ }
+ 
+-/* Theme chrome — same geometry as terminal:
+- * frame draws [margin][border][padding][content]… */
+-static void gemini_chrome(int *pad, int *mar, int *bw)
++/* Root chrome: [frame_margin][border][padding][content]… (from theme). */
++static void gemini_chrome(int *pad, int *fmar, int *bw)
+ {
+-	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 6;
+-	int m = (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin : 4;
++	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 12;
++	int m = (ctx &amp;&amp; ctx-&gt;theme.frame_margin &gt;= 0) ? ctx-&gt;theme.frame_margin
++						      : 0;
+ 	int b = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
+ 
+ 	if (b &lt; 1)
+ 		b = 1;
+ 	if (pad)
+ 		*pad = p;
+-	if (mar)
+-		*mar = m;
++	if (fmar)
++		*fmar = m;
+ 	if (bw)
+ 		*bw = b;
+ }
+@@ -56,7 +56,6 @@ static void gemini_chrome(int *pad, int *mar, int *bw)
+ /*
+  * Vertical list height overhead beyond sum of children (matches bgtk_list /
+  * draw_list): inter-item 2*M*(n-1) + outer 2*(M+P).
+- * With n=2: 2*M + 2*(M+P) = 4*M + 2*P.
+  */
+ static int list_v_overhead(int n, int list_m, int list_p)
+ {
+@@ -68,33 +67,29 @@ static int list_v_overhead(int n, int list_m, int list_p)
+ /* Size scroll + URL bar so they fit inside the frame content box. */
+ static void gemini_layout_chrome(void)
+ {
+-	int pad, mar, bw, box_w, box_h, list_m, list_p, field_pad;
++	int pad, fmar, bw, box_w, box_h, list_m, list_p, field_pad;
+ 	int usable_w, ah, scroll_h, over;
+ 
+ 	if (!ctx || !content_scroll || !addr_input)
+ 		return;
+ 
+-	gemini_chrome(&amp;pad, &amp;mar, &amp;bw);
++	gemini_chrome(&amp;pad, &amp;fmar, &amp;bw);
+ 	/* Inner box the frame assigns to its child (main_list). */
+-	box_w = ctx-&gt;width - 2 * (mar + bw + pad);
+-	box_h = ctx-&gt;height - 2 * (mar + bw + pad);
++	box_w = ctx-&gt;width - 2 * (fmar + bw + pad);
++	box_h = ctx-&gt;height - 2 * (fmar + bw + pad);
+ 	if (box_w &lt; 80)
+ 		box_w = 80;
+ 	if (box_h &lt; 80)
+ 		box_h = 80;
+ 
+-	/*
+-	 * Zero list chrome: page + URL bar stack flush inside the frame box.
+-	 * (Any list.margin is 4*M overhead for 2 children and was clipping
+-	 * the URL bar when under-subtracted.)
+-	 */
++	/* Page + URL bar fill the frame box; list chrome stays zero. */
+ 	list_m = 0;
+ 	list_p = 0;
+-	field_pad = pad &gt; 2 ? pad / 2 : 2;
++	field_pad = pad &gt; 4 ? pad / 2 : 4;
+ 
+ 	addr_input-&gt;padding = field_pad;
+ 	addr_input-&gt;margin = 0;
+-	content_scroll-&gt;padding = pad &gt; 2 ? pad / 2 : 2;
++	content_scroll-&gt;padding = field_pad;
+ 	content_scroll-&gt;margin = 0;
+ 	if (main_list) {
+ 		main_list-&gt;padding = list_p;
+@@ -104,17 +99,15 @@ static void gemini_layout_chrome(void)
+ 	}
+ 	if (root_frame) {
+ 		root_frame-&gt;padding = pad;
+-		root_frame-&gt;margin = mar;
++		root_frame-&gt;margin = fmar;
+ 		root_frame-&gt;w = ctx-&gt;width;
+ 		root_frame-&gt;h = ctx-&gt;height;
+ 	}
+ 
+-	/* Child width inside list = box − 2*(list_m+list_p). */
+ 	usable_w = box_w - 2 * (list_m + list_p);
+ 	if (usable_w &lt; 40)
+ 		usable_w = 40;
+ 
+-	/* Recompute addr height after padding change (outer size). */
+ 	{
+ 		int text_h = ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size + 4 : 18;
+ 		addr_input-&gt;h = text_h + 2 * (addr_input-&gt;padding + addr_input-&gt;margin);
+@@ -1013,20 +1006,20 @@ int main(void)
+ 		 (void *)ctx-&gt;ft_face_serif);
+ 
+ 	{
+-		int pad, mar, bw;
++		int pad, fmar, bw;
+ 
+-		gemini_chrome(&amp;pad, &amp;mar, &amp;bw);
++		gemini_chrome(&amp;pad, &amp;fmar, &amp;bw);
+ 
+ 		/* Build shell; gemini_layout_chrome sizes children to the frame box. */
+ 		addr_input = bgtk_text_input(ctx, current_url, 200, 0,
+ 					     (BGTK_Options){
+-						     .padding = pad &gt; 2 ? pad / 2 : 2,
++						     .padding = pad &gt; 4 ? pad / 2 : 4,
+ 						     .margin = 0});
+ 		addr_input-&gt;data.text_input.on_enter = addr_on_enter;
+ 
+ 		content_scroll = bgtk_scrollable(
+ 			ctx, NULL, 0,
+-			(BGTK_Options){.padding = pad &gt; 2 ? pad / 2 : 2,
++			(BGTK_Options){.padding = pad &gt; 4 ? pad / 2 : 4,
+ 				       .margin = 0});
+ 
+ 		loading = bgtk_text(ctx, "Loading…", line_opts());
+@@ -1045,10 +1038,9 @@ int main(void)
+ 					      .padding = 0,
+ 					      .margin = 0});
+ 
+-		/* Same as terminal: margin outside border, pad inside. */
+ 		frame = bgtk_frame(ctx, main_list, width, height,
+ 				   (BGTK_Options){.padding = pad,
+-						  .margin = mar});
++						  .margin = fmar});
+ 		root_frame = frame;
+ 		gemini_layout_chrome();
+ 	}
+diff --git a/apps/image_viewer.c b/apps/image_viewer.c
+index 021e0cf..59ed1c0 100644
+--- a/apps/image_viewer.c
++++ b/apps/image_viewer.c
+@@ -12,12 +12,12 @@ static struct BGTK_Widget* col = NULL;  // Parent list widget
+ 
+ static int theme_pad(void)
+ {
+-	return (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 6;
++	return (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 12;
+ }
+ 
+ static int theme_mar(void)
+ {
+-	return (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin : 4;
++	return (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin : 8;
+ }
+ 
+ static void load_button_clicked(void *userdata) {
+diff --git a/apps/launcher.c b/apps/launcher.c
+index fe82063..38e85d0 100644
+--- a/apps/launcher.c
++++ b/apps/launcher.c
+@@ -147,7 +147,7 @@ static void rebuild_matches_ui(void)
+ 		return;
+ 
+ 	/* Tight list: pad only inside rows; zero margin so rows pack flush. */
+-	pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 6;
++	pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 12;
+ 	if (pad &gt; 8)
+ 		pad = 8;
+ 	/* Full width of the scrollable content box. */
+@@ -309,14 +309,18 @@ static void layout_launcher(void)
+ 
+ 	if (!ctx)
+ 		return;
+-	pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 6;
+-	mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 4;
++	pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 12;
++	mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 8;
+ 	bw = (int)ctx-&gt;theme.frame_border_size;
+-	if (bw &lt; 0)
+-		bw = 0;
+-	/* Content lives inside frame border + frame padding only (no extra mar). */
+-	inner_w = ctx-&gt;width - 2 * (bw + pad);
+-	inner_h = ctx-&gt;height - 2 * (bw + pad);
++	{
++		int fmar = ctx-&gt;theme.frame_margin &gt;= 0 ? ctx-&gt;theme.frame_margin
++							: 0;
++		if (bw &lt; 0)
++			bw = 0;
++		/* Content: [frame_margin][border][padding][…] */
++		inner_w = ctx-&gt;width - 2 * (fmar + bw + pad);
++		inner_h = ctx-&gt;height - 2 * (fmar + bw + pad);
++	}
+ 	if (inner_w &lt; 40)
+ 		inner_w = 40;
+ 	if (inner_h &lt; 40)
+@@ -339,8 +343,12 @@ static void layout_launcher(void)
+ 			matches_scroll-&gt;h = 40;
+ 	}
+ 	if (ctx-&gt;root_widget) {
++		int fmar = ctx-&gt;theme.frame_margin &gt;= 0 ? ctx-&gt;theme.frame_margin
++							: 0;
+ 		ctx-&gt;root_widget-&gt;w = ctx-&gt;width;
+ 		ctx-&gt;root_widget-&gt;h = ctx-&gt;height;
++		ctx-&gt;root_widget-&gt;padding = pad;
++		ctx-&gt;root_widget-&gt;margin = fmar;
+ 	}
+ }
+ 
+@@ -391,8 +399,8 @@ int main(void)
+ 	bgtk_log("building launcher UI (goldie file-list)");
+ 
+ 	{
+-		int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 6;
+-		int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 4;
++		int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 12;
++		int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 8;
+ 
+ 		text_input = bgtk_text_input(
+ 			ctx, "", 440, 0,
+@@ -428,10 +436,14 @@ int main(void)
+ 				bgtk_log("bgtk_list failed");
+ 				return 1;
+ 			}
+-			/* Frame pad = theme.padding so thick border has even inset. */
+-			frame = bgtk_frame(ctx, layout, width, height,
+-					  (BGTK_Options){.padding = pad,
+-							 .margin = 0});
++			/* Root chrome from theme (frame_margin + padding). */
++			frame = bgtk_frame(
++				ctx, layout, width, height,
++				(BGTK_Options){
++					.padding = pad,
++					.margin = ctx-&gt;theme.frame_margin &gt;= 0
++							  ? ctx-&gt;theme.frame_margin
++							  : 0});
+ 			if (!frame) {
+ 				bgtk_log("bgtk_frame failed");
+ 				return 1;
+diff --git a/apps/settings.c b/apps/settings.c
+index 017889e..3e64eea 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -82,6 +82,8 @@ static struct BGTK_Widget *theme_input_bg_input;
+ static struct BGTK_Widget *theme_highlight_input;
+ static struct BGTK_Widget *theme_margin_input;
+ static struct BGTK_Widget *theme_padding_input;
++static struct BGTK_Widget *theme_frame_margin_input;
++static struct BGTK_Widget *theme_baseline_input;
+ 
+ /* Font dropdown: open for one role (sans/mono/serif) at a time. */
+ static int font_dropdown_open;
+@@ -842,6 +844,13 @@ static void apply_theme(void *userdata)
+ 		cfg.theme.margin = atoi(theme_margin_input-&gt;data.text_input.text);
+ 	if (theme_padding_input &amp;&amp; theme_padding_input-&gt;data.text_input.text)
+ 		cfg.theme.padding = atoi(theme_padding_input-&gt;data.text_input.text);
++	if (theme_frame_margin_input &amp;&amp;
++	    theme_frame_margin_input-&gt;data.text_input.text)
++		cfg.theme.frame_margin =
++			atoi(theme_frame_margin_input-&gt;data.text_input.text);
++	if (theme_baseline_input &amp;&amp; theme_baseline_input-&gt;data.text_input.text)
++		cfg.theme.text_baseline_offset =
++			atoi(theme_baseline_input-&gt;data.text_input.text);
+ 	write_config(&amp;cfg);
+ 	if (ctx)
+ 		ctx-&gt;theme = cfg.theme;
+@@ -1045,6 +1054,11 @@ static char *build_font_html(void)
+ 	return buf;
+ }
+ 
++/*
++ * Theme page: 4-column table (label|value|label|value).
++ * Left pair = surfaces/fills; right pair = borders + spacing + text.
++ * get_input() order is document order L→R, top→bottom.
++ */
+ static char *build_theme_html(void)
+ {
+ 	char bg[16], btn[16], btxt[16], fbc[16], foc[16], fbg[16], ibg[16],
+@@ -1058,32 +1072,63 @@ static char *build_theme_html(void)
+ 	format_hex_color(cfg.theme.input_bg, ibg, sizeof(ibg));
+ 	format_hex_color(cfg.theme.highlight, hi, sizeof(hi));
+ 
+-	char *buf = malloc(6144);
+-	snprintf(buf, 6144,
++	char *buf = malloc(8192);
++	if (!buf)
++		return NULL;
++	/* iw = input width; shorter for numeric fields. */
++	snprintf(buf, 8192,
+ 		"&lt;html&gt;&lt;body&gt;"
+ 		"&lt;table&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Background&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Button&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Button text&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Frame border size&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%u\" width=\"60\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Button border size&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%u\" width=\"60\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Input border size&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%u\" width=\"60\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Frame border color&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Focus&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Focus background&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Input background&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Highlight&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Margin&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%d\" width=\"60\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Padding&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%d\" width=\"60\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
++		/* Surfaces | Borders */
++		"&lt;tr&gt;"
++		"&lt;td&gt;Background&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"90\" /&gt;&lt;/td&gt;"
++		"&lt;td&gt;Frame border color&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"90\" /&gt;&lt;/td&gt;"
++		"&lt;/tr&gt;"
++		"&lt;tr&gt;"
++		"&lt;td&gt;Button&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"90\" /&gt;&lt;/td&gt;"
++		"&lt;td&gt;Focus&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"90\" /&gt;&lt;/td&gt;"
++		"&lt;/tr&gt;"
++		"&lt;tr&gt;"
++		"&lt;td&gt;Button text&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"90\" /&gt;&lt;/td&gt;"
++		"&lt;td&gt;Frame border size&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%u\" width=\"60\" /&gt;&lt;/td&gt;"
++		"&lt;/tr&gt;"
++		"&lt;tr&gt;"
++		"&lt;td&gt;Input background&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"90\" /&gt;&lt;/td&gt;"
++		"&lt;td&gt;Button border size&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%u\" width=\"60\" /&gt;&lt;/td&gt;"
++		"&lt;/tr&gt;"
++		"&lt;tr&gt;"
++		"&lt;td&gt;Focus background&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"90\" /&gt;&lt;/td&gt;"
++		"&lt;td&gt;Input border size&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%u\" width=\"60\" /&gt;&lt;/td&gt;"
++		"&lt;/tr&gt;"
++		"&lt;tr&gt;"
++		"&lt;td&gt;Highlight&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"90\" /&gt;&lt;/td&gt;"
++		"&lt;td&gt;Widget margin&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%d\" width=\"60\" /&gt;&lt;/td&gt;"
++		"&lt;/tr&gt;"
++		/* Spacing / text (right column only continues) */
++		"&lt;tr&gt;"
++		"&lt;td&gt;&lt;/td&gt;&lt;td&gt;&lt;/td&gt;"
++		"&lt;td&gt;Frame padding&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%d\" width=\"60\" /&gt;&lt;/td&gt;"
++		"&lt;/tr&gt;"
++		"&lt;tr&gt;"
++		"&lt;td&gt;&lt;/td&gt;&lt;td&gt;&lt;/td&gt;"
++		"&lt;td&gt;Frame margin&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%d\" width=\"60\" /&gt;&lt;/td&gt;"
++		"&lt;/tr&gt;"
++		"&lt;tr&gt;"
++		"&lt;td&gt;&lt;/td&gt;&lt;td&gt;&lt;/td&gt;"
++		"&lt;td&gt;Text baseline&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%d\" width=\"60\" /&gt;&lt;/td&gt;"
++		"&lt;/tr&gt;"
+ 		"&lt;/table&gt;"
+ 		"&lt;div&gt;&lt;button&gt;Apply&lt;/button&gt;&lt;/div&gt;"
+ 		"&lt;/body&gt;&lt;/html&gt;",
+-		bg, btn, btxt,
+-		cfg.theme.frame_border_size,
+-		cfg.theme.button_border_size,
+-		cfg.theme.input_border_size,
+-		fbc, foc, fbg, ibg, hi,
+-		cfg.theme.margin, cfg.theme.padding);
++		/* L0 */ bg, /* R0 */ fbc,
++		/* L1 */ btn, /* R1 */ foc,
++		/* L2 */ btxt, /* R2 */ cfg.theme.frame_border_size,
++		/* L3 */ ibg, /* R3 */ cfg.theme.button_border_size,
++		/* L4 */ fbg, /* R4 */ cfg.theme.input_border_size,
++		/* L5 */ hi, /* R5 */ cfg.theme.margin,
++		/* R6 */ cfg.theme.padding,
++		/* R7 */ cfg.theme.frame_margin,
++		/* R8 */ cfg.theme.text_baseline_offset);
+ 	return buf;
+ }
+ 
+@@ -1341,6 +1386,8 @@ static void rebuild_content(void)
+ 	theme_highlight_input = NULL;
+ 	theme_margin_input = NULL;
+ 	theme_padding_input = NULL;
++	theme_frame_margin_input = NULL;
++	theme_baseline_input = NULL;
+ 
+ 	/* Free old font cache only when leaving font page */
+ 	if (current_page != 3 &amp;&amp; font_list_cache) {
+@@ -1355,14 +1402,16 @@ static void rebuild_content(void)
+ 	if (current_page == 3 &amp;&amp; !font_list_cache)
+ 		font_list_count = scan_fonts(&amp;font_list_cache);
+ 
+-	int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 6;
+-	int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 4;
++	int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 12;
++	int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 8;
++	int fmar = ctx-&gt;theme.frame_margin &gt;= 0 ? ctx-&gt;theme.frame_margin : 0;
+ 	int fbw = (int)ctx-&gt;theme.frame_border_size;
+ 	int chrome, rule_w, panel_w, panel_h;
+ 
+ 	if (fbw &lt; 0)
+ 		fbw = 0;
+-	chrome = 2 * (fbw + pad);
++	/* Root: [frame_margin][border][padding][content]… */
++	chrome = 2 * (fmar + fbw + pad);
+ 	rule_w = panel_rule ? panel_rule-&gt;w : (1 + mar);
+ 	panel_w = app_w - (sidebar ? sidebar-&gt;w : SIDEBAR_W) - rule_w - chrome -
+ 		  mar;
+@@ -1497,22 +1546,25 @@ static void rebuild_content(void)
+ 			b-&gt;data.button.callback = apply_font;
+ 		break;
+ 	}
+-	case 4: { /* Theme */
++	case 4: { /* Theme — inputs in 4-col table order (see build_theme_html) */
+ 		theme_bg_input = get_input(page, 0);
+-		theme_btn_input = get_input(page, 1);
+-		theme_btn_text_input = get_input(page, 2);
+-		theme_frame_border_input = get_input(page, 3);
+-		theme_btn_border_input = get_input(page, 4);
+-		theme_input_border_input = get_input(page, 5);
+-		theme_frame_color_input = get_input(page, 6);
+-		theme_focus_input = get_input(page, 7);
++		theme_frame_color_input = get_input(page, 1);
++		theme_btn_input = get_input(page, 2);
++		theme_focus_input = get_input(page, 3);
++		theme_btn_text_input = get_input(page, 4);
++		theme_frame_border_input = get_input(page, 5);
++		theme_input_bg_input = get_input(page, 6);
++		theme_btn_border_input = get_input(page, 7);
+ 		theme_focus_bg_input = get_input(page, 8);
+-		theme_input_bg_input = get_input(page, 9);
++		theme_input_border_input = get_input(page, 9);
+ 		theme_highlight_input = get_input(page, 10);
+ 		theme_margin_input = get_input(page, 11);
+ 		theme_padding_input = get_input(page, 12);
++		theme_frame_margin_input = get_input(page, 13);
++		theme_baseline_input = get_input(page, 14);
+ 		struct BGTK_Widget *b = get_button(page, 0);
+-		if (b) b-&gt;data.button.callback = apply_theme;
++		if (b)
++			b-&gt;data.button.callback = apply_theme;
+ 		break;
+ 	}
+ 	}
+@@ -1529,8 +1581,8 @@ static void rebuild_content(void)
+  * scroll buffer or the right border is clipped under the panel rule. */
+ static void sidebar_spacing(int *pad, int *mar, int *scroll_pad, int *btn_w)
+ {
+-	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 6;
+-	int m = (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin / 2 : 2;
++	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 12;
++	int m = (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin / 2 : 4;
+ 	int sp = p &gt; 1 ? p / 2 : 1;
+ 	/* child.x = scroll.mar+scroll.pad; button.x = list.mar+list.pad */
+ 	int left = m + sp + m; /* scroll mar + pad + list mar (list pad 0) */
+@@ -1644,24 +1696,24 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
+ 	ctx-&gt;theme = cfg.theme;
+ 
+ 	{
+-		int pad = cfg.theme.padding &gt; 0 ? cfg.theme.padding : 6;
+-		int mar = cfg.theme.margin &gt; 0 ? cfg.theme.margin : 4;
++		int pad = cfg.theme.padding &gt; 0 ? cfg.theme.padding : 12;
++		int mar = cfg.theme.margin &gt; 0 ? cfg.theme.margin : 8;
++		int fmar = cfg.theme.frame_margin &gt;= 0 ? cfg.theme.frame_margin
++							: 0;
+ 		int bw = (int)cfg.theme.frame_border_size;
+ 		int chrome;
+ 
+ 		if (bw &lt; 0)
+ 			bw = 0;
+-		chrome = 2 * (bw + pad);
++		chrome = 2 * (fmar + bw + pad);
+ 
+ 		sidebar = build_sidebar();
+-		/* Thin divider: margin only on the content side so it does
+-		 * not sit on top of sidebar button borders. */
++		/* Thin divider: gutter from widget margin. */
+ 		panel_rule = bgtk_rule(ctx, BGTK_LIST_VERTICAL, 1,
+ 				       (BGTK_Options){.margin = 0, .padding = 0});
+-		/* Extra left gap via rule outer width (visual gutter). */
+ 		{
+ 			int gutter = mar &gt; 0 ? mar : 4;
+-			panel_rule-&gt;w = 1 + gutter; /* 1px line + space after sidebar */
++			panel_rule-&gt;w = 1 + gutter;
+ 			panel_rule-&gt;data.rule.thickness = 1;
+ 		}
+ 		panel_rule-&gt;h = app_h - chrome;
+@@ -1672,21 +1724,23 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
+ 			panel_w = 80;
+ 
+ 		struct BGTK_Widget *placeholder = bgtk_text(ctx, "Select a category",
+-			(BGTK_Options){.padding = pad, .margin = mar});
+-		/* Borderless content frame; vertical rule separates sidebar. */
++			(BGTK_Options){.padding = pad, .margin = 0});
++		/*
++		 * Borderless content frame; margin 0 so the page top lines up
++		 * with the sidebar (sidebar already has its own scroll pad).
++		 */
+ 		content_panel = bgtk_frame(ctx, placeholder, panel_w, panel_h,
+-			(BGTK_Options){.padding = pad / 2, .margin = mar});
++			(BGTK_Options){.padding = 0, .margin = 0});
+ 		content_panel-&gt;data.frame.border_w = 0;
+ 
+ 		struct BGTK_Widget *cols[3] = { sidebar, panel_rule, content_panel };
+-		/* Zero list margin so column gap comes from rule gutter only. */
+ 		struct BGTK_Widget *row = bgtk_list(ctx, cols, 3,
+ 			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+ 				       .margin = 0, .padding = 0});
+ 
+-		/* Outer frame: thick gold border + even theme padding inset. */
++		/* Root: frame_margin outside border, padding inside. */
+ 		root_frame = bgtk_frame(ctx, row, app_w, app_h,
+-			(BGTK_Options){.padding = pad, .margin = 0});
++			(BGTK_Options){.padding = pad, .margin = fmar});
+ 
+ 		ctx-&gt;root_widget = root_frame;
+ 	}
+diff --git a/apps/sys_status.c b/apps/sys_status.c
+index 40020df..8d15794 100644
+--- a/apps/sys_status.c
++++ b/apps/sys_status.c
+@@ -671,12 +671,12 @@ void sys_status_refresh(unsigned flags)
+ 
+ static int ss_pad(struct BGTK_Context *c)
+ {
+-	return (c &amp;&amp; c-&gt;theme.padding &gt; 0) ? c-&gt;theme.padding : 6;
++	return (c &amp;&amp; c-&gt;theme.padding &gt; 0) ? c-&gt;theme.padding : 12;
+ }
+ 
+ static int ss_mar(struct BGTK_Context *c)
+ {
+-	return (c &amp;&amp; c-&gt;theme.margin &gt; 0) ? c-&gt;theme.margin : 4;
++	return (c &amp;&amp; c-&gt;theme.margin &gt; 0) ? c-&gt;theme.margin : 8;
+ }
+ 
+ /* Size root frame from label text (call after metrics are filled). */
+diff --git a/apps/term_core.c b/apps/term_core.c
+index 6a65c40..fde7816 100644
+--- a/apps/term_core.c
++++ b/apps/term_core.c
+@@ -75,6 +75,20 @@ struct Term_State *term_create(int cols, int rows)
+ 	return t;
+ }
+ 
++void term_apply_theme(struct Term_State *t, struct BGTK_Context *ctx)
++{
++	uint32_t bg;
++
++	if (!t || !ctx)
++		return;
++	/* ANSI default background (SGR 49 / palette index 0). */
++	bg = ctx-&gt;theme.background ? ctx-&gt;theme.background : 0xFF0A0A0A;
++	t-&gt;palette[0] = bg | 0xFF000000u;
++	/* Default foreground: theme text if set, else keep xterm gray. */
++	if (ctx-&gt;theme.button_text)
++		t-&gt;palette[7] = ctx-&gt;theme.button_text | 0xFF000000u;
++}
++
+ void term_destroy(struct Term_State *t)
+ {
+ 	if (!t)
+@@ -620,7 +634,7 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
+ 					pixels[(y0 + dy) * px_w + (x0 + dx)] = bg;
+ 		}
+ 	}
+-	/* fill remainder with black */
++	/* fill remainder with default bg (theme-synced palette[0]) */
+ 	used_w = t-&gt;cols * cw;
+ 	used_h = t-&gt;rows * ch;
+ 	if (used_w &lt; px_w) {
+diff --git a/apps/terminal.c b/apps/terminal.c
+index cb8cee5..957f7d6 100644
+--- a/apps/terminal.c
++++ b/apps/terminal.c
+@@ -130,19 +130,23 @@ static void pty_set_winsize(int master_fd, int cols, int rows)
+ 		bgtk_log_errno("TIOCSWINSZ master %dx%d", cols, rows);
+ }
+ 
+-/* Theme spacing: frame draws [margin][border][padding][child]… */
+-static void term_chrome(struct BGTK_Context *ctx, int *pad, int *mar, int *bw)
++/*
++ * Root chrome from theme: [frame_margin][border][padding][cells]…
++ * Sowm default frame_margin=0 so the border is the window edge.
++ */
++static void term_chrome(struct BGTK_Context *ctx, int *pad, int *fmar, int *bw)
+ {
+-	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 6;
+-	int m = (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin : 4;
++	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 12;
++	int m = (ctx &amp;&amp; ctx-&gt;theme.frame_margin &gt;= 0) ? ctx-&gt;theme.frame_margin
++						      : 0;
+ 	int b = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
+ 
+ 	if (b &lt; 0)
+ 		b = 0;
+ 	if (pad)
+ 		*pad = p;
+-	if (mar)
+-		*mar = m;
++	if (fmar)
++		*fmar = m;
+ 	if (bw)
+ 		*bw = b;
+ }
+@@ -150,11 +154,11 @@ static void term_chrome(struct BGTK_Context *ctx, int *pad, int *mar, int *bw)
+ static int term_inner_size(struct BGTK_Context *ctx, int win_w, int win_h,
+ 			   int *out_w, int *out_h)
+ {
+-	int pad, mar, bw, iw, ih;
++	int pad, fmar, bw, iw, ih;
+ 
+-	term_chrome(ctx, &amp;pad, &amp;mar, &amp;bw);
+-	iw = win_w - 2 * (mar + bw + pad);
+-	ih = win_h - 2 * (mar + bw + pad);
++	term_chrome(ctx, &amp;pad, &amp;fmar, &amp;bw);
++	iw = win_w - 2 * (fmar + bw + pad);
++	ih = win_h - 2 * (fmar + bw + pad);
+ 	if (iw &lt; 1)
+ 		iw = 1;
+ 	if (ih &lt; 1)
+@@ -171,9 +175,9 @@ static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
+ 			       struct BGTK_Widget *img, struct BGTK_Widget *frame,
+ 			       int master_fd, int *inner_w, int *inner_h)
+ {
+-	int pad, mar, bw, iw, ih;
++	int pad, fmar, bw, iw, ih;
+ 
+-	term_chrome(ctx, &amp;pad, &amp;mar, &amp;bw);
++	term_chrome(ctx, &amp;pad, &amp;fmar, &amp;bw);
+ 	term_inner_size(ctx, ctx-&gt;width, ctx-&gt;height, &amp;iw, &amp;ih);
+ 
+ 	term_measure_cell(ts, ctx);
+@@ -207,7 +211,7 @@ static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
+ 		frame-&gt;w = ctx-&gt;width;
+ 		frame-&gt;h = ctx-&gt;height;
+ 		frame-&gt;padding = pad;
+-		frame-&gt;margin = mar;
++		frame-&gt;margin = fmar;
+ 	}
+ 
+ 	*inner_w = iw;
+@@ -217,8 +221,8 @@ static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
+ 		pty_set_winsize(master_fd, cols, rows);
+ 
+ 	bgtk_log("terminal size window=%dx%d inner=%dx%d grid=%dx%d "
+-		 "pad=%d mar=%d bw=%d cell=%dx%d",
+-		 ctx-&gt;width, ctx-&gt;height, iw, ih, cols, rows, pad, mar, bw,
++		 "pad=%d fmar=%d bw=%d cell=%dx%d",
++		 ctx-&gt;width, ctx-&gt;height, iw, ih, cols, rows, pad, fmar, bw,
+ 		 ts-&gt;cell_w, ts-&gt;cell_h);
+ 	return 0;
+ }
+@@ -257,12 +261,12 @@ int main(void)
+ 	}
+ 
+ 	struct Term_State tmp_ts = {0};
+-	int pad, mar, bw, inner_w, inner_h, cols, rows;
++	int pad, fmar, bw, inner_w, inner_h, cols, rows;
+ 
+ 	tmp_ts.cols = tmp_ts.rows = 1;
+ 	term_measure_cell(&amp;tmp_ts, ctx);
+ 
+-	term_chrome(ctx, &amp;pad, &amp;mar, &amp;bw);
++	term_chrome(ctx, &amp;pad, &amp;fmar, &amp;bw);
+ 	term_inner_size(ctx, width, height, &amp;inner_w, &amp;inner_h);
+ 	cols = inner_w / tmp_ts.cell_w;
+ 	rows = inner_h / tmp_ts.cell_h;
+@@ -272,10 +276,10 @@ int main(void)
+ 		rows = 1;
+ 	{
+ 		FT_Face mono = bgtk_font_face(ctx, BGTK_FONT_MONO);
+-		bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d pad=%d mar=%d bw=%d "
++		bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d pad=%d fmar=%d bw=%d "
+ 			 "mono='%s' fixed=%d family='%s'",
+ 			 tmp_ts.cell_w, tmp_ts.cell_h, cols, rows, inner_w,
+-			 inner_h, pad, mar, bw,
++			 inner_h, pad, fmar, bw,
+ 			 ctx-&gt;font_mono_path[0] ? ctx-&gt;font_mono_path
+ 						: "(none)",
+ 			 mono &amp;&amp; FT_IS_FIXED_WIDTH(mono) ? 1 : 0,
+@@ -289,6 +293,7 @@ int main(void)
+ 	}
+ 	ts-&gt;cell_w = tmp_ts.cell_w;
+ 	ts-&gt;cell_h = tmp_ts.cell_h;
++	term_apply_theme(ts, ctx);
+ 
+ 	struct BGTK_Widget *img = bgtk_image(ctx, NULL, inner_w, inner_h,
+ 					     (BGTK_Options){.padding = 0,
+@@ -301,10 +306,9 @@ int main(void)
+ 	}
+ 	img-&gt;data.image.img_w = inner_w;
+ 	img-&gt;data.image.img_h = inner_h;
+-	/* Root frame: margin outside border, padding between border and cells. */
+ 	struct BGTK_Widget *frame = bgtk_frame(ctx, img, width, height,
+ 					       (BGTK_Options){.padding = pad,
+-							      .margin = mar});
++							      .margin = fmar});
+ 	ctx-&gt;root_widget = frame;
+ 
+ 	int master_fd;
+diff --git a/apps/terminal.h b/apps/terminal.h
+index 3efe431..7d1c2d3 100644
+--- a/apps/terminal.h
++++ b/apps/terminal.h
+@@ -62,6 +62,9 @@ struct Term_State *term_create(int cols, int rows);
+ void term_destroy(struct Term_State *t);
+ /* Resize the cell grid (preserves overlapping content). Returns 0 on success. */
+ int term_resize(struct Term_State *t, int cols, int rows);
++/* Sync default cell bg (palette[0]) with theme.background so the term
++ * matches other BGTK windows (not pure black). */
++void term_apply_theme(struct Term_State *t, struct BGTK_Context *ctx);
+ 
+ /* Feed raw bytes (from PTY or test harness) through the ANSI parser */
+ void term_feed(struct Term_State *t, const char *data, int len);
+diff --git a/apps/test_app.c b/apps/test_app.c
+index 5080f8d..bd6c303 100644
+--- a/apps/test_app.c
++++ b/apps/test_app.c
+@@ -73,8 +73,8 @@ int main(void) {
+ 
+ 	// 4. Create Widgets
+ 	{
+-		int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 6;
+-		int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 4;
++		int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 12;
++		int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 8;
+ 		int half = mar &gt; 1 ? mar / 2 : 1;
+ 		int mid = pad &gt; 2 ? pad / 2 : 2;
+ 		struct BGTK_Widget *scrollable_widgets[10];
+diff --git a/config.c b/config.c
+index 8ed40f3..6984775 100644
+--- a/config.c
++++ b/config.c
+@@ -340,9 +340,15 @@ void init_config_defaults(struct config *config)
+ 	config-&gt;theme.input_bg = 0xFF1C1814;
+ 	config-&gt;theme.highlight = 0xFFD4B8A0;
+ 	config-&gt;theme.text_baseline_offset = 0;
+-	/* Keep modest: large values stack on every list/scroll child. */
+-	config-&gt;theme.margin = 4;
+-	config-&gt;theme.padding = 6;
++	/*
++	 * Sowm-style floating cards:
++	 *   frame_margin = 0  → border is the window edge
++	 *   padding           → air inside the border
++	 *   margin            → gap between sibling widgets
++	 */
++	config-&gt;theme.margin = 8;
++	config-&gt;theme.padding = 12;
++	config-&gt;theme.frame_margin = 0;
+ 
+ 	/* Font defaults under [font]: sans, mono, serif, size. */
+ 	config-&gt;font_sans_path[0] = '\0';
+@@ -435,6 +441,7 @@ int write_config(const struct config *config)
+ 		config-&gt;theme.text_baseline_offset);
+ 	fprintf(f, "margin = %d\n", config-&gt;theme.margin);
+ 	fprintf(f, "padding = %d\n", config-&gt;theme.padding);
++	fprintf(f, "frame_margin = %d\n", config-&gt;theme.frame_margin);
+ 
+ 	fprintf(f, "\n[font]\n");
+ 	if (config-&gt;font_sans_path[0])
+@@ -550,6 +557,8 @@ int parse_config(struct config *config)
+ 				config-&gt;theme.margin = atoi(value);
+ 			} else if (strcmp(key, "padding") == 0) {
+ 				config-&gt;theme.padding = atoi(value);
++			} else if (strcmp(key, "frame_margin") == 0) {
++				config-&gt;theme.frame_margin = atoi(value);
+ 			}
+ 		} else if (strcmp(current_section, "font") == 0) {
+ 			if (strcmp(key, "sans") == 0) {
+diff --git a/config.h b/config.h
+index c663d29..a0ff011 100644
+--- a/config.h
++++ b/config.h
+@@ -40,9 +40,15 @@ typedef struct {
+ 	uint32_t highlight;
+ 	/* Global FreeType baseline tweak (px; added after per-widget baseline_offset). */
+ 	int text_baseline_offset;
+-	/* Default external / internal spacing apps should use for chrome. */
++	/*
++	 * Spacing (px). Apps should prefer these over magic constants:
++	 *   margin       — gap between sibling widgets (lists, rows)
++	 *   padding      — air inside the frame border (content inset)
++	 *   frame_margin — air outside the frame border (sowm cards: 0)
++	 */
+ 	int margin;
+ 	int padding;
++	int frame_margin;
+ } BGTK_Theme;
+ 
+ // Config structure
+diff --git a/test/test_gemini_browser.c b/test/test_gemini_browser.c
+index 552a6c8..d1cb2e1 100644
+--- a/test/test_gemini_browser.c
++++ b/test/test_gemini_browser.c
+@@ -43,20 +43,20 @@ static BGTK_Options line_opts(void)
+ 	return (BGTK_Options){.padding = 1, .margin = 1};
+ }
+ 
+-/* Theme chrome — same geometry as terminal:
+- * frame draws [margin][border][padding][content]… */
+-static void gemini_chrome(int *pad, int *mar, int *bw)
++/* Root chrome: [frame_margin][border][padding][content]… */
++static void gemini_chrome(int *pad, int *fmar, int *bw)
+ {
+-	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 6;
+-	int m = (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin : 4;
++	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 12;
++	int m = (ctx &amp;&amp; ctx-&gt;theme.frame_margin &gt;= 0) ? ctx-&gt;theme.frame_margin
++						      : 0;
+ 	int b = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
+ 
+ 	if (b &lt; 1)
+ 		b = 1;
+ 	if (pad)
+ 		*pad = p;
+-	if (mar)
+-		*mar = m;
++	if (fmar)
++		*fmar = m;
+ 	if (bw)
+ 		*bw = b;
+ }
+@@ -83,24 +83,24 @@ static void rebuild_content_from_gemtext(const char *body);
+ 
+ static void gemini_layout_chrome(void)
+ {
+-	int pad, mar, bw, box_w, box_h, list_m, list_p, field_pad;
++	int pad, fmar, bw, box_w, box_h, list_m, list_p, field_pad;
+ 	int usable_w, ah, scroll_h, over;
+ 
+ 	if (!ctx || !content_scroll || !addr_input)
+ 		return;
+-	gemini_chrome(&amp;pad, &amp;mar, &amp;bw);
+-	box_w = ctx-&gt;width - 2 * (mar + bw + pad);
+-	box_h = ctx-&gt;height - 2 * (mar + bw + pad);
++	gemini_chrome(&amp;pad, &amp;fmar, &amp;bw);
++	box_w = ctx-&gt;width - 2 * (fmar + bw + pad);
++	box_h = ctx-&gt;height - 2 * (fmar + bw + pad);
+ 	if (box_w &lt; 80)
+ 		box_w = 80;
+ 	if (box_h &lt; 80)
+ 		box_h = 80;
+ 	list_m = 0;
+ 	list_p = 0;
+-	field_pad = pad &gt; 2 ? pad / 2 : 2;
++	field_pad = pad &gt; 4 ? pad / 2 : 4;
+ 	addr_input-&gt;padding = field_pad;
+ 	addr_input-&gt;margin = 0;
+-	content_scroll-&gt;padding = pad &gt; 2 ? pad / 2 : 2;
++	content_scroll-&gt;padding = field_pad;
+ 	content_scroll-&gt;margin = 0;
+ 	if (main_list) {
+ 		main_list-&gt;padding = list_p;
+@@ -110,7 +110,7 @@ static void gemini_layout_chrome(void)
+ 	}
+ 	if (root_frame) {
+ 		root_frame-&gt;padding = pad;
+-		root_frame-&gt;margin = mar;
++		root_frame-&gt;margin = fmar;
+ 		root_frame-&gt;w = ctx-&gt;width;
+ 		root_frame-&gt;h = ctx-&gt;height;
+ 	}
+@@ -731,7 +731,7 @@ int main(void)
+ 
+ 	int width = 640;
+ 	int height = 500;
+-	int pad, mar, bw;
++	int pad, fmar, bw;
+ 	struct BGTK_Widget *main_items[2];
+ 	struct BGTK_Widget *frame;
+ 
+@@ -741,15 +741,15 @@ int main(void)
+ 		return 1;
+ 	}
+ 
+-	gemini_chrome(&amp;pad, &amp;mar, &amp;bw);
++	gemini_chrome(&amp;pad, &amp;fmar, &amp;bw);
+ 	addr_input = bgtk_text_input(
+ 		ctx, "gemini://geminiprotocol.net/", 200, 0,
+-		(BGTK_Options){.padding = pad &gt; 2 ? pad / 2 : 2, .margin = 0});
++		(BGTK_Options){.padding = pad &gt; 4 ? pad / 2 : 4, .margin = 0});
+ 	addr_input-&gt;data.text_input.on_enter = demo_addr_on_enter;
+ 
+ 	content_scroll = bgtk_scrollable(
+ 		ctx, NULL, 0,
+-		(BGTK_Options){.padding = pad &gt; 2 ? pad / 2 : 2, .margin = 0});
++		(BGTK_Options){.padding = pad &gt; 4 ? pad / 2 : 4, .margin = 0});
+ 
+ 	main_items[0] = content_scroll;
+ 	main_items[1] = addr_input;
+@@ -759,7 +759,7 @@ int main(void)
+ 					     .margin = 0});
+ 
+ 	frame = bgtk_frame(ctx, main_list, width, height,
+-			   (BGTK_Options){.padding = pad, .margin = mar});
++			   (BGTK_Options){.padding = pad, .margin = fmar});
+ 	root_frame = frame;
+ 	ctx-&gt;root_widget = frame;
+ 	gemini_layout_chrome();
+diff --git a/test/test_settings.c b/test/test_settings.c
+index fbbffc1..d493d8a 100644
+--- a/test/test_settings.c
++++ b/test/test_settings.c
+@@ -78,7 +78,7 @@ int main(void)
+ 	{
+ 		uint32_t *fb = (uint32_t *)ctx-&gt;shm_buffer;
+ 		/* Sample inside the preview box (content panel, mid). */
+-		int sx = 400, sy = 250;
++		int sx = 350, sy = 250;
+ 		uint32_t p = fb[sy * width + sx];
+ 		unsigned r = (p &gt;&gt; 16) &amp; 0xFF, g = (p &gt;&gt; 8) &amp; 0xFF, b = p &amp; 0xFF;
+ 		if (r &lt; 0xC0 || g &gt; 0x80 || b &gt; 0x80) {
+@@ -101,8 +101,8 @@ int main(void)
+ 		click.code = BTN_LEFT;
+ 		click.value = 1;
+ 		/* Apply sits under the aspect-correct preview (fills leftover). */
+-		click.x = 220;
+-		click.y = 400;
++		click.x = 200;
++		click.y = 418;
+ 		bgtk_inject_event(ctx, click);
+ 		click.value = 0;
+ 		if (!bgtk_inject_event(ctx, click)) {
+@@ -125,8 +125,8 @@ int main(void)
+ 		struct config *sc;
+ 		uint32_t *fb = (uint32_t *)ctx-&gt;shm_buffer;
+ 		uint32_t p_tl, p_mid;
+-		int sx_tl = 220, sy_tl = 160;
+-		int sx_mid = 400, sy_mid = 280;
++		int sx_tl = 210, sy_tl = 195;
++		int sx_mid = 350, sy_mid = 250;
+ 
+ 		if (write_pattern_ppm(pat) != 0) {
+ 			fprintf(stderr, "test_settings: cannot write %s\n", pat);
+@@ -217,7 +217,8 @@ int main(void)
+ 	 * Content-space centers: btn0=23, btn1=65, btn2=107, btn3=149, btn4=191.
+ 	 * Add scrollable screen-y offset (~8) for absolute coords. */
+ 	#define SIDEBAR_X 70
+-	#define SIDEBAR_BTN_Y(n) (31 + (n) * 42)
++	/* Larger Goldie pad/mar: first row center ~40, step ~48. */
++	#define SIDEBAR_BTN_Y(n) (40 + (n) * 48)
+ 
+ 	/* 01: Click "Cursor" */
+ 	{
+@@ -319,8 +320,8 @@ int main(void)
+ 		click.code = BTN_LEFT;
+ 		click.value = 1;
+ 		/* First theme color field (Background) under Goldie chrome. */
+-		click.x = 420;
+-		click.y = 48;
++		click.x = 360;
++		click.y = 55;
+ 		bgtk_inject_event(ctx, click);
+ 		click.value = 0;
+ 		bgtk_inject_event(ctx, click);
+diff --git a/test/test_terminal.c b/test/test_terminal.c
+index d0f1790..00b1564 100644
+--- a/test/test_terminal.c
++++ b/test/test_terminal.c
+@@ -134,10 +134,10 @@ int main(void)
+ 		return 1;
+ 	}
+ 
+-	/* Measure cell size; content area is inside frame border + theme pad/mar. */
++	/* Content inside frame_margin + border + padding (from theme). */
+ 	struct Term_State tmp = {0};
+-	int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 6;
+-	int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 4;
++	int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 12;
++	int fmar = ctx-&gt;theme.frame_margin &gt;= 0 ? ctx-&gt;theme.frame_margin : 0;
+ 	int bw = (int)ctx-&gt;theme.frame_border_size;
+ 	int inner_w, inner_h, cols, rows;
+ 	struct BGTK_Widget *img, *frame;
+@@ -147,8 +147,8 @@ int main(void)
+ 	tmp.cols = tmp.rows = 1;
+ 	term_measure_cell(&amp;tmp, ctx);
+ 
+-	inner_w = width - 2 * (mar + bw + pad);
+-	inner_h = height - 2 * (mar + bw + pad);
++	inner_w = width - 2 * (fmar + bw + pad);
++	inner_h = height - 2 * (fmar + bw + pad);
+ 	if (inner_w &lt; 1)
+ 		inner_w = 1;
+ 	if (inner_h &lt; 1)
+@@ -160,8 +160,8 @@ int main(void)
+ 	if (rows &lt; 1)
+ 		rows = 1;
+ 
+-	printf("Cell: %dx%d  Grid: %dx%d  chrome pad=%d mar=%d bw=%d inner=%dx%d\n",
+-	       tmp.cell_w, tmp.cell_h, cols, rows, pad, mar, bw, inner_w,
++	printf("Cell: %dx%d  Grid: %dx%d  chrome pad=%d fmar=%d bw=%d inner=%dx%d\n",
++	       tmp.cell_w, tmp.cell_h, cols, rows, pad, fmar, bw, inner_w,
+ 	       inner_h);
+ 
+ 	struct Term_State *ts = term_create(cols, rows);
+@@ -169,8 +169,8 @@ int main(void)
+ 		return 1;
+ 	ts-&gt;cell_w = tmp.cell_w;
+ 	ts-&gt;cell_h = tmp.cell_h;
++	term_apply_theme(ts, ctx);
+ 
+-	/* Image is the cell surface; frame applies theme margin/padding/border. */
+ 	img = bgtk_image(ctx, NULL, inner_w, inner_h,
+ 			 (BGTK_Options){.padding = 0, .margin = 0});
+ 	img-&gt;data.image.pixels =
+@@ -182,7 +182,7 @@ int main(void)
+ 	img-&gt;data.image.img_w = inner_w;
+ 	img-&gt;data.image.img_h = inner_h;
+ 	frame = bgtk_frame(ctx, img, width, height,
+-			   (BGTK_Options){.padding = pad, .margin = mar});
++			   (BGTK_Options){.padding = pad, .margin = fmar});
+ 	ctx-&gt;root_widget = frame;
+ 
+ 	/* --- Test 1: plain text ---------------------------------------- */
+</pre>

@@ -1,0 +1,2162 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk f5dfae1</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit f5dfae1
+parent <a href=commit-b120ac8.html>b120ac8</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-08T18:41:56-03:00
+
+    feat: Goldie theme, scroll, and app polish.
+
+    Default Goldie palette with large borders and margin/padding theme
+    options; input_bg for unfocused fields. Terminal scrollback (wheel and
+    PageUp/Down). Gemini browser scroll/shortcuts and full-width URL bar.
+    Launcher file-list rows with highlight selection. Safer scrollable
+    buffer sizing and shm blit clipping.
+
+<a href=tree-f5dfae1.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/gemini_browser.c b/apps/gemini_browser.c
+index 6b7bb3b..bb667fd 100644
+--- a/apps/gemini_browser.c
++++ b/apps/gemini_browser.c
+@@ -427,6 +427,18 @@ static char **wrap_text(FT_Face face, const char *text, int max_width, int *nlin
+ 	return lines;
+ }
+ 
++/* Drop offscreen scroll buffer so the next draw reallocates for new height. */
++static void content_scroll_invalidate_tmp(void)
++{
++	if (!content_scroll)
++		return;
++	if (content_scroll-&gt;data.scrollable.tmp) {
++		free(content_scroll-&gt;data.scrollable.tmp);
++		content_scroll-&gt;data.scrollable.tmp = NULL;
++	}
++	content_scroll-&gt;data.scrollable.widget_capacity = 0;
++}
++
+ /* replace page content from gemtext body */
+ static void rebuild_content_from_gemtext(const char *body)
+ {
+@@ -443,6 +455,7 @@ static void rebuild_content_from_gemtext(const char *body)
+ 		content_scroll-&gt;data.scrollable.items = NULL;
+ 		content_scroll-&gt;data.scrollable.widget_count = 0;
+ 	}
++	content_scroll_invalidate_tmp();
+ 	num_page_links = 0;
+ 
+ 	if (!body)
+@@ -654,6 +667,7 @@ static void rebuild_content_from_gemtext(const char *body)
+ 	content_scroll-&gt;data.scrollable.items = new_items;
+ 	content_scroll-&gt;data.scrollable.widget_count = cnt;
+ 	content_scroll-&gt;data.scrollable.scroll_y = 0;
++	content_scroll_invalidate_tmp();
+ 	bgtk_log("rebuild: %d line widgets, %d links", cnt, num_page_links);
+ }
+ 
+@@ -729,6 +743,7 @@ static void load_url(const char *url)
+ 		content_scroll-&gt;data.scrollable.items = NULL;
+ 		content_scroll-&gt;data.scrollable.widget_count = 0;
+ 	}
++	content_scroll_invalidate_tmp();
+ 	num_page_links = 0;
+ 
+ 	if (feres != 0 || status / 10 != 2) {
+@@ -745,6 +760,7 @@ static void load_url(const char *url)
+ 		content_scroll-&gt;data.scrollable.items = errs;
+ 		content_scroll-&gt;data.scrollable.widget_count = errs ? 1 : 0;
+ 		content_scroll-&gt;data.scrollable.scroll_y = 0;
++		content_scroll_invalidate_tmp();
+ 	} else {
+ 		bgtk_log("load_url: rendering success body (%zu bytes)",
+ 			 body ? strlen(body) : 0);
+@@ -771,13 +787,6 @@ static void load_url(const char *url)
+ 	bgtk_log("load_url: draw complete for %s", current_url);
+ }
+ 
+-static void go_button_cb(void *userdata)
+-{
+-	(void)userdata;
+-	if (addr_input)
+-		load_url(addr_input-&gt;data.text_input.text);
+-}
+-
+ static void addr_on_enter(void)
+ {
+ 	if (addr_input)
+@@ -792,12 +801,6 @@ int main(void)
+ 	struct BufferRequest req;
+ 	void *buffer;
+ 	int usable_w;
+-	struct BGTK_Widget *go_label;
+-	struct BGTK_Widget *go_btn;
+-	int input_w;
+-	struct BGTK_Widget *addr_items[2];
+-	struct BGTK_Widget *addr_row;
+-	int v_margins;
+ 	int reserved;
+ 	int scroll_h;
+ 	struct BGTK_Widget *main_items[2];
+@@ -851,35 +854,23 @@ int main(void)
+ 		 (void *)ctx-&gt;ft_face, (void *)ctx-&gt;ft_face_mono,
+ 		 (void *)ctx-&gt;ft_face_serif);
+ 
+-	usable_w = width - 20;
++	/* Frame pad 4×2; keep chrome tight so the URL bar sits near the bottom. */
++	usable_w = width - 16;
+ 
+-	/* button first so we can size the address field to fill the row */
+-	go_label = bgtk_text(ctx, "Go",
+-			     (BGTK_Options){.padding = 2, .margin = 0});
+-	go_btn = bgtk_button(ctx, go_label, go_button_cb, NULL,
+-			     (BGTK_Options){.padding = 4, .margin = 2});
+-	input_w = usable_w - go_btn-&gt;w - 16;
+-	addr_input = bgtk_text_input(ctx, current_url,
+-				     input_w &gt; 100 ? input_w : 400, 0,
++	/* Full-width URL bar; Enter navigates (no Go button). */
++	addr_input = bgtk_text_input(ctx, current_url, usable_w, 0,
+ 				     (BGTK_Options){.padding = 4, .margin = 2});
+ 	addr_input-&gt;data.text_input.on_enter = addr_on_enter;
+ 
+-	addr_items[0] = addr_input;
+-	addr_items[1] = go_btn;
+-	addr_row = bgtk_list(ctx, addr_items, 2,
+-			     (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+-					    .padding = 2,
+-					    .margin = 1});
+-
+ 	content_scroll =
+ 		bgtk_scrollable(ctx, NULL, 0,
+-				(BGTK_Options){.padding = 2, .margin = 3});
++				(BGTK_Options){.padding = 2, .margin = 2});
+ 
+-	v_margins = 16;
+-	reserved = (addr_row ? addr_row-&gt;h : 24) + v_margins;
+-	scroll_h = height - reserved - 24;
+-	if (scroll_h &lt; 100)
+-		scroll_h = 180;
++	/* Fill remaining height: frame pad + list chrome + address bar. */
++	reserved = (addr_input ? addr_input-&gt;h : 28) + 16;
++	scroll_h = height - reserved;
++	if (scroll_h &lt; 80)
++		scroll_h = 80;
+ 	content_scroll-&gt;w = usable_w;
+ 	content_scroll-&gt;h = scroll_h;
+ 
+@@ -894,7 +885,7 @@ int main(void)
+ 	}
+ 
+ 	main_items[0] = content_scroll;
+-	main_items[1] = addr_row;
++	main_items[1] = addr_input;
+ 	main_list = bgtk_list(ctx, main_items, 2,
+ 			      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+ 					     .padding = 2,
+@@ -933,26 +924,72 @@ int main(void)
+ 
+ 		int res = 0;
+ 		switch (msg.type) {
+-		case MSG_INPUT_EVENT:
+-			if (msg.data.input_event.type == EV_REL ||
+-			    msg.data.input_event.type == EV_ABS)
++		case MSG_INPUT_EVENT: {
++			struct InputEvent *ev = &amp;msg.data.input_event;
++
++			/* Ignore pure pointer motion (not wheel). Wheel is
++			 * EV_REL/REL_WHEEL and must reach the scrollable. */
++			if (ev-&gt;type == EV_ABS)
++				break;
++			if (ev-&gt;type == EV_REL &amp;&amp; ev-&gt;code != REL_WHEEL)
+ 				break;
+-			bgtk_update_modifiers(ctx, msg.data.input_event);
+-			if (bgtk_is_app_quit_event(ctx,
+-						   msg.data.input_event)) {
++
++			bgtk_update_modifiers(ctx, *ev);
++			if (bgtk_is_app_quit_event(ctx, *ev)) {
+ 				bgtk_log("quit key type=%d code=%d value=%d "
+ 					 "mods shift=%d ctrl=%d alt=%d",
+-					 msg.data.input_event.type,
+-					 msg.data.input_event.code,
+-					 msg.data.input_event.value,
++					 ev-&gt;type, ev-&gt;code, ev-&gt;value,
+ 					 ctx-&gt;shift_held, ctx-&gt;ctrl_held,
+ 					 ctx-&gt;alt_held);
+ 				quit_reason = "app quit key (Esc or Ctrl+C)";
+ 				goto done;
+ 			}
+-			res = bgtk_handle_input_event(ctx,
+-						      msg.data.input_event);
++
++			/* Browser chords (before text-input eats the key). */
++			if (ev-&gt;type == EV_KEY &amp;&amp;
++			    (ev-&gt;value == 1 || ev-&gt;value == 2)) {
++				if (ctx-&gt;ctrl_held &amp;&amp; ev-&gt;code == KEY_L) {
++					bgtk_set_focus(ctx, addr_input);
++					res = 1;
++					break;
++				}
++				if (ctx-&gt;ctrl_held &amp;&amp; ev-&gt;code == KEY_R) {
++					load_url(current_url);
++					res = 1;
++					break;
++				}
++				if (ev-&gt;code == KEY_ESC) {
++					if (ctx-&gt;focused_widget == addr_input) {
++						bgtk_set_focus(ctx,
++							       content_scroll);
++						res = 1;
++						break;
++					}
++				}
++				/* Scroll page when focus is not the URL field. */
++				if (content_scroll &amp;&amp;
++				    ctx-&gt;focused_widget != addr_input &amp;&amp;
++				    content_scroll-&gt;handle_event &amp;&amp;
++				    (ev-&gt;code == KEY_UP ||
++				     ev-&gt;code == KEY_DOWN ||
++				     ev-&gt;code == KEY_PAGEUP ||
++				     ev-&gt;code == KEY_PAGEDOWN ||
++				     ev-&gt;code == KEY_HOME ||
++				     ev-&gt;code == KEY_END ||
++				     ev-&gt;code == KEY_SPACE ||
++				     ev-&gt;code == KEY_J ||
++				     ev-&gt;code == KEY_K)) {
++					if (content_scroll-&gt;handle_event(
++						    content_scroll, *ev)) {
++						res = 1;
++						break;
++					}
++				}
++			}
++
++			res = bgtk_handle_input_event(ctx, *ev);
+ 			break;
++		}
+ 		case MSG_FOCUS_CHANGE:
+ 			bgtk_log("focus change state=%d",
+ 				 msg.data.focus_event.state);
+@@ -968,6 +1005,25 @@ int main(void)
+ 					ctx-&gt;root_widget-&gt;w = ctx-&gt;width;
+ 					ctx-&gt;root_widget-&gt;h = ctx-&gt;height;
+ 				}
++				/* Refit content + URL bar after resize. */
++				if (content_scroll &amp;&amp; addr_input) {
++					int ah = addr_input-&gt;h &gt; 0 ? addr_input-&gt;h
++								  : 28;
++					int sh = ctx-&gt;height - ah - 16;
++					if (sh &lt; 80)
++						sh = 80;
++					content_scroll-&gt;w = ctx-&gt;width - 16;
++					content_scroll-&gt;h = sh;
++					addr_input-&gt;w = ctx-&gt;width - 16;
++					if (content_scroll-&gt;data.scrollable.tmp) {
++						free(content_scroll-&gt;data
++							     .scrollable.tmp);
++						content_scroll-&gt;data.scrollable
++							.tmp = NULL;
++						content_scroll-&gt;data.scrollable
++							.widget_capacity = 0;
++					}
++				}
+ 				bgtk_draw_widgets(ctx);
+ 			}
+ 			break;
+diff --git a/apps/launcher.c b/apps/launcher.c
+index 2a18f8c..403980f 100644
+--- a/apps/launcher.c
++++ b/apps/launcher.c
+@@ -85,41 +85,105 @@ static void update_matches(const char* prefix)
+ 	selected = num_matches &gt; 0 ? 0 : -1;
+ }
+ 
++static void on_enter_pressed(void);
++
++/* Click a match row: select + launch (file-list style). */
++static void match_row_cb(void *userdata)
++{
++	int i = (int)(intptr_t)userdata;
++	if (i &lt; 0 || i &gt;= num_matches)
++		return;
++	selected = i;
++	on_enter_pressed();
++}
++
+ static void rebuild_matches_ui(void)
+ {
+-	if (!matches_scroll)
++	int pad, mar, row_w, i, n;
++	struct BGTK_Widget **items;
++
++	if (!matches_scroll || !ctx)
+ 		return;
+ 
+-	int oldc = matches_scroll-&gt;data.scrollable.widget_count;
+-	for (int i = 0; i &lt; oldc; i++) {
+-		struct BGTK_Widget* tw = matches_scroll-&gt;data.scrollable.items[i];
+-		if (tw) {
+-			free(tw-&gt;data.text.text);
+-			free(tw);
++	/* Free old rows (buttons own their label text widgets). */
++	{
++		int oldc = matches_scroll-&gt;data.scrollable.widget_count;
++		for (i = 0; i &lt; oldc; i++) {
++			struct BGTK_Widget *row =
++				matches_scroll-&gt;data.scrollable.items[i];
++			if (!row)
++				continue;
++			if (row-&gt;type == BGTK_WIDGET_BUTTON &amp;&amp;
++			    row-&gt;data.button.label) {
++				struct BGTK_Widget *lab = row-&gt;data.button.label;
++				if (lab-&gt;type == BGTK_WIDGET_TEXT &amp;&amp;
++				    lab-&gt;data.text.text)
++					free(lab-&gt;data.text.text);
++				free(lab);
++			} else if (row-&gt;type == BGTK_WIDGET_TEXT &amp;&amp;
++				   row-&gt;data.text.text) {
++				free(row-&gt;data.text.text);
++			}
++			free(row);
++		}
++		free(matches_scroll-&gt;data.scrollable.items);
++		matches_scroll-&gt;data.scrollable.items = NULL;
++		matches_scroll-&gt;data.scrollable.widget_count = 0;
++		if (matches_scroll-&gt;data.scrollable.tmp) {
++			free(matches_scroll-&gt;data.scrollable.tmp);
++			matches_scroll-&gt;data.scrollable.tmp = NULL;
++			matches_scroll-&gt;data.scrollable.widget_capacity = 0;
+ 		}
+ 	}
+-	free(matches_scroll-&gt;data.scrollable.items);
+-	matches_scroll-&gt;data.scrollable.items = NULL;
+-	matches_scroll-&gt;data.scrollable.widget_count = 0;
+ 
+-	int n = num_matches;
++	n = num_matches;
+ 	if (n &lt; 1) {
+ 		bgtk_draw_widgets(ctx);
+ 		return;
+ 	}
+ 
+-	struct BGTK_Widget** items = calloc(n, sizeof(struct BGTK_Widget*));
++	items = calloc((size_t)n, sizeof(struct BGTK_Widget *));
+ 	if (!items)
+ 		return;
+ 
+-	for (int i = 0; i &lt; n; i++) {
+-		char label[128];
+-		const char* name = match_ptrs[i];
+-		if (i == selected)
+-			snprintf(label, sizeof(label), "\xe2\x96\xb6 %s", name);
++	pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 8;
++	mar = 0;
++	row_w = matches_scroll-&gt;w &gt; 40 ? matches_scroll-&gt;w - 8 : 400;
++
++	/*
++	 * sowm-style file list: full-width borderless rows on the panel
++	 * background; selected row uses theme.highlight fill (soft sand).
++	 */
++	for (i = 0; i &lt; n; i++) {
++		struct BGTK_Widget *lab;
++		struct BGTK_Widget *row;
++		const char *name = match_ptrs[i];
++		int sel = (i == selected);
++
++		lab = bgtk_text(ctx, (char *)name,
++				(BGTK_Options){.padding = 2, .margin = 0});
++		if (!lab)
++			continue;
++		row = bgtk_button(ctx, lab, match_row_cb,
++				  (void *)(intptr_t)i,
++				  (BGTK_Options){.padding = pad / 2 + 2,
++						 .margin = mar});
++		if (!row) {
++			free(lab-&gt;data.text.text);
++			free(lab);
++			continue;
++		}
++		row-&gt;w = row_w;
++		row-&gt;data.button.border_w = 0;
++		if (sel)
++			row-&gt;data.button.bg_override = ctx-&gt;theme.highlight
++							       ? ctx-&gt;theme.highlight
++							       : 0xFFD4B8A0;
+ 		else
+-			snprintf(label, sizeof(label), "  %s", name);
+-		items[i] = bgtk_text(ctx, label, (BGTK_Options){.padding = 1, .margin = 0});
++			row-&gt;data.button.bg_override = ctx-&gt;theme.background
++							       ? ctx-&gt;theme.background
++							       : 0xFF0A0A0A;
++		items[i] = row;
+ 	}
+ 
+ 	matches_scroll-&gt;data.scrollable.items = items;
+@@ -194,11 +258,17 @@ static void on_enter_pressed(void)
+ /* Size input + match list to fill the current window. */
+ static void layout_launcher(void)
+ {
++	int pad, mar, bw, inner_w, inner_h, input_h;
++
+ 	if (!ctx)
+ 		return;
+-	int pad = 8;
+-	int inner_w = ctx-&gt;width - 2 * pad;
+-	int inner_h = ctx-&gt;height - 2 * pad;
++	pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 8;
++	mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 6;
++	bw = (int)ctx-&gt;theme.frame_border_size;
++	if (bw &lt; 0)
++		bw = 0;
++	inner_w = ctx-&gt;width - 2 * (pad + bw + mar);
++	inner_h = ctx-&gt;height - 2 * (pad + bw + mar);
+ 	if (inner_w &lt; 40)
+ 		inner_w = 40;
+ 	if (inner_h &lt; 40)
+@@ -206,12 +276,11 @@ static void layout_launcher(void)
+ 
+ 	if (text_input) {
+ 		text_input-&gt;w = inner_w;
+-		/* height stays content-sized; force a sensible min */
+ 		if (text_input-&gt;h &lt; 28)
+ 			text_input-&gt;h = 28;
+ 	}
+ 	if (matches_scroll) {
+-		int input_h = text_input ? text_input-&gt;h + 8 : 36;
++		input_h = text_input ? text_input-&gt;h + mar : 36;
+ 		matches_scroll-&gt;w = inner_w;
+ 		matches_scroll-&gt;h = inner_h - input_h;
+ 		if (matches_scroll-&gt;h &lt; 40)
+@@ -259,37 +328,57 @@ int main(void)
+ 		bgtk_log("bgtk_init failed — check fonts / log above");
+ 		return 1;
+ 	}
+-	bgtk_log("building launcher UI");
+-
+-	text_input = bgtk_text_input(ctx, "", 440, 0, (BGTK_Options){.padding = 6, .margin = 4});
+-	if (!text_input) {
+-		bgtk_log("bgtk_text_input failed");
+-		return 1;
+-	}
+-	text_input-&gt;data.text_input.on_change = on_text_change;
+-	text_input-&gt;data.text_input.on_tab = on_tab_pressed;
+-	text_input-&gt;data.text_input.on_enter = on_enter_pressed;
+-
+-	matches_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 4});
+-	if (!matches_scroll) {
+-		bgtk_log("bgtk_scrollable failed");
+-		return 1;
+-	}
+-
+-	struct BGTK_Widget* layout_items[2] = {text_input, matches_scroll};
+-	struct BGTK_Widget* layout = bgtk_list(ctx, layout_items, 2, (BGTK_Options){.orientation = BGTK_LIST_VERTICAL});
+-	if (!layout) {
+-		bgtk_log("bgtk_list failed");
+-		return 1;
+-	}
++	bgtk_log("building launcher UI (goldie file-list)");
++
++	{
++		int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 8;
++		int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 6;
++
++		text_input = bgtk_text_input(
++			ctx, "", 440, 0,
++			(BGTK_Options){.padding = pad, .margin = mar / 2});
++		if (!text_input) {
++			bgtk_log("bgtk_text_input failed");
++			return 1;
++		}
++		text_input-&gt;data.text_input.on_change = on_text_change;
++		text_input-&gt;data.text_input.on_tab = on_tab_pressed;
++		text_input-&gt;data.text_input.on_enter = on_enter_pressed;
++
++		matches_scroll = bgtk_scrollable(
++			ctx, NULL, 0,
++			(BGTK_Options){.padding = pad / 2, .margin = mar / 2});
++		if (!matches_scroll) {
++			bgtk_log("bgtk_scrollable failed");
++			return 1;
++		}
+ 
+-	struct BGTK_Widget* frame = bgtk_frame(ctx, layout, width, height, (BGTK_Options){.padding = 8});
+-	if (!frame) {
+-		bgtk_log("bgtk_frame failed");
+-		return 1;
++		{
++			struct BGTK_Widget *layout_items[2] = { text_input,
++							       matches_scroll };
++			struct BGTK_Widget *layout = bgtk_list(
++				ctx, layout_items, 2,
++				(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++					       .margin = mar / 2,
++					       .padding = 0});
++			struct BGTK_Widget *frame;
++
++			if (!layout) {
++				bgtk_log("bgtk_list failed");
++				return 1;
++			}
++			/* Thick gold frame around the black list panel. */
++			frame = bgtk_frame(ctx, layout, width, height,
++					  (BGTK_Options){.padding = pad,
++							 .margin = 0});
++			if (!frame) {
++				bgtk_log("bgtk_frame failed");
++				return 1;
++			}
++			ctx-&gt;root_widget = frame;
++		}
+ 	}
+ 
+-	ctx-&gt;root_widget = frame;
+ 	layout_launcher();
+ 	bgtk_log("first draw / focus");
+ 	bgtk_log_flush();
+@@ -320,17 +409,39 @@ int main(void)
+ 
+ 		int need_draw = 0;
+ 		switch (msg.type) {
+-		case MSG_INPUT_EVENT:
+-			if (msg.data.input_event.type == EV_REL ||
+-			    msg.data.input_event.type == EV_ABS)
++		case MSG_INPUT_EVENT: {
++			struct InputEvent *ev = &amp;msg.data.input_event;
++
++			/* Allow wheel scroll on the match list. */
++			if (ev-&gt;type == EV_ABS)
+ 				break;
+-			bgtk_update_modifiers(ctx, msg.data.input_event);
+-			if (bgtk_is_app_quit_event(ctx, msg.data.input_event)) {
++			if (ev-&gt;type == EV_REL &amp;&amp; ev-&gt;code != REL_WHEEL)
++				break;
++			bgtk_update_modifiers(ctx, *ev);
++			if (bgtk_is_app_quit_event(ctx, *ev)) {
+ 				quit = 1;
+ 				break;
+ 			}
+-			need_draw = bgtk_handle_input_event(ctx, msg.data.input_event);
++			/* Arrow keys move selection in the file list. */
++			if (ev-&gt;type == EV_KEY &amp;&amp;
++			    (ev-&gt;value == 1 || ev-&gt;value == 2) &amp;&amp;
++			    num_matches &gt; 0) {
++				if (ev-&gt;code == KEY_DOWN ||
++				    ev-&gt;code == KEY_J) {
++					selected = (selected + 1) % num_matches;
++					rebuild_matches_ui();
++					break;
++				}
++				if (ev-&gt;code == KEY_UP || ev-&gt;code == KEY_K) {
++					selected = (selected - 1 + num_matches) %
++						   num_matches;
++					rebuild_matches_ui();
++					break;
++				}
++			}
++			need_draw = bgtk_handle_input_event(ctx, *ev);
+ 			break;
++		}
+ 		case MSG_FOCUS_CHANGE:
+ 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
+ 			need_draw = 1;
+diff --git a/apps/settings.c b/apps/settings.c
+index 8249442..6bace4a 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -77,7 +77,10 @@ static struct BGTK_Widget *theme_input_border_input;
+ static struct BGTK_Widget *theme_frame_color_input;
+ static struct BGTK_Widget *theme_focus_input;
+ static struct BGTK_Widget *theme_focus_bg_input;
++static struct BGTK_Widget *theme_input_bg_input;
+ static struct BGTK_Widget *theme_highlight_input;
++static struct BGTK_Widget *theme_margin_input;
++static struct BGTK_Widget *theme_padding_input;
+ 
+ /* Font dropdown: open for one role (sans/mono/serif) at a time. */
+ static int font_dropdown_open;
+@@ -830,8 +833,14 @@ static void apply_theme(void *userdata)
+ 		cfg.theme.focus = parse_color_input(theme_focus_input-&gt;data.text_input.text);
+ 	if (theme_focus_bg_input)
+ 		cfg.theme.focus_bg = parse_color_input(theme_focus_bg_input-&gt;data.text_input.text);
++	if (theme_input_bg_input)
++		cfg.theme.input_bg = parse_color_input(theme_input_bg_input-&gt;data.text_input.text);
+ 	if (theme_highlight_input)
+ 		cfg.theme.highlight = parse_color_input(theme_highlight_input-&gt;data.text_input.text);
++	if (theme_margin_input &amp;&amp; theme_margin_input-&gt;data.text_input.text)
++		cfg.theme.margin = atoi(theme_margin_input-&gt;data.text_input.text);
++	if (theme_padding_input &amp;&amp; theme_padding_input-&gt;data.text_input.text)
++		cfg.theme.padding = atoi(theme_padding_input-&gt;data.text_input.text);
+ 	write_config(&amp;cfg);
+ 	if (ctx)
+ 		ctx-&gt;theme = cfg.theme;
+@@ -1037,13 +1046,15 @@ static char *build_font_html(void)
+ 
+ static char *build_theme_html(void)
+ {
+-	char bg[16], btn[16], btxt[16], fbc[16], foc[16], fbg[16], hi[16];
++	char bg[16], btn[16], btxt[16], fbc[16], foc[16], fbg[16], ibg[16],
++		hi[16];
+ 	format_hex_color(cfg.theme.background, bg, sizeof(bg));
+ 	format_hex_color(cfg.theme.button, btn, sizeof(btn));
+ 	format_hex_color(cfg.theme.button_text, btxt, sizeof(btxt));
+ 	format_hex_color(cfg.theme.frame_border_color, fbc, sizeof(fbc));
+ 	format_hex_color(cfg.theme.focus, foc, sizeof(foc));
+ 	format_hex_color(cfg.theme.focus_bg, fbg, sizeof(fbg));
++	format_hex_color(cfg.theme.input_bg, ibg, sizeof(ibg));
+ 	format_hex_color(cfg.theme.highlight, hi, sizeof(hi));
+ 
+ 	char *buf = malloc(6144);
+@@ -1059,7 +1070,10 @@ static char *build_theme_html(void)
+ 		"&lt;tr&gt;&lt;td&gt;Frame border color&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+ 		"&lt;tr&gt;&lt;td&gt;Focus&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+ 		"&lt;tr&gt;&lt;td&gt;Focus background&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;td&gt;Input background&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+ 		"&lt;tr&gt;&lt;td&gt;Highlight&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;td&gt;Margin&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%d\" width=\"60\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;td&gt;Padding&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%d\" width=\"60\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+ 		"&lt;/table&gt;"
+ 		"&lt;div&gt;&lt;button&gt;Apply&lt;/button&gt;&lt;/div&gt;"
+ 		"&lt;/body&gt;&lt;/html&gt;",
+@@ -1067,7 +1081,8 @@ static char *build_theme_html(void)
+ 		cfg.theme.frame_border_size,
+ 		cfg.theme.button_border_size,
+ 		cfg.theme.input_border_size,
+-		fbc, foc, fbg, hi);
++		fbc, foc, fbg, ibg, hi,
++		cfg.theme.margin, cfg.theme.padding);
+ 	return buf;
+ }
+ 
+@@ -1101,6 +1116,74 @@ static void preview_fit(int max_w, int max_h, int *out_w, int *out_h)
+ 	*out_h = ph;
+ }
+ 
++/* Render source into dest (pw x ph) like BGCE apply_background. */
++static void blit_wallpaper_preview(uint32_t *dst, int pw, int ph,
++				   const uint32_t *src, int sw, int sh,
++				   ImageMode mode)
++{
++	int x, y;
++
++	if (!dst || !src || pw &lt; 1 || ph &lt; 1 || sw &lt; 1 || sh &lt; 1)
++		return;
++	if (mode == IMAGE_TILED) {
++		for (y = 0; y &lt; ph; y++) {
++			int sy = y % sh;
++			for (x = 0; x &lt; pw; x++)
++				dst[y * pw + x] = src[sy * sw + (x % sw)];
++		}
++		return;
++	}
++	/* IMAGE_SCALED: stretch to fill preview (nearest). */
++	for (y = 0; y &lt; ph; y++) {
++		int sy = (int)((long)y * sh / ph);
++		if (sy &gt;= sh)
++			sy = sh - 1;
++		for (x = 0; x &lt; pw; x++) {
++			int sx = (int)((long)x * sw / pw);
++			if (sx &gt;= sw)
++				sx = sw - 1;
++			dst[y * pw + x] = src[sy * sw + sx];
++		}
++	}
++}
++
++/* Load wallpaper and paint preview buffer in scaled or tiled mode. */
++static struct BGTK_Widget *make_image_preview(int pw, int ph, const char *path,
++					     ImageMode mode)
++{
++	struct BGTK_Widget *img;
++	uint32_t *src = NULL, *dst = NULL;
++	int sw = 0, sh = 0;
++
++	if (pw &lt; 1)
++		pw = 1;
++	if (ph &lt; 1)
++		ph = 1;
++	if (load_image(path, &amp;src, &amp;sw, &amp;sh) != 0 || !src || sw &lt; 1 || sh &lt; 1) {
++		free(src);
++		return NULL;
++	}
++	dst = malloc((size_t)pw * (size_t)ph * sizeof(uint32_t));
++	if (!dst) {
++		free(src);
++		return NULL;
++	}
++	blit_wallpaper_preview(dst, pw, ph, src, sw, sh, mode);
++	free(src);
++
++	img = bgtk_image(ctx, NULL, pw, ph, (BGTK_Options){.padding = 0, .margin = 4});
++	if (!img) {
++		free(dst);
++		return NULL;
++	}
++	img-&gt;data.image.pixels = dst;
++	img-&gt;data.image.img_w = pw;
++	img-&gt;data.image.img_h = ph;
++	img-&gt;w = pw + 8;
++	img-&gt;h = ph + 8;
++	return img;
++}
++
+ /* Solid fill in framebuffer format 0xAARRGGBB (matches draw_rect / BGCE). */
+ static struct BGTK_Widget *make_solid_preview(int pw, int ph, uint32_t color)
+ {
+@@ -1178,12 +1261,10 @@ static void add_bg_preview(struct BGTK_Widget *page, int panel_w, int panel_h)
+ 	preview_fit(max_w, max_h, &amp;pw, &amp;ph);
+ 
+ 	if (cfg.type == BG_IMAGE &amp;&amp; cfg.path[0] &amp;&amp; access(cfg.path, R_OK) == 0) {
+-		preview = bgtk_image(ctx, cfg.path, pw, ph,
+-				     (BGTK_Options){.padding = 0, .margin = 4});
+-		if (preview) {
+-			preview-&gt;w = pw + 8;
+-			preview-&gt;h = ph + 8;
+-		}
++		/* Preview respects cfg.mode (scaled stretch vs tile repeat). */
++		preview = make_image_preview(pw, ph, cfg.path, cfg.mode);
++		if (!preview)
++			preview = make_solid_preview(pw, ph, 0xFF333333);
+ 	} else if (cfg.type == BG_IMAGE) {
+ 		/* Image selected but missing file — dark placeholder. */
+ 		preview = make_solid_preview(pw, ph, 0xFF333333);
+@@ -1255,7 +1336,10 @@ static void rebuild_content(void)
+ 	theme_bg_input = theme_btn_input = theme_btn_text_input = NULL;
+ 	theme_frame_border_input = theme_btn_border_input = NULL;
+ 	theme_input_border_input = theme_frame_color_input = NULL;
+-	theme_focus_input = theme_focus_bg_input = theme_highlight_input = NULL;
++	theme_focus_input = theme_focus_bg_input = theme_input_bg_input = NULL;
++	theme_highlight_input = NULL;
++	theme_margin_input = NULL;
++	theme_padding_input = NULL;
+ 
+ 	/* Free old font cache only when leaving font page */
+ 	if (current_page != 3 &amp;&amp; font_list_cache) {
+@@ -1413,7 +1497,10 @@ static void rebuild_content(void)
+ 		theme_frame_color_input = get_input(page, 6);
+ 		theme_focus_input = get_input(page, 7);
+ 		theme_focus_bg_input = get_input(page, 8);
+-		theme_highlight_input = get_input(page, 9);
++		theme_input_bg_input = get_input(page, 9);
++		theme_highlight_input = get_input(page, 10);
++		theme_margin_input = get_input(page, 11);
++		theme_padding_input = get_input(page, 12);
+ 		struct BGTK_Widget *b = get_button(page, 0);
+ 		if (b) b-&gt;data.button.callback = apply_theme;
+ 		break;
+@@ -1552,6 +1639,25 @@ struct config *settings_get_config(void)
+ 	return &amp;cfg;
+ }
+ 
++#ifdef SETTINGS_TEST_MODE
++/* Test helpers: set image wallpaper + mode and rebuild (exercises preview). */
++void settings_test_set_image_bg(const char *path, ImageMode mode)
++{
++	cfg.type = BG_IMAGE;
++	cfg.mode = mode;
++	if (path) {
++		strncpy(cfg.path, path, MAX_PATH_LEN - 1);
++		cfg.path[MAX_PATH_LEN - 1] = '\0';
++	}
++	rebuild_content();
++}
++
++void settings_test_toggle_bg_mode(void)
++{
++	toggle_bg_mode(NULL);
++}
++#endif
++
+ /* ------------------------------------------------------------------ */
+ /* Real BGCE app main (Linux only)                                     */
+ /* ------------------------------------------------------------------ */
+diff --git a/apps/term_core.c b/apps/term_core.c
+index 6878c9a..6a65c40 100644
+--- a/apps/term_core.c
++++ b/apps/term_core.c
+@@ -40,14 +40,22 @@ static struct Term_Cell default_cell(void)
+ /* Create / destroy                                                   */
+ /* ------------------------------------------------------------------ */
+ 
++#ifndef TERM_SCROLLBACK_LINES
++#define TERM_SCROLLBACK_LINES 2000
++#endif
++
+ struct Term_State *term_create(int cols, int rows)
+ {
+ 	struct Term_State *t = calloc(1, sizeof(*t));
+-	if (!t) return NULL;
++	if (!t)
++		return NULL;
+ 	t-&gt;cols = cols;
+ 	t-&gt;rows = rows;
+ 	t-&gt;cells = calloc((size_t)cols * rows, sizeof(struct Term_Cell));
+-	if (!t-&gt;cells) { free(t); return NULL; }
++	if (!t-&gt;cells) {
++		free(t);
++		return NULL;
++	}
+ 	for (int i = 0; i &lt; cols * rows; i++)
+ 		t-&gt;cells[i] = default_cell();
+ 	t-&gt;cur_fg = 7;
+@@ -55,18 +63,32 @@ struct Term_State *term_create(int cols, int rows)
+ 	t-&gt;scroll_bot = rows - 1;
+ 	t-&gt;pty_fd = -1;
+ 	memcpy(t-&gt;palette, default_palette, sizeof(default_palette));
++	t-&gt;sb_cap = TERM_SCROLLBACK_LINES;
++	t-&gt;sb = calloc((size_t)t-&gt;sb_cap * (size_t)cols, sizeof(struct Term_Cell));
++	if (!t-&gt;sb) {
++		/* Scrollback optional — terminal still works without it. */
++		t-&gt;sb_cap = 0;
++	}
++	t-&gt;sb_len = 0;
++	t-&gt;sb_start = 0;
++	t-&gt;view_off = 0;
+ 	return t;
+ }
+ 
+ void term_destroy(struct Term_State *t)
+ {
+-	if (!t) return;
++	if (!t)
++		return;
+ 	free(t-&gt;cells);
++	free(t-&gt;sb);
+ 	free(t);
+ }
+ 
+ int term_resize(struct Term_State *t, int cols, int rows)
+ {
++	struct Term_Cell *nc, *nsb = NULL;
++	int copy_c, copy_r, r, c, i;
++
+ 	if (!t)
+ 		return -1;
+ 	if (cols &lt; 1)
+@@ -76,14 +98,14 @@ int term_resize(struct Term_State *t, int cols, int rows)
+ 	if (cols == t-&gt;cols &amp;&amp; rows == t-&gt;rows)
+ 		return 0;
+ 
+-	struct Term_Cell *nc = calloc((size_t)cols * (size_t)rows, sizeof(*nc));
++	nc = calloc((size_t)cols * (size_t)rows, sizeof(*nc));
+ 	if (!nc)
+ 		return -1;
+ 
+-	int copy_c = cols &lt; t-&gt;cols ? cols : t-&gt;cols;
+-	int copy_r = rows &lt; t-&gt;rows ? rows : t-&gt;rows;
+-	for (int r = 0; r &lt; rows; r++) {
+-		for (int c = 0; c &lt; cols; c++) {
++	copy_c = cols &lt; t-&gt;cols ? cols : t-&gt;cols;
++	copy_r = rows &lt; t-&gt;rows ? rows : t-&gt;rows;
++	for (r = 0; r &lt; rows; r++) {
++		for (c = 0; c &lt; cols; c++) {
+ 			if (r &lt; copy_r &amp;&amp; c &lt; copy_c)
+ 				nc[r * cols + c] = t-&gt;cells[r * t-&gt;cols + c];
+ 			else
+@@ -92,6 +114,37 @@ int term_resize(struct Term_State *t, int cols, int rows)
+ 	}
+ 	free(t-&gt;cells);
+ 	t-&gt;cells = nc;
++
++	/* Rebuild scrollback ring for the new column width. */
++	if (t-&gt;sb_cap &gt; 0) {
++		nsb = calloc((size_t)t-&gt;sb_cap * (size_t)cols, sizeof(*nsb));
++		if (nsb) {
++			int old_cols = t-&gt;cols;
++			for (i = 0; i &lt; t-&gt;sb_len; i++) {
++				int src = (t-&gt;sb_start + i) % t-&gt;sb_cap;
++				struct Term_Cell *srow =
++					t-&gt;sb + (size_t)src * (size_t)old_cols;
++				struct Term_Cell *drow =
++					nsb + (size_t)i * (size_t)cols;
++				for (c = 0; c &lt; cols; c++) {
++					if (c &lt; old_cols)
++						drow[c] = srow[c];
++					else
++						drow[c] = default_cell();
++				}
++			}
++			free(t-&gt;sb);
++			t-&gt;sb = nsb;
++			t-&gt;sb_start = 0;
++		} else {
++			free(t-&gt;sb);
++			t-&gt;sb = NULL;
++			t-&gt;sb_cap = 0;
++			t-&gt;sb_len = 0;
++			t-&gt;sb_start = 0;
++		}
++	}
++
+ 	t-&gt;cols = cols;
+ 	t-&gt;rows = rows;
+ 	if (t-&gt;cur_col &gt;= cols)
+@@ -100,6 +153,8 @@ int term_resize(struct Term_State *t, int cols, int rows)
+ 		t-&gt;cur_row = rows - 1;
+ 	t-&gt;scroll_top = 0;
+ 	t-&gt;scroll_bot = rows - 1;
++	if (t-&gt;view_off &gt; t-&gt;sb_len)
++		t-&gt;view_off = t-&gt;sb_len;
+ 	return 0;
+ }
+ 
+@@ -112,6 +167,86 @@ static struct Term_Cell *cell_at(struct Term_State *t, int col, int row)
+ 	return &amp;t-&gt;cells[row * t-&gt;cols + col];
+ }
+ 
++/* Push a full screen row into scrollback (oldest may drop). */
++static void sb_push_row(struct Term_State *t, const struct Term_Cell *row)
++{
++	int dst;
++
++	if (!t || !t-&gt;sb || t-&gt;sb_cap &lt; 1 || !row)
++		return;
++	if (t-&gt;sb_len &lt; t-&gt;sb_cap) {
++		dst = (t-&gt;sb_start + t-&gt;sb_len) % t-&gt;sb_cap;
++		memcpy(t-&gt;sb + (size_t)dst * (size_t)t-&gt;cols, row,
++		       (size_t)t-&gt;cols * sizeof(struct Term_Cell));
++		t-&gt;sb_len++;
++	} else {
++		/* Overwrite oldest; advance start. */
++		dst = t-&gt;sb_start;
++		memcpy(t-&gt;sb + (size_t)dst * (size_t)t-&gt;cols, row,
++		       (size_t)t-&gt;cols * sizeof(struct Term_Cell));
++		t-&gt;sb_start = (t-&gt;sb_start + 1) % t-&gt;sb_cap;
++	}
++	/* Keep view pinned to bottom while live output scrolls. */
++	if (t-&gt;view_off == 0)
++		return;
++	/* If user is scrolled up, stay relative to history (optional stick).
++	 * Prefer jump-to-bottom on new output so shell output is visible. */
++	t-&gt;view_off = 0;
++}
++
++/* Cell for viewport row r (0..rows-1) given view_off into scrollback. */
++static struct Term_Cell get_visible_cell(struct Term_State *t, int col, int row)
++{
++	int first_abs, abs, hist_i;
++
++	if (!t || col &lt; 0 || col &gt;= t-&gt;cols || row &lt; 0 || row &gt;= t-&gt;rows)
++		return default_cell();
++	/* Absolute: history [0..sb_len), live screen [sb_len..sb_len+rows). */
++	first_abs = t-&gt;sb_len - t-&gt;view_off;
++	abs = first_abs + row;
++	if (abs &lt; 0)
++		return default_cell();
++	if (abs &lt; t-&gt;sb_len) {
++		if (!t-&gt;sb || t-&gt;sb_cap &lt; 1)
++			return default_cell();
++		hist_i = (t-&gt;sb_start + abs) % t-&gt;sb_cap;
++		return t-&gt;sb[(size_t)hist_i * (size_t)t-&gt;cols + (size_t)col];
++	}
++	abs -= t-&gt;sb_len;
++	if (abs &gt;= 0 &amp;&amp; abs &lt; t-&gt;rows)
++		return *cell_at(t, col, abs);
++	return default_cell();
++}
++
++int term_view_scroll(struct Term_State *t, int delta_lines)
++{
++	int old, max_off;
++
++	if (!t || delta_lines == 0)
++		return 0;
++	max_off = t-&gt;sb_len;
++	if (max_off &lt; 0)
++		max_off = 0;
++	old = t-&gt;view_off;
++	t-&gt;view_off += delta_lines;
++	if (t-&gt;view_off &lt; 0)
++		t-&gt;view_off = 0;
++	if (t-&gt;view_off &gt; max_off)
++		t-&gt;view_off = max_off;
++	return t-&gt;view_off != old;
++}
++
++int term_view_to_bottom(struct Term_State *t)
++{
++	int old;
++
++	if (!t)
++		return 0;
++	old = t-&gt;view_off;
++	t-&gt;view_off = 0;
++	return old != 0;
++}
++
+ static void scroll_up(struct Term_State *t)
+ {
+ 	int top = t-&gt;scroll_top, bot = t-&gt;scroll_bot;
+@@ -123,6 +258,9 @@ static void scroll_up(struct Term_State *t)
+ 		bot = t-&gt;rows - 1;
+ 	if (top &gt;= bot)
+ 		return;
++	/* Full primary screen scroll: line leaving the top goes to history. */
++	if (top == 0 &amp;&amp; bot == t-&gt;rows - 1)
++		sb_push_row(t, &amp;t-&gt;cells[0]);
+ 	/* Move rows top+1..bot → top..bot-1; clear bot. Overlap-safe. */
+ 	row_bytes = (size_t)(bot - top) * (size_t)t-&gt;cols * sizeof(struct Term_Cell);
+ 	memmove(&amp;t-&gt;cells[top * t-&gt;cols], &amp;t-&gt;cells[(top + 1) * t-&gt;cols],
+@@ -467,8 +605,8 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
+ 	/* background (full cell rects — also clears any prior glyph bleed) */
+ 	for (int r = 0; r &lt; t-&gt;rows; r++) {
+ 		for (int c = 0; c &lt; t-&gt;cols; c++) {
+-			struct Term_Cell *cl = cell_at(t, c, r);
+-			int bi = cl-&gt;bg;
++			struct Term_Cell cl = get_visible_cell(t, c, r);
++			int bi = cl.bg;
+ 			uint32_t bg;
+ 			int x0, y0;
+ 
+@@ -500,7 +638,7 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
+ 	 * overwrite neighbours (looks like "mumbled" text under vi j/k). */
+ 	for (int r = 0; r &lt; t-&gt;rows; r++) {
+ 		for (int c = 0; c &lt; t-&gt;cols; c++) {
+-			struct Term_Cell *cl = cell_at(t, c, r);
++			struct Term_Cell cl = get_visible_cell(t, c, r);
+ 			int fi;
+ 			uint32_t fg;
+ 			FT_UInt gidx;
+@@ -509,11 +647,11 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
+ 			int cell_x0, cell_y0, cell_x1, cell_y1;
+ 			unsigned char uch;
+ 
+-			uch = (unsigned char)cl-&gt;ch;
++			uch = (unsigned char)cl.ch;
+ 			if (uch &lt;= (unsigned char)' ')
+ 				continue;
+-			fi = cl-&gt;fg;
+-			if (cl-&gt;bold &amp;&amp; fi &lt; 8)
++			fi = cl.fg;
++			if (cl.bold &amp;&amp; fi &lt; 8)
+ 				fi += 8;
+ 			if (fi &lt; 0 || fi &gt; 15)
+ 				fi = 7;
+@@ -573,8 +711,8 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
+ 		}
+ 	}
+ 
+-	/* cursor (thin bar, clipped to cell) */
+-	if (t-&gt;cur_row &gt;= 0 &amp;&amp; t-&gt;cur_row &lt; t-&gt;rows &amp;&amp;
++	/* cursor only on live bottom view (not while scrolled into history) */
++	if (t-&gt;view_off == 0 &amp;&amp; t-&gt;cur_row &gt;= 0 &amp;&amp; t-&gt;cur_row &lt; t-&gt;rows &amp;&amp;
+ 	    t-&gt;cur_col &gt;= 0 &amp;&amp; t-&gt;cur_col &lt; t-&gt;cols) {
+ 		int cx = t-&gt;cur_col * cw, cy = t-&gt;cur_row * ch;
+ 		int bar = cw &gt; 2 ? 2 : 1;
+diff --git a/apps/terminal.c b/apps/terminal.c
+index 8063e14..a2c17c1 100644
+--- a/apps/terminal.c
++++ b/apps/terminal.c
+@@ -339,7 +339,23 @@ int main(void)
+ 				int mods;
+ 				char out[8];
+ 				int n;
+-
++				int need_draw = 0;
++
++				/* Mouse wheel → scrollback view (not PTY). */
++				if (ev-&gt;type == EV_REL &amp;&amp;
++				    ev-&gt;code == REL_WHEEL) {
++					/* value&gt;0 = wheel up = older history */
++					int lines = ev-&gt;value * 3;
++					if (lines == 0)
++						break;
++					if (term_view_scroll(ts, lines)) {
++						term_render(ts, ctx,
++							    img-&gt;data.image.pixels,
++							    inner_w, inner_h);
++						bgtk_draw_widgets(ctx);
++					}
++					break;
++				}
+ 				if (ev-&gt;type != EV_KEY)
+ 					break;
+ 				/* Ignore input while unfocused (stale mod
+@@ -364,7 +380,46 @@ int main(void)
+ 				 * on release. */
+ 				if (ev-&gt;value != 1 &amp;&amp; ev-&gt;value != 2)
+ 					break;
++
++				/* Shift+PageUp/PageDown or PageUp/Down:
++				 * scroll history without sending to the shell. */
+ 				mods = bgtk_mods_from_ctx(ctx);
++				if (ev-&gt;code == KEY_PAGEUP ||
++				    ev-&gt;code == KEY_PAGEDOWN) {
++					int delta = (ev-&gt;code == KEY_PAGEUP)
++							    ? ts-&gt;rows
++							    : -ts-&gt;rows;
++					if (delta == 0)
++						delta = (ev-&gt;code == KEY_PAGEUP)
++								? 1
++								: -1;
++					if (term_view_scroll(ts, delta)) {
++						term_render(ts, ctx,
++							    img-&gt;data.image.pixels,
++							    inner_w, inner_h);
++						bgtk_draw_widgets(ctx);
++					}
++					break;
++				}
++				/* Shift+Up/Down: line-wise history scroll. */
++				if ((mods &amp; BGTK_MOD_SHIFT) &amp;&amp;
++				    (ev-&gt;code == KEY_UP ||
++				     ev-&gt;code == KEY_DOWN)) {
++					int delta =
++						(ev-&gt;code == KEY_UP) ? 1 : -1;
++					if (term_view_scroll(ts, delta)) {
++						term_render(ts, ctx,
++							    img-&gt;data.image.pixels,
++							    inner_w, inner_h);
++						bgtk_draw_widgets(ctx);
++					}
++					break;
++				}
++
++				/* Typing returns to live bottom, then to PTY. */
++				if (term_view_to_bottom(ts))
++					need_draw = 1;
++
+ 				n = bgtk_key_to_bytes(ev-&gt;code, mods,
+ 						      BGTK_KEY_TTY, out,
+ 						      sizeof(out));
+@@ -390,6 +445,12 @@ int main(void)
+ 				 * sticky mod so the next j/k is a plain letter. */
+ 				if (ev-&gt;code == KEY_ESC)
+ 					bgtk_clear_modifiers(ctx);
++				if (need_draw) {
++					term_render(ts, ctx,
++						    img-&gt;data.image.pixels,
++						    inner_w, inner_h);
++					bgtk_draw_widgets(ctx);
++				}
+ 				break;
+ 			}
+ 			case MSG_FOCUS_CHANGE:
+diff --git a/apps/terminal.h b/apps/terminal.h
+index e5a6071..3efe431 100644
+--- a/apps/terminal.h
++++ b/apps/terminal.h
+@@ -30,7 +30,7 @@ struct Term_State {
+ 	/* Current SGR attributes */
+ 	int cur_fg, cur_bg, cur_bold;
+ 
+-	/* Scroll region */
++	/* Scroll region (DECSTBM); full-screen scrolls feed scrollback */
+ 	int scroll_top, scroll_bot;
+ 
+ 	/* Escape sequence parser state */
+@@ -47,6 +47,14 @@ struct Term_State {
+ 
+ 	/* 16-colour palette */
+ 	uint32_t palette[16];
++
++	/* Scrollback: ring of full rows that left the top of the screen.
++	 * view_off: 0 = live bottom; higher = scrolled up into history. */
++	struct Term_Cell *sb; /* sb_cap * cols cells */
++	int sb_cap;	      /* max history rows */
++	int sb_len;	      /* 0..sb_cap */
++	int sb_start;	      /* ring index of oldest row */
++	int view_off;	      /* lines above live bottom (0..sb_len) */
+ };
+ 
+ /* Create / destroy terminal state */
+@@ -58,13 +66,19 @@ int term_resize(struct Term_State *t, int cols, int rows);
+ /* Feed raw bytes (from PTY or test harness) through the ANSI parser */
+ void term_feed(struct Term_State *t, const char *data, int len);
+ 
+-/* Render the cell grid into a pixel buffer */
++/* Render the cell grid into a pixel buffer (respects view_off scrollback). */
+ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
+ 		 uint32_t *pixels, int px_w, int px_h);
+ 
+ /* Compute cell_w / cell_h from the context's font */
+ void term_measure_cell(struct Term_State *t, struct BGTK_Context *ctx);
+ 
++/* Scroll the view into history: positive delta = up (older), negative = down.
++ * Returns 1 if view_off changed. */
++int term_view_scroll(struct Term_State *t, int delta_lines);
++/* Jump to live bottom (view_off = 0). Returns 1 if changed. */
++int term_view_to_bottom(struct Term_State *t);
++
+ /* Translate a linux keycode to bytes suitable for writing to a PTY.
+  * Returns number of bytes written to out (0 if unknown key). */
+ int term_keycode_to_bytes(int code, int shift, int ctrl,
+diff --git a/bgtk.h b/bgtk.h
+index c0759a8..6b11d96 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -332,6 +332,8 @@ struct BGTK_Widget {
+ 			void *cb_data;  // user data forwarded to callback
+ 			int pressed;  // non-zero while mouse button is held down on this widget
+ 			uint32_t bg_override;  // 0 = use theme, non-zero = custom bg color
++			/* -1 = theme.button_border_size; &gt;=0 forces this border width. */
++			int border_w;
+ 		} button;
+ 		struct {
+ 			char* text;
+diff --git a/compat/linux/input.h b/compat/linux/input.h
+index 5ee180a..b38adff 100644
+--- a/compat/linux/input.h
++++ b/compat/linux/input.h
+@@ -17,6 +17,8 @@
+ #define EV_ABS 3
+ 
+ /* Relative axes */
++#define REL_X     0
++#define REL_Y     1
+ #define REL_WHEEL 8
+ 
+ /* Buttons (normally BTN_LEFT etc.) */
+diff --git a/config.c b/config.c
+index 6fa2f50..545723b 100644
+--- a/config.c
++++ b/config.c
+@@ -322,20 +322,26 @@ static void pick_default_font_family(char *out, size_t outlen, int family)
+ void init_config_defaults(struct config *config)
+ {
+ 	config-&gt;type = BG_COLOR;
+-	/* Default "Paper" theme: warm light surface, soft chrome, readable ink. */
+-	config-&gt;color = 0xFFF4F1EA;
+-
+-	config-&gt;theme.background = 0xFFF4F1EA;
+-	config-&gt;theme.button = 0xFFE8E2D6;
+-	config-&gt;theme.button_text = 0xFF1C1917;
+-	config-&gt;theme.button_border_size = 1;
+-	config-&gt;theme.input_border_size = 1;
+-	config-&gt;theme.frame_border_size = 2;
+-	config-&gt;theme.frame_border_color = 0xFFC4B8A8;
+-	config-&gt;theme.focus = 0xFFB45309;
+-	config-&gt;theme.focus_bg = 0xFFFFF7ED;
+-	config-&gt;theme.highlight = 0xFF78716C;
++	/*
++	 * Default "Goldie" (sowm-inspired): mustard desktop, black floating
++	 * cards, thick warm borders, sand accent for selection/focus.
++	 */
++	config-&gt;color = 0xFFF5C078;
++
++	config-&gt;theme.background = 0xFF0A0A0A;
++	config-&gt;theme.button = 0xFF1C1814;
++	config-&gt;theme.button_text = 0xFFF5E6D3;
++	config-&gt;theme.button_border_size = 3;
++	config-&gt;theme.input_border_size = 3;
++	config-&gt;theme.frame_border_size = 6;
++	config-&gt;theme.frame_border_color = 0xFFE0A060;
++	config-&gt;theme.focus = 0xFFE0A060;
++	config-&gt;theme.focus_bg = 0xFF2A2018;
++	config-&gt;theme.input_bg = 0xFF1C1814;
++	config-&gt;theme.highlight = 0xFFD4B8A0;
+ 	config-&gt;theme.text_baseline_offset = 0;
++	config-&gt;theme.margin = 6;
++	config-&gt;theme.padding = 8;
+ 
+ 	/* Font defaults under [font]: sans, mono, serif, size. */
+ 	config-&gt;font_sans_path[0] = '\0';
+@@ -343,9 +349,9 @@ void init_config_defaults(struct config *config)
+ 	config-&gt;font_serif_path[0] = '\0';
+ 	config-&gt;font_size = 14;
+ 
+-	// Background image fields (safe defaults)
++	// Background image fields (safe defaults; mode matches BGCE default)
+ 	config-&gt;path[0] = '\0';
+-	config-&gt;mode = IMAGE_TILED;
++	config-&gt;mode = IMAGE_SCALED;
+ 
+ 	pick_default_font_family(config-&gt;font_sans_path, MAX_PATH_LEN,
+ 				 FONT_FAMILY_SANS);
+@@ -420,10 +426,14 @@ int write_config(const struct config *config)
+ 	fprintf(f, "focus = %s\n", c);
+ 	format_hex_color(config-&gt;theme.focus_bg, c, sizeof(c));
+ 	fprintf(f, "focus_bg = %s\n", c);
++	format_hex_color(config-&gt;theme.input_bg, c, sizeof(c));
++	fprintf(f, "input_bg = %s\n", c);
+ 	format_hex_color(config-&gt;theme.highlight, c, sizeof(c));
+ 	fprintf(f, "highlight = %s\n", c);
+ 	fprintf(f, "text_baseline_offset = %d\n",
+ 		config-&gt;theme.text_baseline_offset);
++	fprintf(f, "margin = %d\n", config-&gt;theme.margin);
++	fprintf(f, "padding = %d\n", config-&gt;theme.padding);
+ 
+ 	fprintf(f, "\n[font]\n");
+ 	if (config-&gt;font_sans_path[0])
+@@ -496,12 +506,11 @@ int parse_config(struct config *config)
+ 			} else if (strcmp(key, "color") == 0 &amp;&amp;
+ 				   config-&gt;type == BG_COLOR) {
+ 				config-&gt;color = parse_hex_color(value);
+-			} else if (strcmp(key, "path") == 0 &amp;&amp;
+-				   config-&gt;type == BG_IMAGE) {
++			} else if (strcmp(key, "path") == 0) {
++				/* Accept path even if type= comes later (BGCE order). */
+ 				strncpy(config-&gt;path, value, MAX_PATH_LEN - 1);
+ 				config-&gt;path[MAX_PATH_LEN - 1] = '\0';
+-			} else if (strcmp(key, "mode") == 0 &amp;&amp;
+-				   config-&gt;type == BG_IMAGE) {
++			} else if (strcmp(key, "mode") == 0) {
+ 				if (strcmp(value, "tiled") == 0) {
+ 					config-&gt;mode = IMAGE_TILED;
+ 				} else if (strcmp(value, "scaled") == 0) {
+@@ -530,10 +539,16 @@ int parse_config(struct config *config)
+ 				config-&gt;theme.focus = parse_hex_color(value);
+ 			} else if (strcmp(key, "focus_bg") == 0) {
+ 				config-&gt;theme.focus_bg = parse_hex_color(value);
++			} else if (strcmp(key, "input_bg") == 0) {
++				config-&gt;theme.input_bg = parse_hex_color(value);
+ 			} else if (strcmp(key, "highlight") == 0) {
+ 				config-&gt;theme.highlight = parse_hex_color(value);
+ 			} else if (strcmp(key, "text_baseline_offset") == 0) {
+ 				config-&gt;theme.text_baseline_offset = atoi(value);
++			} else if (strcmp(key, "margin") == 0) {
++				config-&gt;theme.margin = atoi(value);
++			} else if (strcmp(key, "padding") == 0) {
++				config-&gt;theme.padding = atoi(value);
+ 			}
+ 		} else if (strcmp(current_section, "font") == 0) {
+ 			if (strcmp(key, "sans") == 0) {
+diff --git a/config.h b/config.h
+index a212bb7..c663d29 100644
+--- a/config.h
++++ b/config.h
+@@ -34,10 +34,15 @@ typedef struct {
+ 	uint32_t focus;
+ 	/* Focused text-input field fill. */
+ 	uint32_t focus_bg;
+-	/* Accent: headers, links, selected chrome (replaces hard-coded fuchsia/blue). */
++	/* Unfocused text-input field fill. */
++	uint32_t input_bg;
++	/* Accent: headers, links, selected list rows. */
+ 	uint32_t highlight;
+ 	/* Global FreeType baseline tweak (px; added after per-widget baseline_offset). */
+ 	int text_baseline_offset;
++	/* Default external / internal spacing apps should use for chrome. */
++	int margin;
++	int padding;
+ } BGTK_Theme;
+ 
+ // Config structure
+diff --git a/drawing.c b/drawing.c
+index 79b3571..c241982 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -67,15 +67,29 @@ void clear_buffer(struct BGTK_Context *ctx)
+ void draw_rect(struct BGTK_Context *ctx, uint32_t *pixels, int x, int y, int w,
+ 	       int h, uint32_t color)
+ {
+-	// Basic clipping and drawing
+ 	int x1 = x;
+ 	int y1 = y;
+ 	int x2 = x + w;
+ 	int y2 = y + h;
++	int stride;
++	uint32_t c;
+ 
+-	// TODO: stride can be of a tmp buffer != from ctx
+-	int stride = ctx-&gt;width;
+-	uint32_t c = (0xFFu &lt;&lt; 24) | (color &amp; 0x00FFFFFF);  // force full alpha for mock/PNG
++	if (!ctx || !pixels || w &lt;= 0 || h &lt;= 0)
++		return;
++	/* Clip to buffer — unclipped writes into BGCE mmap shm → SIGBUS. */
++	if (x1 &lt; 0)
++		x1 = 0;
++	if (y1 &lt; 0)
++		y1 = 0;
++	if (x2 &gt; ctx-&gt;width)
++		x2 = ctx-&gt;width;
++	if (y2 &gt; ctx-&gt;height)
++		y2 = ctx-&gt;height;
++	if (x1 &gt;= x2 || y1 &gt;= y2)
++		return;
++
++	stride = ctx-&gt;width;
++	c = (0xFFu &lt;&lt; 24) | (color &amp; 0x00FFFFFF);
+ 	for (int j = y1; j &lt; y2; j++) {
+ 		for (int i = x1; i &lt; x2; i++) {
+ 			pixels[j * stride + i] = c;
+@@ -196,21 +210,24 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 		}
+ 		break;
+ 
+-	case BGTK_WIDGET_SCROLLABLE:
++	case BGTK_WIDGET_SCROLLABLE: {
++		/* Must match draw_scrollable layout exactly:
++		 *   child.y = current_y + margin
++		 *   current_y += h + 2*margin
++		 * Underestimating height caused OOB writes into the
++		 * offscreen buffer (heap corruption / SIGBUS on shm). */
++		int cy = 0;
+ 		w-&gt;data.scrollable.content_height = 0;
+ 		for (int i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
+ 			struct BGTK_Widget *child = w-&gt;data.scrollable.items[i];
++			if (!child)
++				continue;
+ 			calculate_widget_size(ctx, child);
+-			w-&gt;data.scrollable.content_height +=
+-			    child-&gt;h + 2 * w-&gt;margin;
+-		}
+-
+-		// Subtract the last margin (no margin after the last
+-		// widget)
+-		if (w-&gt;data.scrollable.widget_count &gt; 0) {
+-			w-&gt;data.scrollable.content_height -= 2 * w-&gt;margin;
++			cy += child-&gt;h + 2 * w-&gt;margin;
+ 		}
++		w-&gt;data.scrollable.content_height = cy;
+ 		break;
++	}
+ 	case BGTK_WIDGET_LIST:
+ 		w-&gt;data.list_widget.content_width = 0;
+ 		w-&gt;data.list_widget.content_height = 0;
+@@ -260,6 +277,13 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 		// the constructor (bgtk_text_input). Do not resize
+ 		// based on content.
+ 		break;
++	case BGTK_WIDGET_FRAME:
++		/* Must recurse: root is usually a frame; without this,
++		 * nested scrollables never get content_height and cannot
++		 * scroll (and their offscreen buffer is sized wrong). */
++		if (w-&gt;data.frame.child)
++			calculate_widget_size(ctx, w-&gt;data.frame.child);
++		break;
+ 	default:
+ 		break;
+ 	}
+@@ -535,14 +559,25 @@ static void draw_button(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
+ 		  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin, bg);
+ 
+-	// Border
+-	int bw = ctx-&gt;theme.button_border_size;
++	/* Border: per-button override (-1 = theme). */
++	int bw = w-&gt;data.button.border_w &gt;= 0
++			 ? w-&gt;data.button.border_w
++			 : (int)ctx-&gt;theme.button_border_size;
++	if (bw &lt; 0)
++		bw = 0;
+ 
+-	uint32_t border = ctx-&gt;theme.button_text;
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, w-&gt;w - 2 * w-&gt;margin, bw, border);	// Top
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;h - bw - w-&gt;margin, w-&gt;w - 2 * w-&gt;margin, bw, border);	// Bottom
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, bw, w-&gt;h - 2 * w-&gt;margin, border);	// Left
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - bw - w-&gt;margin, w-&gt;y + w-&gt;margin, bw, w-&gt;h - 2 * w-&gt;margin, border);	// Right
++	if (bw &gt; 0) {
++		uint32_t border = ctx-&gt;theme.button_text;
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
++			  w-&gt;w - 2 * w-&gt;margin, bw, border);
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin,
++			  w-&gt;y + w-&gt;h - bw - w-&gt;margin, w-&gt;w - 2 * w-&gt;margin, bw,
++			  border);
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, bw,
++			  w-&gt;h - 2 * w-&gt;margin, border);
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - bw - w-&gt;margin,
++			  w-&gt;y + w-&gt;margin, bw, w-&gt;h - 2 * w-&gt;margin, border);
++	}
+ 
+ 	if (w-&gt;data.button.label) {
+ 		int off = w-&gt;data.button.pressed ? 1 : 0;
+@@ -587,50 +622,105 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ {
+ 	(void)pixels;
+ 	int content_height = w-&gt;data.scrollable.content_height;
+-	if (w-&gt;h &gt; content_height) {
++	int current_y = 0;
++	int i;
++	size_t need;
++	struct BGTK_Context tmp_ctx;
++	uint32_t *buff;
++	uint32_t *tmp;
++	int dst_x0, dst_y0, copy_w, rows;
++
++	if (w-&gt;w &lt; 1 || w-&gt;h &lt; 1)
++		return;
++	if (content_height &lt; w-&gt;h)
+ 		content_height = w-&gt;h;
+-	}
++	/* Cap insane heights so (int)pixel count cannot wrap. */
++	if (content_height &gt; 100000)
++		content_height = 100000;
+ 
++	/* Reallocate offscreen buffer when page content or width changes. */
++	need = (size_t)w-&gt;w * (size_t)content_height;
++	if (need == 0)
++		return;
++	if (w-&gt;data.scrollable.tmp &amp;&amp;
++	    (size_t)w-&gt;data.scrollable.widget_capacity != need) {
++		free(w-&gt;data.scrollable.tmp);
++		w-&gt;data.scrollable.tmp = NULL;
++		w-&gt;data.scrollable.widget_capacity = 0;
++	}
+ 	if (!w-&gt;data.scrollable.tmp) {
+-		w-&gt;data.scrollable.tmp =
+-		    calloc(w-&gt;w * content_height, sizeof(uint32_t));
++		w-&gt;data.scrollable.tmp = calloc(need, sizeof(uint32_t));
+ 		if (!w-&gt;data.scrollable.tmp) {
+ 			fprintf(stderr,
+-				"Failed to allocate off-screen buffer\n");
++				"Failed to allocate off-screen buffer (%dx%d)\n",
++				w-&gt;w, content_height);
+ 			return;
+ 		}
++		/* Pixel count (fits: w*h capped above). */
++		w-&gt;data.scrollable.widget_capacity = (int)need;
+ 	}
+-	// Draw into temp buffer with correct stride.
+-	struct BGTK_Context tmp_ctx = *ctx;
++
++	tmp_ctx = *ctx;
+ 	tmp_ctx.width = w-&gt;w;
+ 	tmp_ctx.height = content_height;
++	tmp_ctx.shm_buffer = w-&gt;data.scrollable.tmp;
+ 
+ 	draw_rect(&amp;tmp_ctx, w-&gt;data.scrollable.tmp, 0, 0, w-&gt;w, content_height,
+ 		  ctx-&gt;theme.background);
+ 
+-	int current_y = 0;
+-	for (int i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
++	current_y = 0;
++	for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
+ 		struct BGTK_Widget *child = w-&gt;data.scrollable.items[i];
++		int bottom;
+ 
++		if (!child)
++			continue;
+ 		child-&gt;x = w-&gt;margin + w-&gt;padding;
+ 		if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+ 			child-&gt;x =
+ 			    w-&gt;margin + (w-&gt;w - 2 * w-&gt;margin - child-&gt;w) / 2;
+ 		}
+ 		child-&gt;y = current_y + w-&gt;margin;
+-
+-		draw_widget(&amp;tmp_ctx, child, w-&gt;data.scrollable.tmp);
++		bottom = child-&gt;y + child-&gt;h;
++		/* Skip draw if entirely past buffer (defensive). */
++		if (child-&gt;y &lt; content_height &amp;&amp; bottom &gt; 0)
++			draw_widget(&amp;tmp_ctx, child, w-&gt;data.scrollable.tmp);
+ 		current_y += child-&gt;h + 2 * w-&gt;margin;
+ 	}
+ 
+-	uint32_t *buff = ctx-&gt;shm_buffer;
+-	uint32_t *tmp = w-&gt;data.scrollable.tmp;
+-	for (int row = 0; row &lt; w-&gt;h; row++) {
+-		int src_row = w-&gt;data.scrollable.scroll_y + row;
+-		if (src_row &lt; content_height) {
+-			memcpy(&amp;buff[(w-&gt;y + row) * ctx-&gt;width + w-&gt;x],
+-			       &amp;tmp[src_row * w-&gt;w], w-&gt;w * 4);
+-		}
++	/* Blit visible rows into the window buffer — clip to shm bounds.
++	 * Writing past mmap'd BGCE shm is a common SIGBUS. */
++	buff = (uint32_t *)ctx-&gt;shm_buffer;
++	tmp = w-&gt;data.scrollable.tmp;
++	if (!buff || !tmp)
++		return;
++	dst_x0 = w-&gt;x;
++	dst_y0 = w-&gt;y;
++	copy_w = w-&gt;w;
++	if (dst_x0 &lt; 0) {
++		copy_w += dst_x0;
++		dst_x0 = 0;
++	}
++	if (dst_x0 + copy_w &gt; ctx-&gt;width)
++		copy_w = ctx-&gt;width - dst_x0;
++	if (copy_w &lt;= 0)
++		return;
++	rows = w-&gt;h;
++	if (dst_y0 &lt; 0) {
++		rows += dst_y0;
++		dst_y0 = 0;
++	}
++	if (dst_y0 + rows &gt; ctx-&gt;height)
++		rows = ctx-&gt;height - dst_y0;
++	for (i = 0; i &lt; rows; i++) {
++		int src_row = w-&gt;data.scrollable.scroll_y + (i + (dst_y0 - w-&gt;y));
++		int src_x = (dst_x0 &gt; w-&gt;x) ? (dst_x0 - w-&gt;x) : 0;
++
++		if (src_row &lt; 0 || src_row &gt;= content_height)
++			continue;
++		memcpy(&amp;buff[(dst_y0 + i) * ctx-&gt;width + dst_x0],
++		       &amp;tmp[src_row * w-&gt;w + src_x],
++		       (size_t)copy_w * sizeof(uint32_t));
+ 	}
+ }
+ 
+@@ -735,7 +825,9 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	uint32_t focus = ctx-&gt;theme.focus ? ctx-&gt;theme.focus : 0xFF0066FF;
+ 	uint32_t focus_bg =
+ 		ctx-&gt;theme.focus_bg ? ctx-&gt;theme.focus_bg : 0xFFE8F2FF;
+-	uint32_t field_bg = focused ? focus_bg : 0xFFFFFFFF;
++	uint32_t input_bg =
++		ctx-&gt;theme.input_bg ? ctx-&gt;theme.input_bg : 0xFFFFFFFF;
++	uint32_t field_bg = focused ? focus_bg : input_bg;
+ 	uint32_t border = focused ? focus : 0xFF888888;
+ 	uint32_t text_color = ctx-&gt;theme.button_text ?
+ 		ctx-&gt;theme.button_text : 0xFF111111;
+diff --git a/test/test_gemini_browser.c b/test/test_gemini_browser.c
+index 64c7950..b8f03ec 100644
+--- a/test/test_gemini_browser.c
++++ b/test/test_gemini_browser.c
+@@ -588,30 +588,22 @@ int main(void)
+ 		return 1;
+ 	}
+ 
+-	int usable_w = width - 20;
+-
+-	/* create button first to know its size, then size the input to make the row (address bar + button) full width */
+-	struct BGTK_Widget *go_label = bgtk_text(ctx, "Go", (BGTK_Options){.padding = 2, .margin = 0});
+-	struct BGTK_Widget *go_btn = bgtk_button(ctx, go_label, NULL, NULL,
+-						 (BGTK_Options){.padding = 4, .margin = 2});
+-	int input_w = usable_w - go_btn-&gt;w - 16;  /* leave room for row padding/margins */
+-	addr_input = bgtk_text_input(ctx, "gemini://geminiprotocol.net/", input_w &gt; 100 ? input_w : 400, 0,
++	int usable_w = width - 16;
++
++	/* Full-width URL bar; Enter navigates. */
++	addr_input = bgtk_text_input(ctx, "gemini://geminiprotocol.net/",
++				     usable_w, 0,
+ 				     (BGTK_Options){.padding = 4, .margin = 2});
+ 	addr_input-&gt;data.text_input.on_enter = demo_addr_on_enter;
+ 
+-	struct BGTK_Widget *addr_items[2] = {addr_input, go_btn};
+-	struct BGTK_Widget *addr_row = bgtk_list(ctx, addr_items, 2,
+-						 (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .padding = 2, .margin = 1});
+-
+-	content_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 2, .margin = 3});
+-	int v_margins = 16;
+-	int reserved = (addr_row ? addr_row-&gt;h : 24) + v_margins;
+-	int scroll_h = height - reserved - 24;
+-	if (scroll_h &lt; 100) scroll_h = 180;
++	content_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 2, .margin = 2});
++	int reserved = (addr_input-&gt;h &gt; 0 ? addr_input-&gt;h : 28) + 16;
++	int scroll_h = height - reserved;
++	if (scroll_h &lt; 80) scroll_h = 80;
+ 	content_scroll-&gt;w = usable_w;
+ 	content_scroll-&gt;h = scroll_h;
+ 
+-	struct BGTK_Widget *main_items[2] = {content_scroll, addr_row};
++	struct BGTK_Widget *main_items[2] = {content_scroll, addr_input};
+ 	struct BGTK_Widget *main_list = bgtk_list(ctx, main_items, 2,
+ 						  (BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .padding = 2, .margin = 2});
+ 
+@@ -625,6 +617,74 @@ int main(void)
+ 	bgtk_draw_widgets(ctx);
+ 	take_screenshot(ctx, "gemini_browser_00_real_capsule.png");
+ 
++	/* Wheel scroll: force a short viewport so content is taller. */
++	{
++		int before, after;
++		struct InputEvent w = {0};
++
++		content_scroll-&gt;h = 180;
++		if (content_scroll-&gt;data.scrollable.tmp) {
++			free(content_scroll-&gt;data.scrollable.tmp);
++			content_scroll-&gt;data.scrollable.tmp = NULL;
++			content_scroll-&gt;data.scrollable.widget_capacity = 0;
++		}
++		bgtk_draw_widgets(ctx);
++		before = content_scroll-&gt;data.scrollable.scroll_y;
++		w.type = EV_REL;
++		w.code = REL_WHEEL;
++		w.value = -3; /* scroll down */
++		w.x = content_scroll-&gt;x + content_scroll-&gt;w / 2;
++		w.y = content_scroll-&gt;y + 40;
++		if (!bgtk_inject_event(ctx, w)) {
++			fprintf(stderr,
++				"test_gemini_browser: wheel not handled "
++				"(content_h=%d view_h=%d)\n",
++				content_scroll-&gt;data.scrollable.content_height,
++				content_scroll-&gt;h);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		after = content_scroll-&gt;data.scrollable.scroll_y;
++		if (after &lt;= before) {
++			fprintf(stderr,
++				"test_gemini_browser: scroll_y %d -&gt; %d "
++				"(content_h=%d)\n",
++				before, after,
++				content_scroll-&gt;data.scrollable.content_height);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Keyboard page-down also scrolls when content is focused. */
++		bgtk_set_focus(ctx, content_scroll);
++		{
++			struct InputEvent k = {0};
++			int y0 = content_scroll-&gt;data.scrollable.scroll_y;
++			k.type = EV_KEY;
++			k.code = KEY_PAGEDOWN;
++			k.value = 1;
++			if (!bgtk_inject_event(ctx, k) ||
++			    content_scroll-&gt;data.scrollable.scroll_y &lt;= y0) {
++				fprintf(stderr,
++					"test_gemini_browser: PageDown scroll "
++					"failed (%d -&gt; %d)\n",
++					y0,
++					content_scroll-&gt;data.scrollable.scroll_y);
++				bgtk_destroy_mock(ctx);
++				return 1;
++			}
++		}
++		take_screenshot(ctx, "gemini_browser_00b_scrolled.png");
++		/* Restore full height for the rest of the suite. */
++		content_scroll-&gt;h = scroll_h;
++		if (content_scroll-&gt;data.scrollable.tmp) {
++			free(content_scroll-&gt;data.scrollable.tmp);
++			content_scroll-&gt;data.scrollable.tmp = NULL;
++			content_scroll-&gt;data.scrollable.widget_capacity = 0;
++		}
++		content_scroll-&gt;data.scrollable.scroll_y = 0;
++		bgtk_draw_widgets(ctx);
++	}
++
+ 	/* Focus the address bar (real UI element) */
+ 	{
+ 		struct InputEvent c = {0};
+diff --git a/test/test_settings.c b/test/test_settings.c
+index e04bada..80cc836 100644
+--- a/test/test_settings.c
++++ b/test/test_settings.c
+@@ -23,6 +23,34 @@ extern void settings_build_ui(struct BGTK_Context *c, struct config *config,
+ 			       int width, int height);
+ extern void settings_layout(void);
+ extern struct config *settings_get_config(void);
++extern void settings_test_set_image_bg(const char *path, ImageMode mode);
++extern void settings_test_toggle_bg_mode(void);
++
++/* 32x32: top-left 16x16 red, rest black — scaled vs tiled look different. */
++static int write_pattern_ppm(const char *path)
++{
++	FILE *f = fopen(path, "wb");
++	int y, x;
++
++	if (!f)
++		return -1;
++	fprintf(f, "P6\n32 32\n255\n");
++	for (y = 0; y &lt; 32; y++) {
++		for (x = 0; x &lt; 32; x++) {
++			unsigned char c[3];
++			if (x &lt; 16 &amp;&amp; y &lt; 16) {
++				c[0] = 0xE5;
++				c[1] = 0x39;
++				c[2] = 0x35;
++			} else {
++				c[0] = c[1] = c[2] = 0x20;
++			}
++			fwrite(c, 1, 3, f);
++		}
++	}
++	fclose(f);
++	return 0;
++}
+ 
+ int main(void)
+ {
+@@ -91,6 +119,98 @@ int main(void)
+ 		take_screenshot(ctx, "settings_00b_bg_apply.png");
+ 	}
+ 
++	/* 00c/00d: Image mode preview — scaled then toggle to tiled. */
++	{
++		const char *pat = "settings_test_wallpaper.ppm";
++		struct config *sc;
++		uint32_t *fb = (uint32_t *)ctx-&gt;shm_buffer;
++		uint32_t p_tl, p_mid;
++		int sx_tl = 220, sy_tl = 160;
++		int sx_mid = 400, sy_mid = 280;
++
++		if (write_pattern_ppm(pat) != 0) {
++			fprintf(stderr, "test_settings: cannot write %s\n", pat);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Default mode must be SCALED (matches BGCE). */
++		sc = settings_get_config();
++		if (!sc || sc-&gt;mode != IMAGE_SCALED) {
++			fprintf(stderr,
++				"test_settings: default mode want SCALED got %d\n",
++				sc ? (int)sc-&gt;mode : -1);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		settings_test_set_image_bg(pat, IMAGE_SCALED);
++		bgtk_draw_widgets(ctx);
++		take_screenshot(ctx, "settings_00c_mode_scaled.png");
++		p_tl = fb[sy_tl * width + sx_tl];
++		p_mid = fb[sy_mid * width + sx_mid];
++		/* Scaled: TL red patch grows; mid of box should still be dark. */
++		if (((p_tl &gt;&gt; 16) &amp; 0xFF) &lt; 0xC0) {
++			fprintf(stderr,
++				"test_settings: scaled preview TL not red (#%06X)\n",
++				(unsigned)(p_tl &amp; 0xFFFFFF));
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Mid of scaled box is often dark (bottom-right of pattern);
++		 * accept either dark or red depending on sample position. */
++		(void)p_mid;
++
++		settings_test_toggle_bg_mode();
++		sc = settings_get_config();
++		if (!sc || sc-&gt;mode != IMAGE_TILED) {
++			fprintf(stderr,
++				"test_settings: after toggle want TILED got %d\n",
++				sc ? (int)sc-&gt;mode : -1);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		bgtk_draw_widgets(ctx);
++		take_screenshot(ctx, "settings_00d_mode_tiled.png");
++		p_mid = fb[sy_mid * width + sx_mid];
++		/* Tiled: mid of large box hits a repeated tile (red or dark).
++		 * Sample a second red-tile location further right/down. */
++		{
++			int found_red = 0, found_dark = 0;
++			int y, x;
++			for (y = 140; y &lt; 360; y += 8) {
++				for (x = 200; x &lt; 620; x += 8) {
++					uint32_t p = fb[y * width + x];
++					unsigned r = (p &gt;&gt; 16) &amp; 0xFF;
++					if (r &gt; 0xC0)
++						found_red = 1;
++					else if (r &lt; 0x50)
++						found_dark = 1;
++				}
++			}
++			if (!found_red || !found_dark) {
++				fprintf(stderr,
++					"test_settings: tiled preview missing "
++					"red/dark tiles (red=%d dark=%d)\n",
++					found_red, found_dark);
++				bgtk_destroy_mock(ctx);
++				return 1;
++			}
++		}
++		/* Toggle again back to scaled. */
++		settings_test_toggle_bg_mode();
++		sc = settings_get_config();
++		if (!sc || sc-&gt;mode != IMAGE_SCALED) {
++			fprintf(stderr,
++				"test_settings: second toggle want SCALED got %d\n",
++				sc ? (int)sc-&gt;mode : -1);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Restore color page for the rest of the suite. */
++		sc-&gt;type = BG_COLOR;
++		sc-&gt;color = 0xFFE53935;
++		settings_layout();
++	}
++
+ 	/* Sidebar buttons are inside a scrollable; their content-space positions
+ 	 * are offset by the scrollable's screen position (~8px) plus internal
+ 	 * padding/margin.  Each button is ~38px tall with ~4px gap.
+diff --git a/test/test_terminal.c b/test/test_terminal.c
+index 583022b..0984cc7 100644
+--- a/test/test_terminal.c
++++ b/test/test_terminal.c
+@@ -187,6 +187,35 @@ int main(void)
+ 	}
+ 	snap(ctx, img, ts, width, height, "term_04_scroll.png");
+ 
++	/* --- Test 5b: scrollback view (mouse-wheel / PageUp equivalent) */
++	{
++		int before_sb = ts-&gt;sb_len;
++		int before_off = ts-&gt;view_off;
++
++		if (before_sb &lt; 1) {
++			fprintf(stderr,
++				"test_terminal: expected scrollback after "
++				"overflow, sb_len=%d\n",
++				before_sb);
++			return 1;
++		}
++		if (!term_view_scroll(ts, 3) || ts-&gt;view_off != 3) {
++			fprintf(stderr,
++				"test_terminal: view_scroll up failed "
++				"off %d-&gt;%d sb=%d\n",
++				before_off, ts-&gt;view_off, ts-&gt;sb_len);
++			return 1;
++		}
++		snap(ctx, img, ts, width, height, "term_04b_scrollback.png");
++		if (!term_view_to_bottom(ts) || ts-&gt;view_off != 0) {
++			fprintf(stderr,
++				"test_terminal: view_to_bottom failed off=%d\n",
++				ts-&gt;view_off);
++			return 1;
++		}
++		snap(ctx, img, ts, width, height, "term_04c_scrollback_bottom.png");
++	}
++
+ 	/* --- Test 6: colour matrix ------------------------------------- */
+ 	term_feed(ts, "\033[2J\033[H", -1);
+ 	for (int fg = 30; fg &lt;= 37; fg++) {
+diff --git a/test/test_theme_gallery.c b/test/test_theme_gallery.c
+index 3669d37..4b13d71 100644
+--- a/test/test_theme_gallery.c
++++ b/test/test_theme_gallery.c
+@@ -94,7 +94,26 @@ int main(void)
+ 	/* Full BGTK_Theme including focus / focus_bg / highlight. */
+ 	static const struct theme_case cases[] = {
+ 		{
+-			.id = "00_paper",
++			.id = "00_goldie",
++			.name = "Goldie (default)",
++			.theme = {
++				.background = 0xFF0A0A0A,
++				.button = 0xFF1C1814,
++				.button_text = 0xFFF5E6D3,
++				.frame_border_color = 0xFFE0A060,
++				.frame_border_size = 6,
++				.button_border_size = 3,
++				.input_border_size = 3,
++				.focus = 0xFFE0A060,
++				.focus_bg = 0xFF2A2018,
++				.input_bg = 0xFF1C1814,
++				.highlight = 0xFFD4B8A0,
++				.margin = 6,
++				.padding = 8,
++			},
++		},
++		{
++			.id = "00b_paper",
+ 			.name = "Paper",
+ 			.theme = {
+ 				.background = 0xFFF4F1EA,
+@@ -107,6 +126,8 @@ int main(void)
+ 				.focus = 0xFFB45309,
+ 				.focus_bg = 0xFFFFF7ED,
+ 				.highlight = 0xFF78716C,
++				.margin = 4,
++				.padding = 4,
+ 			},
+ 		},
+ 		{
+diff --git a/widgets.c b/widgets.c
+index 39fa023..82d6524 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -287,87 +287,109 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 	return 0;
+ }
+ 
++/* Clamp scroll_y into [0, max]; return 1 if value changed. */
++static int scrollable_nudge(struct BGTK_Widget *widget, int delta)
++{
++	int old = widget-&gt;data.scrollable.scroll_y;
++	int max_y = widget-&gt;data.scrollable.content_height - widget-&gt;h;
++
++	if (max_y &lt; 0)
++		max_y = 0;
++	widget-&gt;data.scrollable.scroll_y = old + delta;
++	if (widget-&gt;data.scrollable.scroll_y &lt; 0)
++		widget-&gt;data.scrollable.scroll_y = 0;
++	if (widget-&gt;data.scrollable.scroll_y &gt; max_y)
++		widget-&gt;data.scrollable.scroll_y = max_y;
++	return widget-&gt;data.scrollable.scroll_y != old;
++}
++
+ // Scrollable event handler
+-static int
+-scrollable_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
++static int scrollable_handle_event(struct BGTK_Widget *widget,
++				   struct InputEvent ev)
+ {
+-	// Keyboard events don't have meaningful pointer coordinates.
+-	// Forward them to children without bounds checking.
+-	if (ev.type == EV_KEY &amp;&amp; ev.code &lt; BTN_MISC) {
+-		for (int i = 0; i &lt; widget-&gt;data.scrollable.widget_count; i++) {
+-			struct BGTK_Widget *child =
+-			    widget-&gt;data.scrollable.items[i];
+-			if (child-&gt;handle_event(child, ev)) {
+-				return 1;	// Event was handled by a child
++	int in_bounds =
++	    (ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
++	     ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h));
++
++	/* Keyboard scroll when this widget (or nothing texty) has focus. */
++	if (ev.type == EV_KEY &amp;&amp; (ev.value == 1 || ev.value == 2) &amp;&amp;
++	    ev.code &lt; BTN_MISC) {
++		int step = 24;
++		int page = widget-&gt;h &gt; 40 ? widget-&gt;h - 24 : 40;
++		int max_y = widget-&gt;data.scrollable.content_height - widget-&gt;h;
++		int handled = 0;
++
++		if (max_y &lt; 0)
++			max_y = 0;
++		if (ev.code == KEY_DOWN || ev.code == KEY_J)
++			handled = scrollable_nudge(widget, step);
++		else if (ev.code == KEY_UP || ev.code == KEY_K)
++			handled = scrollable_nudge(widget, -step);
++		else if (ev.code == KEY_PAGEDOWN || ev.code == KEY_SPACE)
++			handled = scrollable_nudge(widget, page);
++		else if (ev.code == KEY_PAGEUP)
++			handled = scrollable_nudge(widget, -page);
++		else if (ev.code == KEY_HOME) {
++			handled = (widget-&gt;data.scrollable.scroll_y != 0);
++			widget-&gt;data.scrollable.scroll_y = 0;
++		} else if (ev.code == KEY_END) {
++			handled = (widget-&gt;data.scrollable.scroll_y != max_y);
++			widget-&gt;data.scrollable.scroll_y = max_y;
++		} else {
++			/* Forward other keys to children (e.g. link activation). */
++			for (int i = 0; i &lt; widget-&gt;data.scrollable.widget_count;
++			     i++) {
++				struct BGTK_Widget *child =
++					widget-&gt;data.scrollable.items[i];
++				if (child-&gt;handle_event &amp;&amp;
++				    child-&gt;handle_event(child, ev))
++					return 1;
+ 			}
++			return 0;
+ 		}
++		/* Caller (main loop / inject) redraws — no double-draw here. */
++		return handled ? 1 : 0;
+ 	}
+-	// First check if the event is within the scrollable's bounds
+-	if (!(ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+-	      ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h))) {
+-		return 0;	// Event not in this widget
+-	}
+-	// Pass event to child widget if it exists
+-	// Events are absolute screen coordinates, while children in the
+-	// scrollable are positioned in scrollable CONTENT coordinates.
+-	// Transform the event into content-space before forwarding.
+-	struct InputEvent cev = ev;
+-	cev.x = ev.x - widget-&gt;x;
+-	cev.y = ev.y - widget-&gt;y + widget-&gt;data.scrollable.scroll_y;
+-
+-	for (int i = 0; i &lt; widget-&gt;data.scrollable.widget_count; i++) {
+-		struct BGTK_Widget *child = widget-&gt;data.scrollable.items[i];
+-
+-		if (!(cev.x &gt;= child-&gt;x &amp;&amp; cev.x &lt; child-&gt;x + child-&gt;w &amp;&amp;
+-		      cev.y &gt;= child-&gt;y &amp;&amp; cev.y &lt; child-&gt;y + child-&gt;h)) {
+-			continue;
+-		}
+ 
+-		if (child-&gt;handle_event(child, cev)) {
+-			return 1;	// Event was handled by a child
+-		}
+-		// Coordinates matched this child, but it didn't handle the
+-		// event. The scrollable should now try to handle it.
+-		break;
++	/* Wheel: allow if pointer is over us (BGCE attaches cursor x,y). */
++	if (ev.type == EV_REL &amp;&amp; ev.code == REL_WHEEL) {
++		if (!in_bounds)
++			return 0;
++		/* value &gt; 0 = scroll up = content moves down (smaller scroll_y) */
++		if (!scrollable_nudge(widget, -(ev.value * 32)))
++			return 0;
++		return 1;
+ 	}
+ 
+-	// Handle mouse wheel for scrolling
+-	// (wheel events come in as EV_REL / REL_WHEEL)
+-	if (ev.type == EV_REL &amp;&amp; ev.code == REL_WHEEL) {
+-		int old_scroll_y = widget-&gt;data.scrollable.scroll_y;
++	if (!in_bounds)
++		return 0;
+ 
+-		widget-&gt;data.scrollable.scroll_y -= ev.value * 10;	// Scroll speed
++	/* Pass pointer events to children in content coordinates. */
++	{
++		struct InputEvent cev = ev;
++		cev.x = ev.x - widget-&gt;x;
++		cev.y = ev.y - widget-&gt;y + widget-&gt;data.scrollable.scroll_y;
+ 
+-		// Clamp scroll_y to valid range
+-		if (widget-&gt;data.scrollable.scroll_y &lt; 0) {
+-			widget-&gt;data.scrollable.scroll_y = 0;
+-		}
+-		if (widget-&gt;data.scrollable.scroll_y &gt;
+-		    widget-&gt;data.scrollable.content_height - widget-&gt;h) {
+-			widget-&gt;data.scrollable.scroll_y =
+-			    widget-&gt;data.scrollable.content_height - widget-&gt;h;
+-		}
+-		if (widget-&gt;data.scrollable.scroll_y &lt; 0) {
+-			widget-&gt;data.scrollable.scroll_y = 0;
+-		}
++		for (int i = 0; i &lt; widget-&gt;data.scrollable.widget_count; i++) {
++			struct BGTK_Widget *child =
++				widget-&gt;data.scrollable.items[i];
+ 
+-		if (widget-&gt;data.scrollable.scroll_y == old_scroll_y) {
+-			return 0;	// Nothing changed; avoid needless
+-			// redraw/blink
+-		}
++			if (!(cev.x &gt;= child-&gt;x &amp;&amp; cev.x &lt; child-&gt;x + child-&gt;w &amp;&amp;
++			      cev.y &gt;= child-&gt;y &amp;&amp; cev.y &lt; child-&gt;y + child-&gt;h))
++				continue;
+ 
+-		if (widget-&gt;ctx) {
+-			bgtk_draw_widgets(widget-&gt;ctx);
++			if (child-&gt;handle_event &amp;&amp; child-&gt;handle_event(child, cev))
++				return 1;
++			break;
+ 		}
+-		return 1;	// Event handled
+ 	}
+ 
+-	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
++	if (ev.type == EV_KEY &amp;&amp; ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
+ 		bgtk_set_focus(widget-&gt;ctx, widget);
+ 		return 1;
+ 	}
+ 
+-	return 0;		// Event not handled
++	return 0;
+ }
+ 
+ // Frame event handler
+@@ -382,6 +404,10 @@ static int frame_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 			return child-&gt;handle_event(child, ev);
+ 		return 0;
+ 	}
++	/* Wheel uses absolute x,y from BGCE; forward into child tree. */
++	if (ev.type == EV_REL &amp;&amp; ev.code == REL_WHEEL &amp;&amp; child &amp;&amp;
++	    child-&gt;handle_event)
++		return child-&gt;handle_event(child, ev);
+ 	// First check if the event is within the frame's bounds
+ 	if (!(ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+ 	      ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h))) {
+@@ -568,6 +594,8 @@ struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,
+ 	widget-&gt;data.button.cb_data = cb_data;
+ 	widget-&gt;data.button.label = label;
+ 	widget-&gt;data.button.pressed = 0;
++	widget-&gt;data.button.bg_override = 0;
++	widget-&gt;data.button.border_w = -1; /* theme default */
+ 
+ 	// Override the default event handler with button-specific one
+ 	widget-&gt;handle_event = button_handle_event;
+@@ -609,6 +637,7 @@ struct BGTK_Widget *bgtk_scrollable(struct BGTK_Context *ctx,
+ 
+ 	// Initialize tmp buffer to NULL, it will be allocated during drawing
+ 	widget-&gt;data.scrollable.tmp = NULL;
++	widget-&gt;data.scrollable.widget_capacity = 0;
+ 	// Override the default event handler with scrollable-specific one
+ 	widget-&gt;handle_event = scrollable_handle_event;
+ 
+@@ -630,6 +659,19 @@ list_widget_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 			}
+ 		}
+ 	}
++	/* Wheel: forward to children that contain the pointer. */
++	if (ev.type == EV_REL &amp;&amp; ev.code == REL_WHEEL) {
++		for (int i = 0; i &lt; widget-&gt;data.list_widget.widget_count; i++) {
++			struct BGTK_Widget *child =
++				widget-&gt;data.list_widget.items[i];
++			if (ev.x &gt;= child-&gt;x &amp;&amp; ev.x &lt; child-&gt;x + child-&gt;w &amp;&amp;
++			    ev.y &gt;= child-&gt;y &amp;&amp; ev.y &lt; child-&gt;y + child-&gt;h &amp;&amp;
++			    child-&gt;handle_event &amp;&amp;
++			    child-&gt;handle_event(child, ev))
++				return 1;
++		}
++		return 0;
++	}
+ 	// First check if the event is within the list's bounds
+ 	if (!(ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+ 	      ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h))) {
+</pre>

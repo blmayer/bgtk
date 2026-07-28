@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 088fbcc</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 088fbcc
+parent <a href=commit-7ed64a9.html>7ed64a9</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2025-12-30T19:49:09-03:00
+
+    added config parsing
+
+<a href=tree-088fbcc.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/AGENTS.md b/AGENTS.md
+index f97009a..810026d 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -24,11 +24,13 @@ int res = bgtk_init(&amp;ctx);
+     [X] Implement initialization, event queueing, and simple drawing (e.g., drawing rectangles for buttons, text rendering).
+     [X] Only call draw when changes are made, like input.
+     [X] Implement proper hit detection: using widget trees and coordinates, e.g. click on x,y -&gt; search the tree until last widget is found, then send the input to that widget.
++    [ ] Add support for screenshots
+     [X] Add a generic scroll widget, that scrolls content
+-    [ ] Add a image widget that supports image files:
+-        [ ] png
+-        [ ] svg
+-        [ ] jpeg
++        [ ] Add options for vertical or horizontal
++    [X] Add a image widget that supports image files:
++        [X] png
++        [X] svg
++        [X] jpeg
+ 
+ [x] **Step 3: Integrate and Test**
+     [X] Create a new client file (or update `client.c`) to demonstrate a basic BGTK application. -&gt; app.c
+diff --git a/bgtk.c b/bgtk.c
+index 0b595da..30edb4a 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -1,10 +1,16 @@
++#define STB_IMAGE_WRITE_IMPLEMENTATION
++
+ #include "bgtk.h"
++#include "config.h"
+ 
+ #include &lt;bgce.h&gt;
+ #include &lt;linux/input.h&gt;
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+ #include &lt;unistd.h&gt;
++#include &lt;time.h&gt;
++#include &lt;sys/time.h&gt;
++#include &lt;stb_image_write.h&gt;
+ 
+ #include "internal.h"
+ 
+@@ -14,7 +20,34 @@
+ 	"InputMono-Regular.ttf"
+ #define DEFAULT_FONT_SIZE 12
+ 
+-// --- Core Functions ---
++int take_screenshot(BGTK_Context ctx) {
++	if (!ctx.shm_buffer) {
++		fprintf(stderr, "No framebuffer available for screenshot.\n");
++		return -1;
++	}
++
++	// Write the framebuffer to a PNG file
++	struct timeval tv;
++	gettimeofday(&amp;tv, NULL);
++	char filename[256];
++	snprintf(filename, sizeof(filename), "screenshot_%ld_%06ld.png", tv.tv_sec, tv.tv_usec);
++	int result = stbi_write_png(
++		filename,
++		ctx.width,
++		ctx.height,
++		BGCE_BYTES_PER_PIXEL,
++		ctx.shm_buffer,
++		ctx.width * BGCE_BYTES_PER_PIXEL
++	);
++
++	if (!result) {
++		fprintf(stderr, "Failed to save screenshot to %s.\n", filename);
++		return -1;
++	}
++
++	printf("Screenshot saved to %s.\n", filename);
++	return 0;
++}
+ 
+ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
+ 			       int height) {
+@@ -32,6 +65,23 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
+ 	ctx-&gt;height = height;
+ 	ctx-&gt;root_widget = NULL;
+ 
++	// Load config file
++	struct config config;
++	if (parse_config(&amp;config) == 0) {
++		// Store theme data
++		ctx-&gt;theme = config.theme;
++		strncpy(ctx-&gt;font_path, config.font_path, MAX_PATH_LEN - 1);
++		ctx-&gt;font_path[MAX_PATH_LEN - 1] = '\0';
++		ctx-&gt;font_size = config.font_size;
++	} else {
++		// Use defaults if config file is missing or invalid
++		ctx-&gt;theme.background = 0xAAAAAAAA; // Default gray
++		ctx-&gt;theme.button = 0x88888888;     // Default button color
++		ctx-&gt;theme.button_text = 0xFFFFFFFF; // Default white text
++		strncpy(ctx-&gt;font_path, DEFAULT_FONT_PATH, MAX_PATH_LEN - 1);
++		ctx-&gt;font_path[MAX_PATH_LEN - 1] = '\0';
++	}
++
+ 	// 1. Initialize FreeType
+ 	if (FT_Init_FreeType(&amp;ctx-&gt;ft_library)) {
+ 		fprintf(stderr,
+@@ -41,12 +91,12 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
+ 	}
+ 
+ 	// 2. Load Font
+-	if (FT_New_Face(ctx-&gt;ft_library, DEFAULT_FONT_PATH, 0, &amp;ctx-&gt;ft_face)) {
++	if (FT_New_Face(ctx-&gt;ft_library, ctx-&gt;font_path, 0, &amp;ctx-&gt;ft_face)) {
+ 		fprintf(stderr,
+ 			"bgtk_init: Could not load font %s. Falling back "
+ 			"to simple "
+ 			"drawing.\n",
+-			DEFAULT_FONT_PATH);
++			ctx-&gt;font_path);
+ 		free(ctx);
+ 		return NULL;
+ 	}
+@@ -125,6 +175,13 @@ void bgtk_draw_widgets(struct BGTK_Context* ctx) {
+ 
+ // TODO: implement descending into child widgets
+ int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev) {
++	// Hanlde some keys
++	if (ev.code == KEY_SYSRQ) {
++		printf("[BGTK] Print Screen key pressed, taking screenshot.\n");
++		take_screenshot(*ctx);
++		return 1;
++	}
++
+ 	// Handle mouse wheel for scrolling (REL_WHEEL)
+ 	if (ev.code == REL_WHEEL) {
+ 		printf("handling mouse wheel: val=%d at (%u, %u)\n", ev.value,
+diff --git a/bgtk.h b/bgtk.h
+index f904409..44453c9 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -7,6 +7,8 @@
+ #include FT_FREETYPE_H
+ #include &lt;bgce.h&gt;
+ 
++#include "config.h"
++
+ // Function pointer for button callbacks
+ typedef void (*BGTK_Callback)(void);
+ 
+@@ -22,6 +24,10 @@ struct BGTK_Context {
+ 	FT_Face ft_face;
+ 	int font_size;
+ 
++	// Theme data
++	BGTK_Theme theme;
++	char font_path[MAX_PATH_LEN];
++
+ 	// Single root widget for the widget tree
+ 	struct BGTK_Widget* root_widget;
+ };
+diff --git a/config.c b/config.c
+new file mode 100644
+index 0000000..1226808
+--- /dev/null
++++ b/config.c
+@@ -0,0 +1,126 @@
++#include &lt;ctype.h&gt;
++#include &lt;stdio.h&gt;
++#include &lt;stdlib.h&gt;
++#include &lt;string.h&gt;
++
++#include "config.h"
++
++// Helper: trim whitespace
++static char* trim(char* str) {
++	while (isspace((unsigned char)*str))
++		str++;
++	if (*str == 0)
++		return str;
++
++	char* end = str + strlen(str) - 1;
++	while (end &gt; str &amp;&amp; isspace((unsigned char)*end))
++		end--;
++	end[1] = '\0';
++
++	return str;
++}
++
++// Helper: parse hex color (#RRGGBB or #RRGGBBAA)
++static uint32_t parse_hex_color(const char* str) {
++	if (str[0] != '#')
++		return 0xFF000000; // Default to black with full opacity
++
++	unsigned int r, g, b, a = 255;
++	if (strlen(str) == 7) { // #RRGGBB
++		sscanf(str + 1, "%02x%02x%02x", &amp;r, &amp;g, &amp;b);
++	} else if (strlen(str) == 9) { // #RRGGBBAA
++		sscanf(str + 1, "%02x%02x%02x%02x", &amp;r, &amp;g, &amp;b, &amp;a);
++	} else {
++		return 0xFF000000; // Default to black with full opacity
++	}
++
++	return (a &lt;&lt; 24) | (r &lt;&lt; 16) | (g &lt;&lt; 8) | b;
++}
++
++// Parse config file
++int parse_config(struct config* config) {
++	const char* home = getenv("HOME");
++	char user_config[512];
++	if (!home) {
++		return -1;
++	}
++	snprintf(user_config, sizeof(user_config), "%s/.config/bgtk.conf", home);
++	FILE* file = fopen(user_config, "r");
++	if (!file) {
++		perror("[BGTK] Open config file");
++		return -1;
++	}
++
++	// Initialize with defaults
++	config-&gt;type = BG_COLOR;
++	config-&gt;color = 0xAAAAAAAA; // Default gray
++
++	char line[1024];
++	char current_section[256] = "";
++
++	while (fgets(line, sizeof(line), file)) {
++		char* trimmed = trim(line);
++
++		// Skip empty lines and comments
++		if (trimmed[0] == '\0' || trimmed[0] == '#' || trimmed[0] == ';') {
++			continue;
++		}
++
++		// Check for section
++		if (trimmed[0] == '[' &amp;&amp; trimmed[strlen(trimmed) - 1] == ']') {
++			strncpy(current_section, trimmed + 1, strlen(trimmed) - 2);
++			current_section[strlen(trimmed) - 2] = '\0';
++			continue;
++		}
++
++		// Parse key-value pairs
++		char* equals = strchr(trimmed, '=');
++		if (!equals)
++			continue;
++
++		char key[32];
++		char value[128];
++		sscanf(trimmed, "%s = %[^\n]", key, value);
++
++		if (strcmp(current_section, "background") == 0) {
++			if (strcmp(key, "type") == 0) {
++				if (strcmp(value, "color") == 0) {
++					config-&gt;type = BG_COLOR;
++				} else if (strcmp(value, "image") == 0) {
++					config-&gt;type = BG_IMAGE;
++				}
++			} else if (strcmp(key, "color") == 0 &amp;&amp; config-&gt;type == BG_COLOR) {
++				config-&gt;color = parse_hex_color(value);
++			} else if (strcmp(key, "path") == 0 &amp;&amp; config-&gt;type == BG_IMAGE) {
++				strncpy(config-&gt;path, value, MAX_PATH_LEN - 1);
++				config-&gt;path[MAX_PATH_LEN - 1] = '\0';
++			} else if (strcmp(key, "mode") == 0 &amp;&amp; config-&gt;type == BG_IMAGE) {
++				if (strcmp(value, "tiled") == 0) {
++					config-&gt;mode = IMAGE_TILED;
++					printf("[BGTK] image tiled\n");
++				} else if (strcmp(value, "scaled") == 0) {
++					config-&gt;mode = IMAGE_SCALED;
++				}
++			}
++		} else if (strcmp(current_section, "theme") == 0) {
++			if (strcmp(key, "background") == 0) {
++				config-&gt;theme.background = parse_hex_color(value);
++			} else if (strcmp(key, "button") == 0) {
++				config-&gt;theme.button = parse_hex_color(value);
++			} else if (strcmp(key, "button_text") == 0) {
++				config-&gt;theme.button_text = parse_hex_color(value);
++			}
++		} else if (strcmp(current_section, "font") == 0) {
++			if (strcmp(key, "path") == 0) {
++				strncpy(config-&gt;font_path, value, MAX_PATH_LEN - 1);
++				config-&gt;font_path[MAX_PATH_LEN - 1] = '\0';
++			} else if (strcmp(key, "size") == 0) {
++				config-&gt;font_size = atoi(value);
++			}
++		}
++	}
++
++	fclose(file);
++	return 0;
++}
++
+diff --git a/config.h b/config.h
+new file mode 100644
+index 0000000..ab1fd92
+--- /dev/null
++++ b/config.h
+@@ -0,0 +1,41 @@
++#ifndef CONFIG_H
++#define CONFIG_H
++
++#include &lt;stdint.h&gt;
++
++#define MAX_PATH_LEN 512
++
++// Background type
++typedef enum {
++	BG_COLOR,
++	BG_IMAGE
++} BackgroundType;
++
++// Image mode
++typedef enum {
++	IMAGE_TILED,
++	IMAGE_SCALED
++} ImageMode;
++
++// Theme colors
++typedef struct {
++	uint32_t background;
++	uint32_t button;
++	uint32_t button_text;
++} BGTK_Theme;
++
++// Config structure
++struct config {
++	BackgroundType type;
++	uint32_t color;
++	char path[MAX_PATH_LEN];
++	ImageMode mode;
++	BGTK_Theme theme;
++	char font_path[MAX_PATH_LEN];
++	int font_size;
++};
++
++int parse_config(struct config* config);
++
++#endif // CONFIG_H
++
+</pre>

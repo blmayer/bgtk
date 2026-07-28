@@ -1,0 +1,1252 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 8a5a588</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 8a5a588
+parent <a href=commit-5a7dee8.html>5a7dee8</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-06T19:32:25-03:00
+
+    feat: shared key map with Shift/Ctrl and richer settings shortcuts.
+
+    Add keys.c (bgtk_key_to_bytes) with full US shift and TTY Ctrl+C0,
+    track ctrl/alt on the context, fix text-input Shift and Ctrl chords,
+    route terminal through the shared map, load/save BGCE [shortcuts] in
+    settings, and cover Shift/Ctrl in headless tests.
+
+<a href=tree-8a5a588.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/Makefile b/Makefile
+index 1b2da8b..b557790 100644
+--- a/Makefile
++++ b/Makefile
+@@ -94,8 +94,8 @@ INSTALL_LIB ?= $(PREFIX)/lib
+ INSTALL_INCLUDE ?= $(PREFIX)/include
+ INSTALL_BIN ?= $(PREFIX)/bin
+ 
+-SRC = bgtk.c drawing.c widgets.c config.c html.c
+-LIB_OBJS = bgtk.o drawing.o widgets.o config.o html.o
++SRC = bgtk.c drawing.c widgets.c config.c html.c keys.c
++LIB_OBJS = bgtk.o drawing.o widgets.o config.o html.o keys.o
+ TEST_APP_OBJ = apps/test_app.o
+ IMAGE_VIEWER_OBJ = apps/image_viewer.o
+ LAUNCHER_OBJ = apps/launcher.o
+@@ -260,6 +260,7 @@ test_settings: $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_
+ # Header dependencies so touching a .h triggers recompilation.
+ CORE_HEADERS = bgtk.h internal.h config.h
+ $(LIB_OBJS): $(CORE_HEADERS)
++keys.o: bgtk.h
+ html.o: html.h
+ $(TEST_HTML_OBJ): html.h bgtk.h
+ $(HEADLESS_OBJ): bgtk.h
+diff --git a/apps/settings.c b/apps/settings.c
+index 2cf6b6b..bac7dc9 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -55,8 +55,9 @@ static struct BGTK_Widget *bg_path_input;
+ 
+ static struct BGTK_Widget *cursor_path_input;
+ 
+-/* Shortcut inputs (4 rows) */
+-static struct BGTK_Widget *shortcut_inputs[4];
++#define MAX_SHORTCUT_ROWS 24
++static struct BGTK_Widget *shortcut_inputs[MAX_SHORTCUT_ROWS];
++static int shortcut_row_count;
+ 
+ static struct BGTK_Widget *font_size_input;
+ 
+@@ -73,13 +74,107 @@ static int font_dropdown_open;
+ static char **font_list_cache;
+ static int font_list_count;
+ 
+-/* Shortcut names/defaults */
+-static const char *shortcut_actions[4] = {
+-	"Screenshot", "Close window", "Switch window", "Terminal"
+-};
+-static char shortcut_keys[4][64] = {
+-	"SysRq", "Super+Q", "Alt+Tab", "Super+Enter"
+-};
++/* Shortcuts shown in UI (loaded from ~/.config/bgce.conf when present). */
++static char shortcut_actions[MAX_SHORTCUT_ROWS][96];
++static char shortcut_keys[MAX_SHORTCUT_ROWS][64];
++static int shortcuts_loaded;
++
++static void load_shortcuts_table(void)
++{
++	const char *home;
++	char path[512];
++	FILE *f;
++	char line[512];
++	char section[64] = "";
++
++	shortcut_row_count = 0;
++	/* Defaults matching BGCE (rhs = type:value, key = combo). */
++	snprintf(shortcut_actions[0], sizeof(shortcut_actions[0]), "builtin:exit");
++	snprintf(shortcut_keys[0], sizeof(shortcut_keys[0]), "ctrl+alt+q");
++	snprintf(shortcut_actions[1], sizeof(shortcut_actions[1]),
++		 "builtin:screenshot");
++	snprintf(shortcut_keys[1], sizeof(shortcut_keys[1]), "sysrq");
++	shortcut_row_count = 2;
++
++	home = getenv("HOME");
++	if (!home || !home[0])
++		return;
++	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
++	f = fopen(path, "r");
++	if (!f)
++		return;
++
++	/* Replace defaults with file contents when [shortcuts] has entries. */
++	while (fgets(line, sizeof(line), f)) {
++		char *p = line;
++		char *eq;
++		char key[128], val[256];
++		while (*p == ' ' || *p == '\t')
++			p++;
++		if (*p == '#' || *p == ';' || *p == '\n' || *p == '\0')
++			continue;
++		if (*p == '[') {
++			char *end = strchr(p, ']');
++			section[0] = '\0';
++			if (end &amp;&amp; (size_t)(end - p - 1) &lt; sizeof(section)) {
++				memcpy(section, p + 1, (size_t)(end - p - 1));
++				section[end - p - 1] = '\0';
++			}
++			if (strcmp(section, "shortcuts") == 0 &amp;&amp;
++			    !shortcuts_loaded) {
++				/* First time we enter section with real lines below. */
++			}
++			continue;
++		}
++		if (strcmp(section, "shortcuts") != 0)
++			continue;
++		eq = strchr(p, '=');
++		if (!eq)
++			continue;
++		*eq = '\0';
++		/* trim key */
++		{
++			char *k = p;
++			char *e = eq - 1;
++			while (*k == ' ' || *k == '\t')
++				k++;
++			while (e &gt; k &amp;&amp; (*e == ' ' || *e == '\t'))
++				e--;
++			e[1] = '\0';
++			strncpy(key, k, sizeof(key) - 1);
++			key[sizeof(key) - 1] = '\0';
++		}
++		{
++			char *v = eq + 1;
++			char *e;
++			while (*v == ' ' || *v == '\t')
++				v++;
++			e = v + strlen(v) - 1;
++			while (e &gt; v &amp;&amp; (*e == '\n' || *e == '\r' ||
++					 *e == ' ' || *e == '\t'))
++				e--;
++			e[1] = '\0';
++			strncpy(val, v, sizeof(val) - 1);
++			val[sizeof(val) - 1] = '\0';
++		}
++		if (!shortcuts_loaded) {
++			shortcut_row_count = 0;
++			shortcuts_loaded = 1;
++		}
++		if (shortcut_row_count &gt;= MAX_SHORTCUT_ROWS)
++			break;
++		/* Action column = rhs (builtin:… / command:…); key = combo */
++		snprintf(shortcut_actions[shortcut_row_count],
++			 sizeof(shortcut_actions[0]), "%s", val);
++		snprintf(shortcut_keys[shortcut_row_count],
++			 sizeof(shortcut_keys[0]), "%s", key);
++		shortcut_row_count++;
++	}
++	fclose(f);
++	/* If file had empty [shortcuts], keep defaults (row_count already 2). */
++	if (!shortcuts_loaded &amp;&amp; shortcut_row_count &lt; 2)
++		shortcut_row_count = 2;
++}
+ 
+ /* ------------------------------------------------------------------ */
+ /* File scanning helpers                                                */
+@@ -342,13 +437,94 @@ static void apply_cursor(void *userdata)
+ 
+ static void apply_shortcuts(void *userdata)
+ {
++	const char *home;
++	char path[512], tmp[512];
++	FILE *in, *out;
++	char line[512];
++	char section[64] = "";
++	int i;
++
+ 	(void)userdata;
+-	for (int i = 0; i &lt; 4; i++) {
+-		if (shortcut_inputs[i] &amp;&amp; shortcut_inputs[i]-&gt;data.text_input.text[0])
+-			strncpy(shortcut_keys[i], shortcut_inputs[i]-&gt;data.text_input.text,
++	for (i = 0; i &lt; shortcut_row_count; i++) {
++		if (shortcut_inputs[i] &amp;&amp;
++		    shortcut_inputs[i]-&gt;data.text_input.text)
++			strncpy(shortcut_keys[i],
++				shortcut_inputs[i]-&gt;data.text_input.text,
+ 				sizeof(shortcut_keys[0]) - 1);
+ 	}
+-	/* Shortcuts are stored in memory; would be persisted via BGCE config */
++
++	/* Persist to ~/.config/bgce.conf [shortcuts] (BGCE owns these). */
++	home = getenv("HOME");
++	if (!home || !home[0]) {
++		rebuild_content();
++		return;
++	}
++	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
++	snprintf(tmp, sizeof(tmp), "%s/.config/bgce.conf.bgtk-tmp", home);
++	in = fopen(path, "r");
++	out = fopen(tmp, "w");
++	if (!out) {
++		if (in)
++			fclose(in);
++		rebuild_content();
++		return;
++	}
++	if (in) {
++		int skip_shortcuts = 0;
++		while (fgets(line, sizeof(line), in)) {
++			char *p = line;
++			while (*p == ' ' || *p == '\t')
++				p++;
++			if (*p == '[') {
++				char *end = strchr(p, ']');
++				section[0] = '\0';
++				if (end &amp;&amp;
++				    (size_t)(end - p - 1) &lt; sizeof(section)) {
++					memcpy(section, p + 1,
++					       (size_t)(end - p - 1));
++					section[end - p - 1] = '\0';
++				}
++				if (strcmp(section, "shortcuts") == 0) {
++					skip_shortcuts = 1;
++					continue;
++				}
++				if (skip_shortcuts) {
++					/* leaving shortcuts: emit new section once */
++					fprintf(out, "[shortcuts]\n");
++					for (i = 0; i &lt; shortcut_row_count; i++)
++						if (shortcut_keys[i][0] &amp;&amp;
++						    shortcut_actions[i][0])
++							fprintf(out, "%s = %s\n",
++								shortcut_keys[i],
++								shortcut_actions[i]);
++					fprintf(out, "\n");
++					skip_shortcuts = 0;
++				}
++				fputs(line, out);
++				continue;
++			}
++			if (skip_shortcuts)
++				continue;
++			fputs(line, out);
++		}
++		if (skip_shortcuts) {
++			fprintf(out, "[shortcuts]\n");
++			for (i = 0; i &lt; shortcut_row_count; i++)
++				if (shortcut_keys[i][0] &amp;&amp; shortcut_actions[i][0])
++					fprintf(out, "%s = %s\n",
++						shortcut_keys[i],
++						shortcut_actions[i]);
++		}
++		fclose(in);
++	} else {
++		fprintf(out, "[shortcuts]\n");
++		for (i = 0; i &lt; shortcut_row_count; i++)
++			if (shortcut_keys[i][0] &amp;&amp; shortcut_actions[i][0])
++				fprintf(out, "%s = %s\n", shortcut_keys[i],
++					shortcut_actions[i]);
++	}
++	fclose(out);
++	rename(tmp, path);
+ 	rebuild_content();
+ }
+ 
+@@ -483,22 +659,35 @@ static char *build_cursor_html(void)
+ 
+ static char *build_shortcuts_html(void)
+ {
+-	char *buf = malloc(4096);
+-	snprintf(buf, 4096,
++	char *buf;
++	int buflen = 2048 + shortcut_row_count * 256;
++	int pos = 0;
++	int i;
++
++	if (!shortcut_row_count)
++		load_shortcuts_table();
++
++	buf = malloc((size_t)buflen);
++	if (!buf)
++		return NULL;
++	pos += snprintf(buf + pos, (size_t)(buflen - pos),
+ 		"&lt;html&gt;&lt;body&gt;"
++		"&lt;p&gt;Compositor shortcuts (~/.config/bgce.conf). "
++		"Left: builtin:exit, builtin:screenshot, or command:prog. "
++		"Right: combo (ctrl+alt+q, sysrq, …).&lt;/p&gt;"
+ 		"&lt;table&gt;"
+-		"&lt;tr&gt;&lt;th&gt;Action&lt;/th&gt;&lt;th&gt;Key Binding&lt;/th&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;%s&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"140\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;%s&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"140\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;%s&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"140\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+-		"&lt;tr&gt;&lt;td&gt;%s&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"140\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;th&gt;Action (type:value)&lt;/th&gt;&lt;th&gt;Key binding&lt;/th&gt;&lt;/tr&gt;");
++	for (i = 0; i &lt; shortcut_row_count; i++) {
++		pos += snprintf(buf + pos, (size_t)(buflen - pos),
++			"&lt;tr&gt;&lt;td&gt;%s&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" "
++			"width=\"160\" /&gt;&lt;/td&gt;&lt;/tr&gt;",
++			shortcut_actions[i], shortcut_keys[i]);
++	}
++	pos += snprintf(buf + pos, (size_t)(buflen - pos),
+ 		"&lt;/table&gt;"
+ 		"&lt;div&gt;&lt;button&gt;Apply&lt;/button&gt;&lt;/div&gt;"
+-		"&lt;/body&gt;&lt;/html&gt;",
+-		shortcut_actions[0], shortcut_keys[0],
+-		shortcut_actions[1], shortcut_keys[1],
+-		shortcut_actions[2], shortcut_keys[2],
+-		shortcut_actions[3], shortcut_keys[3]);
++		"&lt;/body&gt;&lt;/html&gt;");
++	(void)pos;
+ 	return buf;
+ }
+ 
+@@ -640,7 +829,10 @@ static void rebuild_content(void)
+ {
+ 	bg_color_input = bg_path_input = NULL;
+ 	cursor_path_input = NULL;
+-	for (int i = 0; i &lt; 4; i++) shortcut_inputs[i] = NULL;
++	for (int i = 0; i &lt; MAX_SHORTCUT_ROWS; i++)
++		shortcut_inputs[i] = NULL;
++	if (!shortcut_row_count)
++		load_shortcuts_table();
+ 	font_size_input = NULL;
+ 	theme_bg_input = theme_btn_input = theme_btn_text_input = NULL;
+ 	theme_frame_border_input = theme_btn_border_input = NULL;
+@@ -710,11 +902,14 @@ static void rebuild_content(void)
+ 		}
+ 		break;
+ 	}
+-	case 2: { /* Shortcuts: inputs 0-3, button 0=Apply */
+-		for (int i = 0; i &lt; 4; i++)
++	case 2: { /* Shortcuts: one input per row, last button = Apply */
++		for (int i = 0; i &lt; shortcut_row_count &amp;&amp; i &lt; MAX_SHORTCUT_ROWS; i++)
+ 			shortcut_inputs[i] = get_input(page, i);
+-		struct BGTK_Widget *b = get_button(page, 0);
+-		if (b) b-&gt;data.button.callback = apply_shortcuts;
++		{
++			struct BGTK_Widget *b = get_button(page, 0);
++			if (b)
++				b-&gt;data.button.callback = apply_shortcuts;
++		}
+ 		break;
+ 	}
+ 	case 3: { /* Font: button(0)=dropdown toggle, then dropdown items, then Apply */
+diff --git a/apps/term_core.c b/apps/term_core.c
+index 655b430..c6131d9 100644
+--- a/apps/term_core.c
++++ b/apps/term_core.c
+@@ -544,75 +544,10 @@ void term_measure_cell(struct Term_State *t, struct BGTK_Context *ctx)
+ 
+ int term_keycode_to_bytes(int code, int shift, int ctrl, char *out, int max)
+ {
+-	if (max &lt; 4) return 0;
+-
+-	if (ctrl) {
+-		static const int kmap[] = {
+-			KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U,
+-			KEY_I, KEY_O, KEY_P, KEY_A, KEY_S, KEY_D, KEY_F,
+-			KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_Z, KEY_X,
+-			KEY_C, KEY_V, KEY_B, KEY_N, KEY_M, 0
+-		};
+-		static const char cmap[] = "qwertyuiopasdfghjklzxcvbnm";
+-		for (int i = 0; kmap[i]; i++) {
+-			if (kmap[i] == code) {
+-				out[0] = cmap[i] - 'a' + 1;
+-				return 1;
+-			}
+-		}
+-	}
+-	{
+-		static const int kmap[] = {
+-			KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U,
+-			KEY_I, KEY_O, KEY_P, KEY_A, KEY_S, KEY_D, KEY_F,
+-			KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_Z, KEY_X,
+-			KEY_C, KEY_V, KEY_B, KEY_N, KEY_M, 0
+-		};
+-		static const char map[] = "qwertyuiopasdfghjklzxcvbnm";
+-		for (int i = 0; kmap[i]; i++) {
+-			if (kmap[i] == code) {
+-				out[0] = shift ? (map[i] - 32) : map[i];
+-				return 1;
+-			}
+-		}
+-	}
+-	if (code &gt;= KEY_1 &amp;&amp; code &lt;= KEY_0) {
+-		static const char norm[] = "1234567890";
+-		static const char shft[] = "!@#$%^&amp;*()";
+-		int idx = code - KEY_1;
+-		if (idx &gt;= 0 &amp;&amp; idx &lt; 10) {
+-			out[0] = shift ? shft[idx] : norm[idx];
+-			return 1;
+-		}
+-	}
+-	switch (code) {
+-	case KEY_SPACE:      out[0] = ' '; return 1;
+-	case KEY_ENTER:
+-	case KEY_KPENTER:    out[0] = '\r'; return 1;
+-	case KEY_TAB:        out[0] = '\t'; return 1;
+-	case KEY_BACKSPACE:  out[0] = 0x7F; return 1;
+-	case KEY_ESC:        out[0] = 0x1B; return 1;
+-	case KEY_MINUS:      out[0] = shift ? '_' : '-'; return 1;
+-	case KEY_EQUAL:      out[0] = shift ? '+' : '='; return 1;
+-	case KEY_LEFTBRACE:  out[0] = shift ? '{' : '['; return 1;
+-	case KEY_RIGHTBRACE: out[0] = shift ? '}' : ']'; return 1;
+-	case KEY_BACKSLASH:  out[0] = shift ? '|' : '\\'; return 1;
+-	case KEY_SEMICOLON:  out[0] = shift ? ':' : ';'; return 1;
+-	case KEY_APOSTROPHE: out[0] = shift ? '"' : '\''; return 1;
+-	case KEY_GRAVE:      out[0] = shift ? '~' : '`'; return 1;
+-	case KEY_COMMA:      out[0] = shift ? '&lt;' : ','; return 1;
+-	case KEY_DOT:        out[0] = shift ? '&gt;' : '.'; return 1;
+-	case KEY_SLASH:      out[0] = shift ? '?' : '/'; return 1;
+-	case KEY_UP:    memcpy(out, "\033[A", 3); return 3;
+-	case KEY_DOWN:  memcpy(out, "\033[B", 3); return 3;
+-	case KEY_RIGHT: memcpy(out, "\033[C", 3); return 3;
+-	case KEY_LEFT:  memcpy(out, "\033[D", 3); return 3;
+-	case KEY_HOME:  memcpy(out, "\033[H", 3); return 3;
+-	case KEY_END:   memcpy(out, "\033[F", 3); return 3;
+-	case KEY_DELETE:   memcpy(out, "\033[3~", 4); return 4;
+-	case KEY_PAGEUP:   memcpy(out, "\033[5~", 4); return 4;
+-	case KEY_PAGEDOWN: memcpy(out, "\033[6~", 4); return 4;
+-	default: break;
+-	}
+-	return 0;
++	int mods = 0;
++	if (shift)
++		mods |= BGTK_MOD_SHIFT;
++	if (ctrl)
++		mods |= BGTK_MOD_CTRL;
++	return bgtk_key_to_bytes(code, mods, BGTK_KEY_TTY, out, max);
+ }
+\ No newline at end of file
+diff --git a/apps/terminal.c b/apps/terminal.c
+index c4240e1..309eb78 100644
+--- a/apps/terminal.c
++++ b/apps/terminal.c
+@@ -278,8 +278,6 @@ int main(void)
+ 	fds[1].fd = master_fd;
+ 	fds[1].events = POLLIN;
+ 
+-	int ctrl_held = 0;
+-	int shift_held = 0;
+ 	int quit = 0;
+ 
+ 	while (!quit) {
+@@ -333,21 +331,20 @@ int main(void)
+ 				struct InputEvent *ev = &amp;msg.data.input_event;
+ 				if (ev-&gt;type != EV_KEY)
+ 					break;
++				bgtk_update_modifiers(ctx, *ev);
+ 				if (ev-&gt;code == KEY_LEFTSHIFT ||
+-				    ev-&gt;code == KEY_RIGHTSHIFT) {
+-					shift_held = (ev-&gt;value != 0);
++				    ev-&gt;code == KEY_RIGHTSHIFT ||
++				    ev-&gt;code == KEY_LEFTCTRL ||
++				    ev-&gt;code == KEY_RIGHTCTRL ||
++				    ev-&gt;code == KEY_LEFTALT ||
++				    ev-&gt;code == KEY_RIGHTALT)
+ 					break;
+-				}
+-				if (ev-&gt;code == KEY_LEFTCTRL ||
+-				    ev-&gt;code == KEY_RIGHTCTRL) {
+-					ctrl_held = (ev-&gt;value != 0);
+-					break;
+-				}
+ 				if (ev-&gt;value == 1 || ev-&gt;value == 2) {
+ 					char out[8];
+-					int n = term_keycode_to_bytes(
+-						ev-&gt;code, shift_held,
+-						ctrl_held, out, sizeof(out));
++					int n = bgtk_key_to_bytes(
++						ev-&gt;code,
++						bgtk_mods_from_ctx(ctx),
++						BGTK_KEY_TTY, out, sizeof(out));
+ 					if (n &gt; 0)
+ 						(void)write(master_fd, out, n);
+ 				}
+diff --git a/bgtk.c b/bgtk.c
+index 59ff4c8..a3defe8 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -272,6 +272,8 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
+ 	ctx-&gt;root_widget = NULL;
+ 	ctx-&gt;window_focused = 1;
+ 	ctx-&gt;shift_held = 0;
++	ctx-&gt;ctrl_held = 0;
++	ctx-&gt;alt_held = 0;
+ 
+ 	// Load config (parse_config now always starts from defaults via init_config_defaults).
+ 	struct config config = {0};
+@@ -552,12 +554,7 @@ int bgtk_handle_input_event(struct BGTK_Context *ctx, struct InputEvent ev)
+ 		take_screenshot(ctx, NULL);
+ 		return 1;
+ 	}
+-	// Track shift for text input uppercase support. Do not consume the event.
+-	if (ev.type == EV_KEY) {
+-		if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT) {
+-			ctx-&gt;shift_held = (ev.value != 0);
+-		}
+-	}
++	bgtk_update_modifiers(ctx, ev);
+ 	// Start event handling from the root widget
+ 	if (!ctx-&gt;root_widget) {
+ 		return 0;
+diff --git a/bgtk.h b/bgtk.h
+index e6af1f6..bed5847 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -195,10 +195,31 @@ struct BGTK_Context {
+ 	// 0 = unfocused, 1 = focused.
+ 	int window_focused;
+ 
+-	// Modifier state for text input (uppercase etc).
++	// Modifier state (updated by bgtk_update_modifiers / handle_input).
+ 	int shift_held;
++	int ctrl_held;
++	int alt_held;
+ };
+ 
++/* Modifier bitflags for bgtk_key_to_bytes */
++enum {
++	BGTK_MOD_SHIFT = 1,
++	BGTK_MOD_CTRL = 2,
++	BGTK_MOD_ALT = 4
++};
++
++/* Key translation mode */
++enum {
++	BGTK_KEY_TEXT = 0, /* printable for text fields; Ctrl+letter → 0 */
++	BGTK_KEY_TTY = 1   /* PTY: Ctrl+letter → C0, arrows → CSI */
++};
++
++// Track Shift/Ctrl/Alt from an EV_KEY event (press/release/repeat).
++void bgtk_update_modifiers(struct BGTK_Context *ctx, struct InputEvent ev);
++// Build mod bitflags from context held state.
++int bgtk_mods_from_ctx(const struct BGTK_Context *ctx);
++// US QWERTY keycode → bytes. Returns length written (0 if unmapped).
++int bgtk_key_to_bytes(int code, int mods, int mode, char *out, int max);
+ 
+ // Sets the focused widget for keyboard input.
+ // Passing NULL clears focus.
+diff --git a/keys.c b/keys.c
+new file mode 100644
+index 0000000..f642456
+--- /dev/null
++++ b/keys.c
+@@ -0,0 +1,186 @@
++/* keys.c — shared keycode → bytes (US QWERTY), TEXT vs TTY modes */
++#include "bgtk.h"
++
++#include &lt;linux/input.h&gt;
++#include &lt;string.h&gt;
++
++void bgtk_update_modifiers(struct BGTK_Context *ctx, struct InputEvent ev)
++{
++	int held;
++
++	if (!ctx || ev.type != EV_KEY)
++		return;
++	held = (ev.value != 0);
++	if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT)
++		ctx-&gt;shift_held = held;
++	else if (ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL)
++		ctx-&gt;ctrl_held = held;
++	else if (ev.code == KEY_LEFTALT || ev.code == KEY_RIGHTALT)
++		ctx-&gt;alt_held = held;
++}
++
++int bgtk_mods_from_ctx(const struct BGTK_Context *ctx)
++{
++	int m = 0;
++
++	if (!ctx)
++		return 0;
++	if (ctx-&gt;shift_held)
++		m |= BGTK_MOD_SHIFT;
++	if (ctx-&gt;ctrl_held)
++		m |= BGTK_MOD_CTRL;
++	if (ctx-&gt;alt_held)
++		m |= BGTK_MOD_ALT;
++	return m;
++}
++
++static int letter_index(int code)
++{
++	static const int kmap[] = {
++		KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U, KEY_I, KEY_O,
++		KEY_P, KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H, KEY_J, KEY_K,
++		KEY_L, KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M, 0
++	};
++	for (int i = 0; kmap[i]; i++)
++		if (kmap[i] == code)
++			return i;
++	return -1;
++}
++
++int bgtk_key_to_bytes(int code, int mods, int mode, char *out, int max)
++{
++	int shift = mods &amp; BGTK_MOD_SHIFT;
++	int ctrl = mods &amp; BGTK_MOD_CTRL;
++	int li;
++
++	if (!out || max &lt; 1)
++		return 0;
++
++	/* Ctrl+letter: TTY → C0; TEXT → no printable (caller handles chords). */
++	li = letter_index(code);
++	if (ctrl &amp;&amp; li &gt;= 0) {
++		if (mode == BGTK_KEY_TTY) {
++			static const char cmap[] = "qwertyuiopasdfghjklzxcvbnm";
++			if (max &lt; 1)
++				return 0;
++			out[0] = (char)(cmap[li] - 'a' + 1);
++			return 1;
++		}
++		return 0;
++	}
++
++	if (li &gt;= 0) {
++		static const char map[] = "qwertyuiopasdfghjklzxcvbnm";
++		out[0] = shift ? (char)(map[li] - 32) : map[li];
++		return 1;
++	}
++
++	if (code &gt;= KEY_1 &amp;&amp; code &lt;= KEY_0) {
++		static const char norm[] = "1234567890";
++		static const char shft[] = "!@#$%^&amp;*()";
++		int idx = code - KEY_1;
++		if (idx &gt;= 0 &amp;&amp; idx &lt; 10) {
++			out[0] = shift ? shft[idx] : norm[idx];
++			return 1;
++		}
++	}
++
++	switch (code) {
++	case KEY_SPACE:
++		out[0] = ' ';
++		return 1;
++	case KEY_ENTER:
++	case KEY_KPENTER:
++		if (mode == BGTK_KEY_TTY) {
++			out[0] = '\r';
++			return 1;
++		}
++		return 0; /* text field handles enter via callback */
++	case KEY_TAB:
++		if (mode == BGTK_KEY_TTY) {
++			out[0] = '\t';
++			return 1;
++		}
++		return 0;
++	case KEY_BACKSPACE:
++		if (mode == BGTK_KEY_TTY) {
++			out[0] = 0x7F;
++			return 1;
++		}
++		return 0;
++	case KEY_ESC:
++		out[0] = 0x1B;
++		return 1;
++	case KEY_MINUS:
++		out[0] = shift ? '_' : '-';
++		return 1;
++	case KEY_EQUAL:
++		out[0] = shift ? '+' : '=';
++		return 1;
++	case KEY_LEFTBRACE:
++		out[0] = shift ? '{' : '[';
++		return 1;
++	case KEY_RIGHTBRACE:
++		out[0] = shift ? '}' : ']';
++		return 1;
++	case KEY_BACKSLASH:
++		out[0] = shift ? '|' : '\\';
++		return 1;
++	case KEY_SEMICOLON:
++		out[0] = shift ? ':' : ';';
++		return 1;
++	case KEY_APOSTROPHE:
++		out[0] = shift ? '"' : '\'';
++		return 1;
++	case KEY_GRAVE:
++		out[0] = shift ? '~' : '`';
++		return 1;
++	case KEY_COMMA:
++		out[0] = shift ? '&lt;' : ',';
++		return 1;
++	case KEY_DOT:
++		out[0] = shift ? '&gt;' : '.';
++		return 1;
++	case KEY_SLASH:
++		out[0] = shift ? '?' : '/';
++		return 1;
++	default:
++		break;
++	}
++
++	if (mode != BGTK_KEY_TTY || max &lt; 4)
++		return 0;
++
++	switch (code) {
++	case KEY_UP:
++		memcpy(out, "\033[A", 3);
++		return 3;
++	case KEY_DOWN:
++		memcpy(out, "\033[B", 3);
++		return 3;
++	case KEY_RIGHT:
++		memcpy(out, "\033[C", 3);
++		return 3;
++	case KEY_LEFT:
++		memcpy(out, "\033[D", 3);
++		return 3;
++	case KEY_HOME:
++		memcpy(out, "\033[H", 3);
++		return 3;
++	case KEY_END:
++		memcpy(out, "\033[F", 3);
++		return 3;
++	case KEY_DELETE:
++		memcpy(out, "\033[3~", 4);
++		return 4;
++	case KEY_PAGEUP:
++		memcpy(out, "\033[5~", 4);
++		return 4;
++	case KEY_PAGEDOWN:
++		memcpy(out, "\033[6~", 4);
++		return 4;
++	default:
++		break;
++	}
++	return 0;
++}
+diff --git a/test/headless.c b/test/headless.c
+index 07331e7..105ea0f 100644
+--- a/test/headless.c
++++ b/test/headless.c
+@@ -200,6 +200,83 @@ int main(void)
+ 	bgtk_draw_widgets(ctx);
+ 	take_screenshot(ctx, "headless_04b_resized.png");
+ 
++	/* 6c. Shift + Ctrl in text input */
++	{
++		struct BGTK_Context *kctx = bgtk_init_mock(400, 120);
++		struct BGTK_Widget *kti =
++			bgtk_text_input(kctx, "", 360, 0,
++					(BGTK_Options){.padding = 6, .margin = 4});
++		kctx-&gt;root_widget = kti;
++		bgtk_set_focus(kctx, kti);
++
++		struct InputEvent ke = {0};
++		ke.type = EV_KEY;
++		ke.value = 1;
++		/* type "hi" */
++		ke.code = KEY_H;
++		bgtk_inject_event(kctx, ke);
++		ke.code = KEY_I;
++		bgtk_inject_event(kctx, ke);
++		/* Shift+1 → '!' */
++		ke.code = KEY_LEFTSHIFT;
++		bgtk_inject_event(kctx, ke);
++		ke.code = KEY_1;
++		bgtk_inject_event(kctx, ke);
++		ke.code = KEY_LEFTSHIFT;
++		ke.value = 0;
++		bgtk_inject_event(kctx, ke);
++		ke.value = 1;
++		/* Ctrl+C must not insert 'c' */
++		ke.code = KEY_LEFTCTRL;
++		bgtk_inject_event(kctx, ke);
++		ke.code = KEY_C;
++		bgtk_inject_event(kctx, ke);
++		ke.code = KEY_LEFTCTRL;
++		ke.value = 0;
++		bgtk_inject_event(kctx, ke);
++		ke.value = 1;
++
++		bgtk_draw_widgets(kctx);
++		take_screenshot(kctx, "headless_04c_shift_ctrl.png");
++
++		const char *got = kti-&gt;data.text_input.text;
++		if (!got || strcmp(got, "hi!") != 0) {
++			bgtk_log("headless: expected text 'hi!' got '%s'",
++				 got ? got : "(null)");
++			bgtk_destroy_mock(kctx);
++			return 1;
++		}
++		/* Ctrl+A then Ctrl+K clears line */
++		ke.code = KEY_LEFTCTRL;
++		bgtk_inject_event(kctx, ke);
++		ke.code = KEY_A;
++		bgtk_inject_event(kctx, ke);
++		ke.code = KEY_K;
++		bgtk_inject_event(kctx, ke);
++		ke.code = KEY_LEFTCTRL;
++		ke.value = 0;
++		bgtk_inject_event(kctx, ke);
++		got = kti-&gt;data.text_input.text;
++		if (!got || got[0] != '\0') {
++			bgtk_log("headless: expected empty after Ctrl+A/K got '%s'",
++				 got ? got : "(null)");
++			bgtk_destroy_mock(kctx);
++			return 1;
++		}
++		/* Ctrl+C byte for TTY */
++		{
++			char out[4];
++			int n = bgtk_key_to_bytes(KEY_C, BGTK_MOD_CTRL, BGTK_KEY_TTY,
++						 out, sizeof(out));
++			if (n != 1 || out[0] != 3) {
++				bgtk_log("headless: Ctrl+C TTY expected 0x03");
++				bgtk_destroy_mock(kctx);
++				return 1;
++			}
++		}
++		bgtk_destroy_mock(kctx);
++	}
++
+ 	bgtk_destroy_mock(ctx);
+ 
+ 	/* 7. text_align showcase (separate scene, wider canvas) */
+diff --git a/widgets.c b/widgets.c
+index 48148e1..ef5f58f 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -146,279 +146,145 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 	if (!focused) {
+ 		return 0;
+ 	}
+-	// Handle keyboard events
+-	if (ev.type == EV_KEY &amp;&amp; ev.value == 1) {
+-		// Special keys handled via callbacks. Consume so they don't insert.
+-		if (ev.code == KEY_TAB) {
+-			if (widget-&gt;data.text_input.on_tab) {
+-				widget-&gt;data.text_input.on_tab();
+-				if (widget-&gt;ctx) {
+-					bgtk_draw_widgets(widget-&gt;ctx);
+-				}
+-			}
+-			return 1;
+-		}
+-		if (ev.code == KEY_ENTER || ev.code == KEY_KPENTER) {
+-			if (widget-&gt;data.text_input.on_enter) {
+-				widget-&gt;data.text_input.on_enter();
+-				if (widget-&gt;ctx) {
+-					bgtk_draw_widgets(widget-&gt;ctx);
+-				}
+-			}
+-			return 1;
+-		}
++	/* Press or autorepeat (not release). */
++	if (ev.type != EV_KEY || (ev.value != 1 &amp;&amp; ev.value != 2))
++		return 0;
+ 
+-		// Translate linux input key codes to ASCII where possible.
+-		// IMPORTANT: KEY_* constants are not contiguous in a way that
+-		// matches ASCII ordering, so do explicit mapping.
+-		char ascii = 0;
+-		switch (ev.code) {
+-		case KEY_A:
+-			ascii = 'a';
+-			break;
+-		case KEY_B:
+-			ascii = 'b';
+-			break;
+-		case KEY_C:
+-			ascii = 'c';
+-			break;
+-		case KEY_D:
+-			ascii = 'd';
+-			break;
+-		case KEY_E:
+-			ascii = 'e';
+-			break;
+-		case KEY_F:
+-			ascii = 'f';
+-			break;
+-		case KEY_G:
+-			ascii = 'g';
+-			break;
+-		case KEY_H:
+-			ascii = 'h';
+-			break;
+-		case KEY_I:
+-			ascii = 'i';
+-			break;
+-		case KEY_J:
+-			ascii = 'j';
+-			break;
+-		case KEY_K:
+-			ascii = 'k';
+-			break;
+-		case KEY_L:
+-			ascii = 'l';
+-			break;
+-		case KEY_M:
+-			ascii = 'm';
+-			break;
+-		case KEY_N:
+-			ascii = 'n';
+-			break;
+-		case KEY_O:
+-			ascii = 'o';
+-			break;
+-		case KEY_P:
+-			ascii = 'p';
+-			break;
+-		case KEY_Q:
+-			ascii = 'q';
+-			break;
+-		case KEY_R:
+-			ascii = 'r';
+-			break;
+-		case KEY_S:
+-			ascii = 's';
+-			break;
+-		case KEY_T:
+-			ascii = 't';
+-			break;
+-		case KEY_U:
+-			ascii = 'u';
+-			break;
+-		case KEY_V:
+-			ascii = 'v';
+-			break;
+-		case KEY_W:
+-			ascii = 'w';
+-			break;
+-		case KEY_X:
+-			ascii = 'x';
+-			break;
+-		case KEY_Y:
+-			ascii = 'y';
+-			break;
+-		case KEY_Z:
+-			ascii = 'z';
+-			break;
+-		case KEY_1:
+-			ascii = '1';
+-			break;
+-		case KEY_2:
+-			ascii = '2';
+-			break;
+-		case KEY_3:
+-			ascii = '3';
+-			break;
+-		case KEY_4:
+-			ascii = '4';
+-			break;
+-		case KEY_5:
+-			ascii = '5';
+-			break;
+-		case KEY_6:
+-			ascii = '6';
+-			break;
+-		case KEY_7:
+-			ascii = '7';
+-			break;
+-		case KEY_8:
+-			ascii = '8';
+-			break;
+-		case KEY_9:
+-			ascii = '9';
+-			break;
+-		case KEY_0:
+-			ascii = '0';
+-			break;
+-		case KEY_SPACE:
+-			ascii = ' ';
+-			break;
+-		case KEY_MINUS:
+-			ascii = '-';
+-			break;
+-		case KEY_EQUAL:
+-			ascii = '=';
+-			break;
+-		case KEY_LEFTBRACE:
+-			ascii = '[';
+-			break;
+-		case KEY_RIGHTBRACE:
+-			ascii = ']';
+-			break;
+-		case KEY_BACKSLASH:
+-			ascii = '\\';
+-			break;
+-		case KEY_SEMICOLON:
+-			ascii = ';';
+-			break;
+-		case KEY_APOSTROPHE:
+-			ascii = '\'';
+-			break;
+-		case KEY_COMMA:
+-			ascii = ',';
+-			break;
+-		case KEY_DOT:
+-			ascii = '.';
+-			break;
+-		case KEY_SLASH:
+-			ascii = '/';
+-			break;
+-		default:
+-			break;
+-		}
+-		// Apply shift for uppercase letters (lean: only letters).
+-		if (ascii &gt;= 'a' &amp;&amp; ascii &lt;= 'z' &amp;&amp; widget-&gt;ctx &amp;&amp;
+-		    widget-&gt;ctx-&gt;shift_held) {
+-			ascii -= 32;
+-		}
+-		if (ascii) {
+-			// Insert character at cursor_pos
+-			char *text = widget-&gt;data.text_input.text;
+-			int cursor = widget-&gt;data.text_input.cursor_pos;
+-			int len = strlen(text);
+-
+-			text = realloc(text, len + 2);
+-			if (!text) {
+-				return 0;
+-			}
++	/* Pure modifiers: already tracked on ctx; consume. */
++	if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT ||
++	    ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL ||
++	    ev.code == KEY_LEFTALT || ev.code == KEY_RIGHTALT)
++		return 1;
+ 
+-			memmove(&amp;text[cursor + 1], &amp;text[cursor],
+-				len - cursor + 1);
+-			text[cursor] = ascii;
+-			widget-&gt;data.text_input.text = text;
+-			widget-&gt;data.text_input.cursor_pos++;
+-			text_input_ensure_cursor_visible(widget-&gt;ctx, widget);
++	struct BGTK_Context *ctx = widget-&gt;ctx;
++	int mods = bgtk_mods_from_ctx(ctx);
++	char *text = widget-&gt;data.text_input.text;
++	int cursor = (int)widget-&gt;data.text_input.cursor_pos;
++	int len = text ? (int)strlen(text) : 0;
++	int changed = 0;
++
++	if (ev.code == KEY_TAB) {
++		if (widget-&gt;data.text_input.on_tab)
++			widget-&gt;data.text_input.on_tab();
++		if (ctx)
++			bgtk_draw_widgets(ctx);
++		return 1;
++	}
++	if (ev.code == KEY_ENTER || ev.code == KEY_KPENTER) {
++		if (widget-&gt;data.text_input.on_enter)
++			widget-&gt;data.text_input.on_enter();
++		if (ctx)
++			bgtk_draw_widgets(ctx);
++		return 1;
++	}
+ 
+-			if (widget-&gt;data.text_input.on_change) {
++	/* Ctrl chords (never insert a letter under Ctrl). */
++	if (mods &amp; BGTK_MOD_CTRL) {
++		if (ev.code == KEY_A) {
++			widget-&gt;data.text_input.cursor_pos = 0;
++			changed = 1;
++		} else if (ev.code == KEY_E) {
++			widget-&gt;data.text_input.cursor_pos = (uint32_t)len;
++			changed = 1;
++		} else if (ev.code == KEY_U &amp;&amp; text &amp;&amp; cursor &gt; 0) {
++			memmove(text, text + cursor, (size_t)(len - cursor) + 1);
++			widget-&gt;data.text_input.cursor_pos = 0;
++			changed = 1;
++		} else if (ev.code == KEY_K &amp;&amp; text &amp;&amp; cursor &lt; len) {
++			text[cursor] = '\0';
++			changed = 1;
++		} else if ((ev.code == KEY_W || ev.code == KEY_BACKSPACE) &amp;&amp;
++			   text &amp;&amp; cursor &gt; 0) {
++			int i = cursor - 1;
++			while (i &gt; 0 &amp;&amp; text[i] == ' ')
++				i--;
++			while (i &gt; 0 &amp;&amp; text[i - 1] != ' ')
++				i--;
++			memmove(text + i, text + cursor, (size_t)(len - cursor) + 1);
++			widget-&gt;data.text_input.cursor_pos = (uint32_t)i;
++			changed = 1;
++		}
++		/* Ctrl+C/V/X and other Ctrl+letter: consume, no insert */
++		if (changed) {
++			text_input_ensure_cursor_visible(ctx, widget);
++			if (widget-&gt;data.text_input.on_change)
+ 				widget-&gt;data.text_input.on_change();
+-			}
+-			if (widget-&gt;ctx) {
+-				bgtk_draw_widgets(widget-&gt;ctx);
+-			}
+-
+-			return 1;	// Event handled
+-		}
+-		// Handle backspace
+-		if (ev.code == KEY_BACKSPACE) {
+-			char *text = widget-&gt;data.text_input.text;
+-			int cursor = widget-&gt;data.text_input.cursor_pos;
+-			if (cursor &gt; 0) {
+-				memmove(&amp;text[cursor - 1], &amp;text[cursor],
+-					strlen(text) - cursor + 1);
+-				widget-&gt;data.text_input.cursor_pos--;
+-				text_input_ensure_cursor_visible(widget-&gt;ctx,
+-								 widget);
+-
+-				if (widget-&gt;data.text_input.on_change) {
+-					widget-&gt;data.text_input.on_change();
+-				}
+-				if (widget-&gt;ctx) {
+-					bgtk_draw_widgets(widget-&gt;ctx);
+-				}
+-
+-				return 1;	// Event handled
+-			}
+-		}
+-		// Handle delete
+-		if (ev.code == KEY_DELETE) {
+-			char *text = widget-&gt;data.text_input.text;
+-			uint32_t cursor = widget-&gt;data.text_input.cursor_pos;
+-			if (cursor &lt; strlen(text)) {
+-				memmove(&amp;text[cursor], &amp;text[cursor + 1],
+-					strlen(text) - cursor);
+-				text_input_ensure_cursor_visible(widget-&gt;ctx,
+-								 widget);
+-
+-				if (widget-&gt;data.text_input.on_change) {
+-					widget-&gt;data.text_input.on_change();
+-				}
+-				if (widget-&gt;ctx) {
+-					bgtk_draw_widgets(widget-&gt;ctx);
+-				}
+-
+-				return 1;	// Event handled
+-			}
+-		}
+-		// Handle arrow keys (cursor movement)
+-		if (ev.code == KEY_LEFT || ev.code == KEY_RIGHT) {
+-			int cursor = widget-&gt;data.text_input.cursor_pos;
+-			int len = strlen(widget-&gt;data.text_input.text);
+-
+-			// Handle arrow keys (cursor movement)
+-			if (ev.code == KEY_LEFT || ev.code == KEY_RIGHT) {
+-				if (ev.code == KEY_LEFT &amp;&amp; cursor &gt; 0) {
+-					widget-&gt;data.text_input.cursor_pos--;
+-					text_input_ensure_cursor_visible
+-					    (widget-&gt;ctx, widget);
+-					if (widget-&gt;ctx) {
+-						bgtk_draw_widgets(widget-&gt;ctx);
+-					}
+-					return 1;	// Event handled
+-				} else if (ev.code == KEY_RIGHT &amp;&amp; cursor &lt; len) {
+-					widget-&gt;data.text_input.cursor_pos++;
+-					text_input_ensure_cursor_visible
+-					    (widget-&gt;ctx, widget);
+-					if (widget-&gt;ctx) {
+-						bgtk_draw_widgets(widget-&gt;ctx);
+-					}
+-					return 1;	// Event handled
+-				}
+-			}
++			if (ctx)
++				bgtk_draw_widgets(ctx);
+ 		}
++		return 1;
+ 	}
+ 
+-	return 0;		// Event not handled by this specific handler
++	char bytes[8];
++	int n = bgtk_key_to_bytes(ev.code, mods, BGTK_KEY_TEXT, bytes, sizeof(bytes));
++	if (n == 1 &amp;&amp; bytes[0] &gt;= 32 &amp;&amp; bytes[0] &lt; 127) {
++		char ascii = bytes[0];
++		text = realloc(widget-&gt;data.text_input.text, (size_t)len + 2);
++		if (!text)
++			return 0;
++		cursor = (int)widget-&gt;data.text_input.cursor_pos;
++		len = (int)strlen(text);
++		memmove(&amp;text[cursor + 1], &amp;text[cursor], (size_t)(len - cursor) + 1);
++		text[cursor] = ascii;
++		widget-&gt;data.text_input.text = text;
++		widget-&gt;data.text_input.cursor_pos = (uint32_t)(cursor + 1);
++		text_input_ensure_cursor_visible(ctx, widget);
++		if (widget-&gt;data.text_input.on_change)
++			widget-&gt;data.text_input.on_change();
++		if (ctx)
++			bgtk_draw_widgets(ctx);
++		return 1;
++	}
++
++	if (ev.code == KEY_BACKSPACE &amp;&amp; text &amp;&amp; cursor &gt; 0) {
++		memmove(&amp;text[cursor - 1], &amp;text[cursor], (size_t)(len - cursor) + 1);
++		widget-&gt;data.text_input.cursor_pos--;
++		text_input_ensure_cursor_visible(ctx, widget);
++		if (widget-&gt;data.text_input.on_change)
++			widget-&gt;data.text_input.on_change();
++		if (ctx)
++			bgtk_draw_widgets(ctx);
++		return 1;
++	}
++	if (ev.code == KEY_DELETE &amp;&amp; text &amp;&amp; cursor &lt; len) {
++		memmove(&amp;text[cursor], &amp;text[cursor + 1], (size_t)(len - cursor));
++		text_input_ensure_cursor_visible(ctx, widget);
++		if (widget-&gt;data.text_input.on_change)
++			widget-&gt;data.text_input.on_change();
++		if (ctx)
++			bgtk_draw_widgets(ctx);
++		return 1;
++	}
++	if (ev.code == KEY_LEFT &amp;&amp; cursor &gt; 0) {
++		widget-&gt;data.text_input.cursor_pos--;
++		text_input_ensure_cursor_visible(ctx, widget);
++		if (ctx)
++			bgtk_draw_widgets(ctx);
++		return 1;
++	}
++	if (ev.code == KEY_RIGHT &amp;&amp; cursor &lt; len) {
++		widget-&gt;data.text_input.cursor_pos++;
++		text_input_ensure_cursor_visible(ctx, widget);
++		if (ctx)
++			bgtk_draw_widgets(ctx);
++		return 1;
++	}
++	if (ev.code == KEY_HOME) {
++		widget-&gt;data.text_input.cursor_pos = 0;
++		text_input_ensure_cursor_visible(ctx, widget);
++		if (ctx)
++			bgtk_draw_widgets(ctx);
++		return 1;
++	}
++	if (ev.code == KEY_END) {
++		widget-&gt;data.text_input.cursor_pos = (uint32_t)len;
++		text_input_ensure_cursor_visible(ctx, widget);
++		if (ctx)
++			bgtk_draw_widgets(ctx);
++		return 1;
++	}
++
++	return 0;
+ }
+ 
+ // Scrollable event handler
+</pre>

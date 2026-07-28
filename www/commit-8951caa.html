@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 8951caa</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 8951caa
+parent <a href=commit-f63bd87.html>f63bd87</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-06T18:47:23-03:00
+
+    settings: do not full-redraw on mouse motion.
+
+    Ignore EV_REL/EV_ABS and only call bgtk_draw_widgets when the input
+    handler requests a redraw, matching launcher and other apps.
+
+<a href=tree-8951caa.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/settings.c b/apps/settings.c
+index d192b8b..2cf6b6b 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -914,10 +914,17 @@ int main(void)
+ 	struct BGCEMessage msg;
+ 	while (bgce_recv_msg(conn, &amp;msg) &gt; 0) {
+ 		if (msg.type == MSG_INPUT_EVENT) {
+-			bgtk_handle_input_event(c, msg.data.input_event);
+-			bgtk_draw_widgets(c);
++			/* Ignore pure pointer motion — redrawing every move
++			 * freezes the UI under hover. Only key/button (and
++			 * wheel, handled inside widgets) need handling. */
++			if (msg.data.input_event.type == EV_REL ||
++			    msg.data.input_event.type == EV_ABS)
++				continue;
++			if (bgtk_handle_input_event(c, msg.data.input_event))
++				bgtk_draw_widgets(c);
+ 		} else if (msg.type == MSG_FOCUS_CHANGE) {
+ 			bgtk_set_window_focus(c, msg.data.focus_event.state);
++			/* set_window_focus already redraws */
+ 		} else if (msg.type == MSG_BUFFER_CHANGE) {
+ 			if (bgtk_handle_buffer_change(c, &amp;msg.data.buffer_reply) == 0)
+ 				bgtk_draw_widgets(c);
+</pre>

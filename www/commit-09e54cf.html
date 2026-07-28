@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 09e54cf</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 09e54cf
+parent <a href=commit-90f4c11.html>90f4c11</a> 
+author myr &lt;myr@terminal.pink&gt;
+date   2026-01-25T08:25:12-03:00
+
+    fixed build
+
+<a href=tree-09e54cf.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/app.c b/app.c
+index 0baafc0..763a922 100644
+--- a/app.c
++++ b/app.c
+@@ -9,27 +9,29 @@ static struct BGTK_Widget* counter_label = NULL;
+ static struct BGTK_Widget* text_input = NULL;
+ struct BGTK_Context* ctx = NULL;
+ void button_callback(void) {
+-    counter++;
+-    printf("Button clicked! Counter: %d\n", counter);
+-
+-    if (counter_label &amp;&amp; counter_label-&gt;type == BGTK_WIDGET_LABEL) {
+-        puts(" setting new label");
+-        char counter_text[32];
+-        sprintf(counter_text, "Counter: %d", counter);
+-        printf("calling set_label: %p\n", counter_label-&gt;data.label.set_label);
+-        counter_label-&gt;data.label.set_label(counter_label, counter_text);
+-    }
++	counter++;
++	printf("Button clicked! Counter: %d\n", counter);
++
++	if (counter_label &amp;&amp; counter_label-&gt;type == BGTK_WIDGET_LABEL) {
++		puts(" setting new label");
++		char counter_text[32];
++		sprintf(counter_text, "Counter: %d", counter);
++		printf("calling set_label: %p\n",
++		       counter_label-&gt;data.label.set_label);
++		counter_label-&gt;data.label.set_label(counter_label,
++						    counter_text);
++	}
+ }
+ 
+ void text_input_changed(void) {
+-    if (text_input &amp;&amp; text_input-&gt;type == BGTK_WIDGET_TEXT_INPUT) {
+-        printf("Text changed: %s\n", text_input-&gt;data.text_input.text);
+-    }
++	if (text_input &amp;&amp; text_input-&gt;type == BGTK_WIDGET_TEXT_INPUT) {
++		printf("Text changed: %s\n", text_input-&gt;data.text_input.text);
++	}
+ }
+ 
+ int main(void) {
+-    setvbuf(stdout, NULL, _IONBF, 0);  // Disable buffering for stdout
+-    setvbuf(stderr, NULL, _IONBF, 0);  // Disable buffering for stderr
++	setvbuf(stdout, NULL, _IONBF, 0);  // Disable buffering for stdout
++	setvbuf(stderr, NULL, _IONBF, 0);  // Disable buffering for stderr
+ 
+ 	setvbuf(stderr, NULL, _IONBF, 0);  // Disable buffering for stderr
+ 
+@@ -70,81 +72,96 @@ int main(void) {
+ 	// 4. Create Widgets
+ 
+ 	// Create a list of widgets for the scrollable container
+-    // Create a list of widgets for the scrollable container
+-    struct BGTK_Widget* scrollable_widgets[22]; // Increased size for text input
+-    
+-    // Create a button with a label
+-    struct BGTK_Widget* button_label = bgtk_text(ctx, "Click me!", (BGTK_Options){
+-        .flags = 0,
+-        .padding = 5,
+-        .margin = 2,
+-    });
+-    
+-    struct BGTK_Widget* button = bgtk_button(ctx, button_label, button_callback, (BGTK_Options){
+-        .flags = 0,
+-        .padding = 10,
+-        .margin = 5,
+-    });
+-    button-&gt;w = 200;
+-    button-&gt;h = 50;
+-    scrollable_widgets[0] = button;
+-    
+-    // Create counter label
+-    counter_label = bgtk_label(ctx, "Counter: 0", (BGTK_Options){
+-        .flags = 0,
+-        .padding = 5,
+-        .margin = 2,
+-    });
+-    scrollable_widgets[1] = counter_label;
+-    
+-    // Add regular items
+-    for (int i = 0; i &lt; 18; i++) { // Reduced count to make room for other widgets
+-        char label_text[32];
+-        sprintf(label_text, "Item %d", i + 1);
+-        scrollable_widgets[i + 2] = bgtk_text(ctx, label_text, (BGTK_Options){
+-            .flags = 0,
+-            .padding = 5,
+-            .margin = 2,
+-        });
+-    }
+-
+-    // Create text input widget
+-    text_input = bgtk_text_input(ctx, "Type here...", 300, 40, (BGTK_Options){
+-        .flags = 0,
+-        .padding = 8,
+-        .margin = 5,
+-    });
+-    
+-    // Set the change callback
+-    text_input-&gt;data.text_input.on_change = text_input_changed;
+-    scrollable_widgets[20] = text_input;
+-    
+-    // Create image widget
+-    struct BGTK_Widget* image_widget = bgtk_image(ctx, "example.png", (BGTK_Options){
+-        .flags = 0,
+-        .padding = 10,
+-        .margin = 5,
+-    });
+-    if (image_widget) {
+-        image_widget-&gt;w = 500;
+-        image_widget-&gt;h = 400;
+-        scrollable_widgets[21] = image_widget;
+-    } else {
+-        fprintf(stderr, "Failed to load image widget\n");
+-        scrollable_widgets[21] = bgtk_text(ctx, "Image failed to load", (BGTK_Options){
+-            .flags = 0,
+-            .padding = 5,
+-            .margin = 2,
+-        });
+-    }
+-	
+-    // Create the scrollable widget with the list of widgets
+-    struct BGTK_Widget* scrollable =
+-        bgtk_scrollable(ctx, scrollable_widgets, 22, (BGTK_Options){
+-            .flags = BGTK_FLAG_CENTER,
+-            .padding = 10,
+-            .margin = 5,
+-        });
++	// Create a list of widgets for the scrollable container
++	struct BGTK_Widget*
++	    scrollable_widgets[22];  // Increased size for text input
++
++	// Create a button with a label
++	struct BGTK_Widget* button_label = bgtk_text(ctx, "Click me!",
++						     (BGTK_Options){
++							 .flags = 0,
++							 .padding = 5,
++							 .margin = 2,
++						     });
++
++	struct BGTK_Widget* button =
++	    bgtk_button(ctx, button_label, button_callback,
++			(BGTK_Options){
++			    .flags = 0,
++			    .padding = 10,
++			    .margin = 5,
++			});
++	button-&gt;w = 200;
++	button-&gt;h = 50;
++	scrollable_widgets[0] = button;
++
++	// Create counter label
++	counter_label = bgtk_label(ctx, "Counter: 0",
++				   (BGTK_Options){
++				       .flags = 0,
++				       .padding = 5,
++				       .margin = 2,
++				   });
++	scrollable_widgets[1] = counter_label;
++
++	// Add regular items
++	for (int i = 0; i &lt; 18;
++	     i++) {  // Reduced count to make room for other widgets
++		char label_text[32];
++		sprintf(label_text, "Item %d", i + 1);
++		scrollable_widgets[i + 2] = bgtk_text(ctx, label_text,
++						      (BGTK_Options){
++							  .flags = 0,
++							  .padding = 5,
++							  .margin = 2,
++						      });
++	}
++
++	// Create text input widget
++	text_input = bgtk_text_input(ctx, "Type here...", 300, 40,
++				     (BGTK_Options){
++					 .flags = 0,
++					 .padding = 8,
++					 .margin = 5,
++				     });
++
++	// Set the change callback
++	text_input-&gt;data.text_input.on_change = text_input_changed;
++	scrollable_widgets[20] = text_input;
++
++	// Create image widget
++	struct BGTK_Widget* image_widget = bgtk_image(ctx, "example.png",
++						      (BGTK_Options){
++							  .flags = 0,
++							  .padding = 10,
++							  .margin = 5,
++						      });
++	if (image_widget) {
++		image_widget-&gt;w = 500;
++		image_widget-&gt;h = 400;
++		scrollable_widgets[21] = image_widget;
++	} else {
++		fprintf(stderr, "Failed to load image widget\n");
++		scrollable_widgets[21] = bgtk_text(ctx, "Image failed to load",
++						   (BGTK_Options){
++						       .flags = 0,
++						       .padding = 5,
++						       .margin = 2,
++						   });
++	}
++
++	// Create the scrollable widget with the list of widgets
++	struct BGTK_Widget* scrollable =
++	    bgtk_scrollable(ctx, scrollable_widgets, 22,
++			    (BGTK_Options){
++				.flags = BGTK_FLAG_CENTER,
++				.padding = 10,
++				.margin = 5,
++			    });
++	scrollable-&gt;w = 600;
++	scrollable-&gt;h = 400;
++
++	ctx-&gt;root_widget = scrollable;
+ 	bgtk_draw_widgets(ctx);
+ 
+ 	// 6. start loop to listen for input events
+diff --git a/bgtk.c b/bgtk.c
+index 1bbef4d..768daf3 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -103,12 +103,6 @@ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width,
+ 	return ctx;
+ }
+ 
+-// Sets the focused widget for keyboard input.
+-void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget) {
+-	ctx-&gt;focused_widget = widget;
+-	printf("Focus set to widget type: %d\n", widget-&gt;type);
+-}
+-
+ void bgtk_destroy(struct BGTK_Context* ctx) {
+ 	if (!ctx) {
+ 		return;
+diff --git a/bgtk.h b/bgtk.h
+index e329bd5..412560a 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -140,4 +140,5 @@ struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path, BGTK_
+ // Creates a frame widget.
+ struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, BGTK_Options options);
+ 
++struct BGTK_Widget* bgtk_text_input(struct BGTK_Context* ctx, char* initial_text, int width, int height, BGTK_Options options);
+ #endif
+diff --git a/widgets.c b/widgets.c
+index cd2b5b0..7707592 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -2,6 +2,7 @@
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
++#include &lt;linux/input.h&gt;
+ 
+ #include "bgtk.h"
+ #include "internal.h"
+@@ -39,6 +40,12 @@ static int button_handle_event(struct BGTK_Widget* widget, struct InputEvent ev)
+     return 0; // Event not handled by this specific handler
+ }
+ 
++// Sets the focused widget for keyboard input.
++void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget) {
++	ctx-&gt;focused_widget = widget;
++	printf("Focus set to widget type: %d\n", widget-&gt;type);
++}
++
+ // Text input event handler
+ static int text_input_handle_event(struct BGTK_Widget* widget, struct InputEvent ev) {
+     // First check if the event is within the text input's bounds
+</pre>

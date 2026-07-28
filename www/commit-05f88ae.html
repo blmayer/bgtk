@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 05f88ae</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 05f88ae
+parent <a href=commit-088fbcc.html>088fbcc</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2025-12-30T20:16:29-03:00
+
+    added theme support
+
+<a href=tree-05f88ae.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/README.md b/README.md
+index bd4a8e0..82eaed0 100644
+--- a/README.md
++++ b/README.md
+@@ -3,11 +3,27 @@
+ A lightweight toolkit for the BGCE display server. This library allows developers to
+ create graphical user interfaces by directly writing to a shared graphical buffer.
+ 
++
+ ## Features
+ - Simple widget system (labels, buttons).
+ - Direct rendering to a shared memory buffer.
+ - Event handling for user input.
+ - Basic font rendering using FreeType.
++- Theme support via config files (e.g., colors, fonts).
++
++
++## Themes
++Theme config files allow customizing the appearance of BGTK applications.
++To use a theme:
++1. Create a config file in `~/.config/bgtk.conf`.
++2. Define theme properties like colors and fonts in key-value pairs:
++
++```
++background_color = #282828
++text_color = #ebdbb2
++font = /opt/fonts/.../DejaVu Sans.otf
++```
++
+ 
+ ## Building
+ 
+@@ -20,6 +36,7 @@ Requirements:
+ make
+ ```
+ 
++
+ ## Running
+ 
+ Start the BGCE server, then run the demo application:
+@@ -28,6 +45,7 @@ Start the BGCE server, then run the demo application:
+ ./app
+ ```
+ 
++
+ ## Project Structure
+ - `bgtk.h`: Public API and type definitions.
+ - `bgtk.c`: Core implementation.
+diff --git a/drawing.c b/drawing.c
+index 30477f0..88c0eaa 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -3,11 +3,6 @@
+ #include "bgtk.h"
+ #include "internal.h"
+ 
+-// A few basic colors (0xAARRGGBB)
+-#define BGTK_COLOR_BG 0xFFCCCCCC     // Light Gray
+-#define BGTK_COLOR_BTN 0xFF007BFF    // Blue
+-#define BGTK_COLOR_TEXT 0xFF000000   // Black
+-#define BGTK_COLOR_WHITE 0xFFFFFFFF  // White
+ // Define STB_IMAGE_IMPLEMENTATION in one source file
+ #define STB_IMAGE_IMPLEMENTATION
+ #include "stb_image.h"
+@@ -34,7 +29,7 @@ void clear_buffer(struct BGTK_Context* ctx) {
+ 	uint32_t* pixels = (uint32_t*)ctx-&gt;shm_buffer;
+ 	size_t size = (size_t)ctx-&gt;width * ctx-&gt;height;
+ 	for (size_t i = 0; i &lt; size; i++) {
+-		pixels[i] = BGTK_COLOR_BG;
++		pixels[i] = ctx-&gt;theme.background;
+ 	}
+ }
+ 
+@@ -220,7 +215,7 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
+ 		case BGTK_WIDGET_LABEL:
+ 			// Draw label background
+ 			draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, 
+-				  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin, BGTK_COLOR_BG);
++				  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin, ctx-&gt;theme.background);
+ 			// Draw text widget (offset for padding and margin)
+ 			if (w-&gt;data.label.text) {
+ 				w-&gt;data.label.text-&gt;x = w-&gt;x + w-&gt;margin + w-&gt;padding;
+@@ -233,25 +228,25 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
+ 			draw_text(ctx, pixels, w-&gt;data.text.text, 
+ 				  w-&gt;x + w-&gt;margin + w-&gt;padding, 
+ 				  w-&gt;y + w-&gt;margin + w-&gt;padding, 
+-				  BGTK_COLOR_TEXT);
++				  ctx-&gt;theme.button_text);
+ 			break;
+ 		case BGTK_WIDGET_BUTTON:
+ 			puts("drawing button widget");
+ 			// Draw button background
+ 			draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
+-				  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin, BGTK_COLOR_BTN);
++				  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin, ctx-&gt;theme.button);
+ 
+ 			// Draw button border (1px black)
+ 			draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, 
+-				  w-&gt;w - 2 * w-&gt;margin, 1, BGTK_COLOR_TEXT);  // Top
++				  w-&gt;w - 2 * w-&gt;margin, 1, ctx-&gt;theme.button_text);  // Top
+ 			draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, 
+ 				  w-&gt;y + w-&gt;h - 1 - w-&gt;margin, w-&gt;w - 2 * w-&gt;margin, 1,
+-				  BGTK_COLOR_TEXT);  // Bottom
++				  ctx-&gt;theme.button_text);  // Bottom
+ 			draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, 1,
+-				  w-&gt;h - 2 * w-&gt;margin, BGTK_COLOR_TEXT);  // Left
++				  w-&gt;h - 2 * w-&gt;margin, ctx-&gt;theme.button_text);  // Left
+ 			draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - 1 - w-&gt;margin, 
+ 				  w-&gt;y + w-&gt;margin, 1, w-&gt;h - 2 * w-&gt;margin,
+-				  BGTK_COLOR_TEXT);  // Right
++				  ctx-&gt;theme.button_text);  // Right
+ 
+ 			// Draw label widget (offset for padding and margin)
+ 			if (w-&gt;data.button.label) {
+@@ -278,7 +273,7 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
+ 					break;
+ 				}
+ 				draw_rect(ctx, w-&gt;data.scrollable.tmp, 0, 0,
+-					  w-&gt;w, content_height, BGTK_COLOR_BG);
++					  w-&gt;w, content_height, ctx-&gt;theme.background);
+ 				printf("allocated temp buffer %ux%u\n", w-&gt;w,
+ 				       content_height);
+ 
+diff --git a/www/index.html b/www/index.html
+index c4eb429..f6e7712 100644
+--- a/www/index.html
++++ b/www/index.html
+@@ -36,6 +36,17 @@ To keep track of the develoment check the commit log
+ on the &lt;a href=feed.xml&gt;feed&lt;/a&gt;.
+ 
+ 
++&lt;b&gt;Themes&lt;/b&gt;
++
++BGTK supports themes via config the file. Define
++colors, fonts, and other visual properties in
++~/.config/bgtk.conf. Here's an example:
++
++	background_color = #282828
++	text_color = #ebdbb2
++	font = /opt/fonts/.../DejaVu Sans.otf
++
++
+ &lt;b&gt;Build Instructions&lt;/b&gt;
+ 
+ First make sure all dependencies are met:
+</pre>

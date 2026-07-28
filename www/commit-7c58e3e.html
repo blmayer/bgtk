@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 7c58e3e</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 7c58e3e
+parent <a href=commit-3331db9.html>3331db9</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-08T15:22:08-03:00
+
+    fix: settings layout, table spacing, and wallpaper preview colors.
+
+    Drop bgce path headers, left-align table cells with sibling controls, add
+    column gap, size the solid preview from leftover panel space, and pack
+    image/solid preview pixels as 0xAARRGGBB so colors match BGCE/XRGB.
+
+<a href=tree-7c58e3e.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/settings.c b/apps/settings.c
+index c85c0c9..8249442 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -18,6 +18,7 @@
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
++#include &lt;strings.h&gt;
+ #include &lt;sys/stat.h&gt;
+ #include &lt;unistd.h&gt;
+ #include &lt;linux/input.h&gt;
+@@ -36,6 +37,9 @@ static struct config cfg;
+ 
+ static int app_w = 700;
+ static int app_h = 480;
++/* Desktop aspect for wallpaper preview (from BGCE server or 16:9). */
++static int screen_aspect_w = 16;
++static int screen_aspect_h = 9;
+ 
+ static struct BGTK_Widget *sidebar_list; /* the list widget inside the scrollable */
+ static struct BGTK_Widget *sidebar;
+@@ -879,7 +883,6 @@ static char *build_background_html(void)
+ 	int pos = 0;
+ 	pos += snprintf(buf + pos, 4096 - pos,
+ 		"&lt;html&gt;&lt;body&gt;"
+-		"&lt;p&gt;Desktop (~/.config/bgce.conf [background])&lt;/p&gt;"
+ 		"&lt;table&gt;"
+ 		"&lt;tr&gt;&lt;td&gt;Type&lt;/td&gt;&lt;td&gt;&lt;button&gt;[ %s ]&lt;/button&gt;&lt;/td&gt;&lt;/tr&gt;",
+ 		cfg.type == BG_IMAGE ? "Image" : "Color");
+@@ -896,10 +899,9 @@ static char *build_background_html(void)
+ 			cfg.mode == IMAGE_SCALED ? "Scaled" : "Tiled");
+ 	}
+ 
++	/* Preview inserted by add_bg_preview before Apply. */
+ 	pos += snprintf(buf + pos, 4096 - pos,
+ 		"&lt;/table&gt;"
+-		"&lt;p&gt;Preview:&lt;/p&gt;"
+-		"&lt;div padding=\"2\"&gt;&lt;/div&gt;"
+ 		"&lt;div&gt;&lt;button&gt;Apply&lt;/button&gt;&lt;/div&gt;"
+ 		"&lt;/body&gt;&lt;/html&gt;");
+ 	return buf;
+@@ -917,11 +919,10 @@ static char *build_cursor_html(void)
+ 
+ 	pos += snprintf(buf + pos, buflen - pos,
+ 		"&lt;html&gt;&lt;body&gt;"
+-		"&lt;p&gt;From ~/.config/bgce.conf [cursors]&lt;/p&gt;"
+ 		"&lt;table&gt;"
+-		"&lt;tr&gt;&lt;td&gt;theme&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"260\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;td&gt;Theme&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"260\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+ 		"&lt;/table&gt;"
+-		"&lt;p&gt;Installed themes (click to select):&lt;/p&gt;"
++		"&lt;p&gt;Installed themes&lt;/p&gt;"
+ 		"&lt;ul&gt;",
+ 		cur);
+ 
+@@ -957,11 +958,8 @@ static char *build_shortcuts_html(void)
+ 	buf = malloc((size_t)buflen);
+ 	if (!buf)
+ 		return NULL;
+-	/* Keep the intro short — long single-line &lt;p&gt; text is not wrapped and
+-	 * draws as a garbled overflow across the content panel. */
+ 	pos += snprintf(buf + pos, (size_t)(buflen - pos),
+ 		"&lt;html&gt;&lt;body&gt;"
+-		"&lt;p&gt;Key bindings (~/.config/bgce.conf)&lt;/p&gt;"
+ 		"&lt;table&gt;"
+ 		"&lt;tr&gt;&lt;th&gt;Action&lt;/th&gt;&lt;th&gt;Key binding&lt;/th&gt;&lt;/tr&gt;");
+ 	for (i = 0; i &lt; shortcut_row_count; i++) {
+@@ -1074,84 +1072,171 @@ static char *build_theme_html(void)
+ }
+ 
+ /* ------------------------------------------------------------------ */
+-/* Background preview: draw a colored/image rect into the content      */
++/* Background preview: aspect-correct desktop wallpaper box            */
+ /* ------------------------------------------------------------------ */
+ 
+-static void add_bg_preview(struct BGTK_Widget *page, int panel_w)
++/* Fit preview inside max_w x max_h using screen_aspect_w:h. */
++static void preview_fit(int max_w, int max_h, int *out_w, int *out_h)
++{
++	int aw = screen_aspect_w &gt; 0 ? screen_aspect_w : 16;
++	int ah = screen_aspect_h &gt; 0 ? screen_aspect_h : 9;
++	int pw, ph;
++
++	if (max_w &lt; 80)
++		max_w = 80;
++	if (max_h &lt; 48)
++		max_h = 48;
++	/* Prefer using width, then clamp height. */
++	pw = max_w;
++	ph = (pw * ah) / aw;
++	if (ph &gt; max_h) {
++		ph = max_h;
++		pw = (ph * aw) / ah;
++	}
++	if (pw &lt; 1)
++		pw = 1;
++	if (ph &lt; 1)
++		ph = 1;
++	*out_w = pw;
++	*out_h = ph;
++}
++
++/* Solid fill in framebuffer format 0xAARRGGBB (matches draw_rect / BGCE). */
++static struct BGTK_Widget *make_solid_preview(int pw, int ph, uint32_t color)
+ {
+-	/* Build a preview widget: a frame filled with the background color */
+-	int pw = panel_w - 40;
+-	if (pw &lt; 60) pw = 60;
+-	int ph = 60;
++	struct BGTK_Widget *img;
++	uint32_t *pix;
++	int i;
++	uint8_t r = (uint8_t)((color &gt;&gt; 16) &amp; 0xFF);
++	uint8_t g = (uint8_t)((color &gt;&gt; 8) &amp; 0xFF);
++	uint8_t b = (uint8_t)(color &amp; 0xFF);
++	/* Full alpha; channels in the same order as clear_buffer / draw_rect. */
++	uint32_t c = (0xFFu &lt;&lt; 24) | ((uint32_t)r &lt;&lt; 16) | ((uint32_t)g &lt;&lt; 8) |
++		     (uint32_t)b;
++
++	if (pw &lt; 1)
++		pw = 1;
++	if (ph &lt; 1)
++		ph = 1;
++	pix = malloc((size_t)pw * (size_t)ph * sizeof(uint32_t));
++	if (!pix)
++		return NULL;
++	for (i = 0; i &lt; pw * ph; i++)
++		pix[i] = c;
++	img = bgtk_image(ctx, NULL, pw, ph, (BGTK_Options){.padding = 0, .margin = 4});
++	if (!img) {
++		free(pix);
++		return NULL;
++	}
++	img-&gt;data.image.pixels = pix;
++	img-&gt;data.image.img_w = pw;
++	img-&gt;data.image.img_h = ph;
++	img-&gt;w = pw + 8;
++	img-&gt;h = ph + 8;
++	return img;
++}
++
++static void add_bg_preview(struct BGTK_Widget *page, int panel_w, int panel_h)
++{
++	int pw, ph;
++	struct BGTK_Widget *preview = NULL;
++	struct BGTK_Widget *scroll;
++	struct BGTK_Widget *list;
++	int n, i, reserved, max_w, max_h, total_h, max_w_list;
++	struct BGTK_Widget **new_items;
++
++	if (!page)
++		return;
++	scroll = page-&gt;data.frame.child;
++	if (!scroll || scroll-&gt;type != BGTK_WIDGET_SCROLLABLE)
++		return;
++	if (scroll-&gt;data.scrollable.widget_count &lt; 1)
++		return;
++	list = scroll-&gt;data.scrollable.items[0];
++	if (!list || list-&gt;type != BGTK_WIDGET_LIST)
++		return;
++
++	n = list-&gt;data.list_widget.widget_count;
++	if (n &lt; 1)
++		return;
++
++	/* Height already used by form rows + Apply — preview fills the rest. */
++	reserved = 0;
++	for (i = 0; i &lt; n; i++) {
++		struct BGTK_Widget *ch = list-&gt;data.list_widget.items[i];
++		if (!ch)
++			continue;
++		reserved += ch-&gt;h + 2 * list-&gt;margin;
++	}
++	/* Panel chrome: content frame padding, scroll padding, preview margin. */
++	max_h = panel_h - reserved - 28;
++	if (max_h &lt; 80)
++		max_h = 80;
++	max_w = panel_w - 28;
++	if (max_w &lt; 80)
++		max_w = 80;
++	preview_fit(max_w, max_h, &amp;pw, &amp;ph);
+ 
+-	struct BGTK_Widget *preview;
+ 	if (cfg.type == BG_IMAGE &amp;&amp; cfg.path[0] &amp;&amp; access(cfg.path, R_OK) == 0) {
+-		preview = bgtk_image(ctx, cfg.path, pw, ph, (BGTK_Options){.padding = 0, .margin = 4});
++		preview = bgtk_image(ctx, cfg.path, pw, ph,
++				     (BGTK_Options){.padding = 0, .margin = 4});
++		if (preview) {
++			preview-&gt;w = pw + 8;
++			preview-&gt;h = ph + 8;
++		}
++	} else if (cfg.type == BG_IMAGE) {
++		/* Image selected but missing file — dark placeholder. */
++		preview = make_solid_preview(pw, ph, 0xFF333333);
+ 	} else {
+-		/* Color preview: a frame filled with bg color */
+-		struct BGTK_Widget *inner = bgtk_text(ctx, " ", (BGTK_Options){0});
+-		preview = bgtk_frame(ctx, inner, pw, ph, (BGTK_Options){.padding = 0, .margin = 4});
+-		preview-&gt;data.frame.border_w = 1;
+-		preview-&gt;data.frame.border_color = BGTK_COLOR_BLACK;
+-		/* We'll draw with the configured color by setting the frame bg
+-		 * via a custom approach: use the frame, then on draw the bg rect
+-		 * will use theme.background. We'll fake it by temporarily overriding.
+-		 * Simpler: just draw a colored rect via an image widget with solid pixels. */
+-		uint32_t *pix = malloc(pw * ph * sizeof(uint32_t));
+-		uint32_t c = cfg.color | 0xFF000000;
+-		for (int i = 0; i &lt; pw * ph; i++) pix[i] = c;
+-		inner-&gt;type = BGTK_WIDGET_IMAGE;
+-		inner-&gt;data.image.pixels = pix;
+-		inner-&gt;data.image.img_w = pw;
+-		inner-&gt;data.image.img_h = ph;
+-		inner-&gt;w = pw;
+-		inner-&gt;h = ph;
++		preview = make_solid_preview(pw, ph, cfg.color);
+ 	}
++	if (!preview)
++		return;
+ 
+-	/* Find the scrollable and insert preview into its items before the Apply button */
+-	/* The page is a frame-&gt;scrollable-&gt;list. We append preview to the list. */
+-	if (!page) return;
+-	struct BGTK_Widget *scroll = page-&gt;data.frame.child;
+-	if (!scroll || scroll-&gt;type != BGTK_WIDGET_SCROLLABLE) return;
+-	if (scroll-&gt;data.scrollable.widget_count &lt; 1) return;
+-	struct BGTK_Widget *list = scroll-&gt;data.scrollable.items[0];
+-	if (!list || list-&gt;type != BGTK_WIDGET_LIST) return;
++	/* Thin border frame around the aspect box. */
++	{
++		struct BGTK_Widget *framed =
++			bgtk_frame(ctx, preview, pw + 12, ph + 12,
++				   (BGTK_Options){.padding = 2, .margin = 4});
++		if (framed) {
++			framed-&gt;data.frame.border_w = 1;
++			framed-&gt;data.frame.border_color =
++				ctx-&gt;theme.frame_border_color
++					? ctx-&gt;theme.frame_border_color
++					: 0xFF888888;
++			preview = framed;
++		}
++	}
+ 
+ 	/* Insert preview before the last item (Apply button). */
+-	int n = list-&gt;data.list_widget.widget_count;
+-	struct BGTK_Widget **new_items =
+-		malloc((n + 1) * sizeof(struct BGTK_Widget *));
+-	int total_h = 0;
+-	int max_w = 0;
+-	int i;
+-
++	new_items = malloc((n + 1) * sizeof(struct BGTK_Widget *));
+ 	if (!new_items)
+ 		return;
+ 	for (i = 0; i &lt; n - 1; i++)
+ 		new_items[i] = list-&gt;data.list_widget.items[i];
+ 	new_items[n - 1] = preview;
+-	new_items[n] = list-&gt;data.list_widget.items[n - 1]; /* Apply button */
++	new_items[n] = list-&gt;data.list_widget.items[n - 1]; /* Apply */
+ 	free(list-&gt;data.list_widget.items);
+ 	list-&gt;data.list_widget.items = new_items;
+ 	list-&gt;data.list_widget.widget_count = n + 1;
+ 
+-	/* Grow the list to fit the inserted preview. Without this, Apply is
+-	 * drawn below list-&gt;h and hit-testing rejects clicks on it. */
++	total_h = 0;
++	max_w_list = 0;
+ 	for (i = 0; i &lt; list-&gt;data.list_widget.widget_count; i++) {
+ 		struct BGTK_Widget *ch = list-&gt;data.list_widget.items[i];
+ 		if (!ch)
+ 			continue;
+-		if (ch-&gt;w &gt; max_w)
+-			max_w = ch-&gt;w;
++		if (ch-&gt;w &gt; max_w_list)
++			max_w_list = ch-&gt;w;
+ 		total_h += ch-&gt;h + 2 * list-&gt;margin;
+ 	}
+ 	if (list-&gt;data.list_widget.widget_count &gt; 0)
+ 		total_h -= 2 * list-&gt;margin;
+ 	list-&gt;data.list_widget.content_height = total_h;
+-	list-&gt;data.list_widget.content_width = max_w;
++	list-&gt;data.list_widget.content_width = max_w_list;
+ 	list-&gt;h = total_h + 2 * (list-&gt;margin + list-&gt;padding);
+-	if (list-&gt;w &lt; max_w + 2 * (list-&gt;margin + list-&gt;padding))
+-		list-&gt;w = max_w + 2 * (list-&gt;margin + list-&gt;padding);
++	if (list-&gt;w &lt; max_w_list + 2 * (list-&gt;margin + list-&gt;padding))
++		list-&gt;w = max_w_list + 2 * (list-&gt;margin + list-&gt;padding);
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -1241,7 +1326,7 @@ static void rebuild_content(void)
+ 			b = get_button(page, 2);
+ 			if (b) b-&gt;data.button.callback = apply_background;
+ 		}
+-		add_bg_preview(page, panel_w);
++		add_bg_preview(page, panel_w, panel_h);
+ 		break;
+ 	}
+ 	case 1: { /* Cursor: input(0)=theme, buttons=themes..., last=Apply */
+@@ -1552,19 +1637,22 @@ static void load_bgce_config(struct config *c)
+ 
+ 		if (strcmp(section, "background") == 0) {
+ 			if (strcmp(key, "type") == 0) {
+-				if (strcmp(valp, "image") == 0)
++				if (strcasecmp(valp, "image") == 0)
+ 					c-&gt;type = BG_IMAGE;
+-				else if (strcmp(valp, "color") == 0)
++				else if (strcasecmp(valp, "color") == 0)
+ 					c-&gt;type = BG_COLOR;
+ 			} else if (strcmp(key, "color") == 0) {
+ 				c-&gt;color = parse_color_input(valp);
+ 			} else if (strcmp(key, "path") == 0) {
+ 				strncpy(c-&gt;path, valp, MAX_PATH_LEN - 1);
+ 				c-&gt;path[MAX_PATH_LEN - 1] = '\0';
++				/* Non-empty path implies image wallpaper. */
++				if (c-&gt;path[0])
++					c-&gt;type = BG_IMAGE;
+ 			} else if (strcmp(key, "mode") == 0) {
+-				if (strcmp(valp, "scaled") == 0)
++				if (strcasecmp(valp, "scaled") == 0)
+ 					c-&gt;mode = IMAGE_SCALED;
+-				else
++				else if (strcasecmp(valp, "tiled") == 0)
+ 					c-&gt;mode = IMAGE_TILED;
+ 			}
+ 		} else if (strcmp(section, "cursors") == 0) {
+@@ -1589,10 +1677,8 @@ static void load_bgce_config(struct config *c)
+ 
+ 	if (!shortcuts_loaded)
+ 		load_shortcuts_defaults();
+-	if (c-&gt;type == BG_IMAGE &amp;&amp; !c-&gt;path[0]) {
+-		bgtk_log("bgce type=image but empty path; showing as color");
+-		c-&gt;type = BG_COLOR;
+-	}
++	if (c-&gt;type == BG_IMAGE &amp;&amp; !c-&gt;path[0])
++		bgtk_log("bgce type=image but path empty (keep Image UI)");
+ 	bgtk_log("bgce conf: bg=%s path='%s' mode=%s cursor='%s' shortcuts=%d",
+ 		 c-&gt;type == BG_IMAGE ? "image" : "color",
+ 		 c-&gt;path[0] ? c-&gt;path : "(none)",
+@@ -1615,10 +1701,15 @@ int main(void)
+ 	bgtk_log("bgce_connect ok fd=%d", conn);
+ 
+ 	struct ServerInfo info;
+-	if (bgce_get_server_info(conn, &amp;info) != 0)
++	if (bgce_get_server_info(conn, &amp;info) != 0) {
+ 		bgtk_log("bgce_get_server_info failed (continuing)");
+-	else
++	} else {
+ 		bgtk_log("server display %ux%u", info.width, info.height);
++		if (info.width &gt; 0 &amp;&amp; info.height &gt; 0) {
++			screen_aspect_w = (int)info.width;
++			screen_aspect_h = (int)info.height;
++		}
++	}
+ 
+ 	struct BufferRequest req = { .width = 700, .height = 480 };
+ 	void *buf = bgce_get_buffer(conn, req);
+diff --git a/apps/term_core.c b/apps/term_core.c
+index 0a7d164..6878c9a 100644
+--- a/apps/term_core.c
++++ b/apps/term_core.c
+@@ -448,6 +448,8 @@ void term_feed(struct Term_State *t, const char *data, int len)
+ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
+ 		 uint32_t *pixels, int px_w, int px_h)
+ {
++	/* Always draw with the mono face (falls back to sans only if mono
++	 * failed to load in bgtk_init). */
+ 	FT_Face face = bgtk_font_face(ctx, BGTK_FONT_MONO);
+ 	int cw, ch, asc;
+ 	int used_w, used_h;
+@@ -594,22 +596,27 @@ void term_measure_cell(struct Term_State *t, struct BGTK_Context *ctx)
+ 	int max_adv = 0;
+ 	int max_extent = 0;
+ 	int c;
++	int fixed;
+ 
+ 	if (!face) {
+ 		t-&gt;cell_w = 8;
+ 		t-&gt;cell_h = 14;
++		bgtk_log("term_measure_cell: no mono face; using 8x14 cells");
+ 		return;
+ 	}
+ 	FT_Set_Pixel_Sizes(face, 0, ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14);
++	fixed = FT_IS_FIXED_WIDTH(face) ? 1 : 0;
+ 	asc = face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
+ 	desc = -(face-&gt;size-&gt;metrics.descender &gt;&gt; 6);
+ 	t-&gt;cell_h = asc + desc;
+ 	if (t-&gt;cell_h &lt; 8)
+ 		t-&gt;cell_h = 8;
+ 
+-	/* Use the max advance (and ink extent) over printable ASCII so a
+-	 * non-mono fallback face cannot size cells from a skinny 'M' while
+-	 * wider glyphs paint into the next column. */
++	/* True mono: use max_advance if set; else measure printable ASCII so a
++	 * proportional fallback cannot size cells from a skinny glyph. */
++	if (fixed &amp;&amp; face-&gt;size-&gt;metrics.max_advance &gt; 0)
++		max_adv = (int)(face-&gt;size-&gt;metrics.max_advance &gt;&gt; 6);
++
+ 	for (c = 32; c &lt; 127; c++) {
+ 		int adv, extent;
+ 
+@@ -627,6 +634,10 @@ void term_measure_cell(struct Term_State *t, struct BGTK_Context *ctx)
+ 	t-&gt;cell_w = max_adv &gt; max_extent ? max_adv : max_extent;
+ 	if (t-&gt;cell_w &lt; 6)
+ 		t-&gt;cell_w = 6;
++	bgtk_log("term_measure_cell: %dx%d fixed=%d family='%s' mono_path='%s'",
++		 t-&gt;cell_w, t-&gt;cell_h, fixed,
++		 face-&gt;family_name ? face-&gt;family_name : "?",
++		 ctx-&gt;font_mono_path[0] ? ctx-&gt;font_mono_path : "(none)");
+ }
+ 
+ /* ------------------------------------------------------------------ */
+diff --git a/apps/terminal.c b/apps/terminal.c
+index 5b0f82b..8063e14 100644
+--- a/apps/terminal.c
++++ b/apps/terminal.c
+@@ -235,9 +235,16 @@ int main(void)
+ 		cols = 1;
+ 	if (rows &lt; 1)
+ 		rows = 1;
+-	bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d font='%s'",
+-		 tmp_ts.cell_w, tmp_ts.cell_h, cols, rows, inner_w, inner_h,
+-		 ctx-&gt;font_sans_path[0] ? ctx-&gt;font_sans_path : "(none)");
++	{
++		FT_Face mono = bgtk_font_face(ctx, BGTK_FONT_MONO);
++		bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d mono='%s' fixed=%d family='%s'",
++			 tmp_ts.cell_w, tmp_ts.cell_h, cols, rows, inner_w,
++			 inner_h,
++			 ctx-&gt;font_mono_path[0] ? ctx-&gt;font_mono_path
++						: "(none)",
++			 mono &amp;&amp; FT_IS_FIXED_WIDTH(mono) ? 1 : 0,
++			 mono &amp;&amp; mono-&gt;family_name ? mono-&gt;family_name : "?");
++	}
+ 
+ 	struct Term_State *ts = term_create(cols, rows);
+ 	if (!ts) {
+diff --git a/bgtk.c b/bgtk.c
+index 617bf09..129f03d 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -442,40 +442,99 @@ int bgtk_inject_event(struct BGTK_Context *ctx, struct InputEvent ev)
+ 	return res;
+ }
+ 
+-/* Load and validate one FreeType face from path. Returns NULL on failure. */
++/* Validate face produces measurable ASCII glyphs. */
++static int bgtk_face_usable(FT_Face face, int size)
++{
++	int tw = 0, th = 0;
++
++	if (!face)
++		return 0;
++	FT_Select_Charmap(face, FT_ENCODING_UNICODE);
++	FT_Set_Pixel_Sizes(face, 0, size &gt; 0 ? size : 14);
++	measure_text(face, "Ag", &amp;tw, &amp;th);
++	return (tw &gt; 0 &amp;&amp; th &gt; 0);
++}
++
++/*
++ * Load and validate one FreeType face from path.
++ * prefer_fixed: for mono, walk TTC/OTC face indices for FT_FACE_FLAG_FIXED_WIDTH.
++ */
+ static FT_Face bgtk_load_face(struct BGTK_Context *ctx, const char *path,
+-			      const char *role)
++			      const char *role, int prefer_fixed)
+ {
+ 	FT_Face face = NULL;
+-	int tw = 0, th = 0;
++	FT_Face best = NULL;
++	FT_Long i, nfaces = 1;
+ 	int err;
++	int size;
+ 
+ 	if (!ctx || !ctx-&gt;ft_library || !path || !path[0]) {
+ 		bgtk_log("skip %s font: empty path", role ? role : "font");
+ 		return NULL;
+ 	}
+-	bgtk_log("loading %s font '%s'...", role ? role : "font", path);
++	size = ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14;
++	bgtk_log("loading %s font '%s'%s...", role ? role : "font", path,
++		 prefer_fixed ? " (prefer fixed-width)" : "");
+ 	bgtk_log_flush();
++
+ 	err = FT_New_Face(ctx-&gt;ft_library, path, 0, &amp;face);
+ 	if (err != 0) {
+ 		bgtk_log("could not load %s font '%s' (freetype err=0x%x)",
+ 			 role ? role : "font", path, (unsigned)err);
+ 		return NULL;
+ 	}
+-	/* Prefer Unicode cmap so ASCII is not remapped to symbol glyphs. */
+-	FT_Select_Charmap(face, FT_ENCODING_UNICODE);
+-	FT_Set_Pixel_Sizes(face, 0, ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14);
+-	measure_text(face, "Ag", &amp;tw, &amp;th);
+-	if (tw &lt;= 0 || th &lt;= 0) {
+-		bgtk_log("%s font '%s' has no usable glyphs (tw=%d th=%d)",
+-			 role ? role : "font", path, tw, th);
+-		FT_Done_Face(face);
+-		return NULL;
++	nfaces = face-&gt;num_faces &gt; 0 ? face-&gt;num_faces : 1;
++
++	if (!prefer_fixed || nfaces &lt;= 1) {
++		if (!bgtk_face_usable(face, size)) {
++			bgtk_log("%s font '%s' has no usable glyphs",
++				 role ? role : "font", path);
++			FT_Done_Face(face);
++			return NULL;
++		}
++		bgtk_log("loaded %s font '%s' size=%d fixed=%d face_index=0",
++			 role ? role : "font", path, size,
++			 FT_IS_FIXED_WIDTH(face) ? 1 : 0);
++		bgtk_log_flush();
++		return face;
++	}
++
++	/* Multi-face collection: pick first fixed-width with usable glyphs. */
++	FT_Done_Face(face);
++	face = NULL;
++	for (i = 0; i &lt; nfaces &amp;&amp; i &lt; 64; i++) {
++		err = FT_New_Face(ctx-&gt;ft_library, path, i, &amp;face);
++		if (err != 0) {
++			face = NULL;
++			continue;
++		}
++		if (!bgtk_face_usable(face, size)) {
++			FT_Done_Face(face);
++			face = NULL;
++			continue;
++		}
++		if (FT_IS_FIXED_WIDTH(face)) {
++			bgtk_log("loaded %s font '%s' size=%d fixed=1 face_index=%ld",
++				 role ? role : "font", path, size, (long)i);
++			bgtk_log_flush();
++			return face;
++		}
++		if (!best) {
++			best = face;
++			face = NULL;
++		} else {
++			FT_Done_Face(face);
++			face = NULL;
++		}
+ 	}
+-	bgtk_log("loaded %s font '%s' size=%d face_index=0",
+-		 role ? role : "font", path, ctx-&gt;font_size);
+-	bgtk_log_flush();
+-	return face;
++	if (best) {
++		bgtk_log("loaded %s font '%s' size=%d fixed=0 (no mono face in collection)",
++			 role ? role : "font", path, size);
++		bgtk_log_flush();
++		return best;
++	}
++	bgtk_log("could not load usable face from '%s'", path);
++	return NULL;
+ }
+ 
+ // Common resource setup (config, freetype, font) after buffer/conn/ dims are set.
+@@ -519,25 +578,33 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
+ 		return;
+ 	}
+ 
+-	/* Load sans (UI), mono, serif. Reuse faces when paths match so we do
+-	 * not open the same file three times (some TTC/embedded faces hang
+-	 * or fail on the second open). */
+-	ctx-&gt;ft_face = bgtk_load_face(ctx, ctx-&gt;font_sans_path, "sans");
++	/* Load sans (UI), mono (prefer fixed-width), serif. */
++	ctx-&gt;ft_face = bgtk_load_face(ctx, ctx-&gt;font_sans_path, "sans", 0);
+ 	if (!ctx-&gt;ft_face)
+ 		bgtk_log("no usable UI/sans font; text will use placeholders");
+ 
++	/* Mono: never re-open the same path as sans (can hang on some TTC). */
+ 	if (ctx-&gt;ft_face &amp;&amp; ctx-&gt;font_mono_path[0] &amp;&amp;
+ 	    strcmp(ctx-&gt;font_mono_path, ctx-&gt;font_sans_path) == 0) {
+ 		bgtk_log("mono reuses sans face (same path)");
+ 		ctx-&gt;ft_face_mono = ctx-&gt;ft_face;
+ 	} else {
+ 		ctx-&gt;ft_face_mono =
+-			bgtk_load_face(ctx, ctx-&gt;font_mono_path, "mono");
++			bgtk_load_face(ctx, ctx-&gt;font_mono_path, "mono", 1);
+ 	}
+ 	if (!ctx-&gt;ft_face_mono &amp;&amp; ctx-&gt;ft_face) {
+-		bgtk_log("mono fallback to sans face");
++		bgtk_log("mono fallback to sans face (terminal will look proportional)");
+ 		ctx-&gt;ft_face_mono = ctx-&gt;ft_face;
+ 	}
++	if (ctx-&gt;ft_face_mono)
++		bgtk_log("mono face fixed_width=%d family='%s' style='%s'",
++			 FT_IS_FIXED_WIDTH(ctx-&gt;ft_face_mono) ? 1 : 0,
++			 ctx-&gt;ft_face_mono-&gt;family_name
++				 ? ctx-&gt;ft_face_mono-&gt;family_name
++				 : "?",
++			 ctx-&gt;ft_face_mono-&gt;style_name
++				 ? ctx-&gt;ft_face_mono-&gt;style_name
++				 : "?");
+ 
+ 	if (ctx-&gt;ft_face &amp;&amp; ctx-&gt;font_serif_path[0] &amp;&amp;
+ 	    strcmp(ctx-&gt;font_serif_path, ctx-&gt;font_sans_path) == 0) {
+@@ -545,12 +612,13 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
+ 		ctx-&gt;ft_face_serif = ctx-&gt;ft_face;
+ 	} else if (ctx-&gt;ft_face_mono &amp;&amp; ctx-&gt;font_serif_path[0] &amp;&amp;
+ 		   ctx-&gt;font_mono_path[0] &amp;&amp;
+-		   strcmp(ctx-&gt;font_serif_path, ctx-&gt;font_mono_path) == 0) {
++		   strcmp(ctx-&gt;font_serif_path, ctx-&gt;font_mono_path) == 0 &amp;&amp;
++		   ctx-&gt;ft_face_mono != ctx-&gt;ft_face) {
+ 		bgtk_log("serif reuses mono face (same path)");
+ 		ctx-&gt;ft_face_serif = ctx-&gt;ft_face_mono;
+ 	} else {
+ 		ctx-&gt;ft_face_serif =
+-			bgtk_load_face(ctx, ctx-&gt;font_serif_path, "serif");
++			bgtk_load_face(ctx, ctx-&gt;font_serif_path, "serif", 0);
+ 	}
+ 	if (!ctx-&gt;ft_face_serif &amp;&amp; ctx-&gt;ft_face) {
+ 		bgtk_log("serif fallback to sans face");
+diff --git a/config.c b/config.c
+index c910cd0..6fa2f50 100644
+--- a/config.c
++++ b/config.c
+@@ -223,8 +223,19 @@ static void pick_default_font_family(char *out, size_t outlen, int family)
+ 		"/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+ 		"/usr/share/fonts/truetype/freefont/FreeMono.ttf",
+ 		"/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
++		"/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
++		"/usr/share/fonts/truetype/droid/DroidSansMono.ttf",
++		"/usr/share/fonts/truetype/terminus/TerminusTTF-4.49.1.ttf",
++		"/usr/share/fonts/truetype/terminus/TerminusTTF.ttf",
++		"/usr/share/fonts/X11/misc/ter-u14n.pcf.gz",
+ 		"/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+ 		"/share/fonts/TTF/DejaVuSansMono.ttf",
++		"/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
++		"/share/fonts/truetype/freefont/FreeMono.ttf",
++		/* lin0 / embedded flat roots */
++		"/fonts/DejaVuSansMono.ttf",
++		"/fonts/LiberationMono-Regular.ttf",
++		"/fonts/FreeMono.ttf",
+ #endif
+ #ifdef __APPLE__
+ 		"/System/Library/Fonts/SFNSMono.ttf",
+diff --git a/drawing.c b/drawing.c
+index c427532..79b3571 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -15,18 +15,40 @@
+ #define STB_IMAGE_IMPLEMENTATION
+ #include "stb_image.h"
+ 
+-// Loads an image file into a pixel buffer (RGBA format).
++/* Pack 8-bit channels into framebuffer pixel format 0xAARRGGBB (BGCE/XRGB). */
++static uint32_t pack_argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b)
++{
++	return ((uint32_t)a &lt;&lt; 24) | ((uint32_t)r &lt;&lt; 16) | ((uint32_t)g &lt;&lt; 8) |
++	       (uint32_t)b;
++}
++
++// Loads an image file into a pixel buffer as 0xAARRGGBB uint32 pixels.
++// stbi gives RGBA bytes; casting those to uint32 is wrong (R/B swap on LE).
+ // Returns 0 on success, -1 on failure.
+ int load_image(const char *path, uint32_t **out_pixels, int *out_w, int *out_h)
+ {
+-	int w, h, channels;
+-	unsigned char *pixels = stbi_load(path, &amp;w, &amp;h, &amp;channels, 4);
+-	if (!pixels) {
++	int w, h, channels, n, i;
++	unsigned char *rgba;
++	uint32_t *out;
++
++	rgba = stbi_load(path, &amp;w, &amp;h, &amp;channels, 4);
++	if (!rgba) {
+ 		fprintf(stderr, "Failed to load image: %s\n", path);
+ 		return -1;
+ 	}
+-	// Convert to uint32_t (RGBA)
+-	*out_pixels = (uint32_t *) pixels;
++	n = w * h;
++	out = malloc((size_t)n * sizeof(uint32_t));
++	if (!out) {
++		stbi_image_free(rgba);
++		return -1;
++	}
++	for (i = 0; i &lt; n; i++) {
++		unsigned char *p = rgba + (size_t)i * 4;
++		/* p[0]=R p[1]=G p[2]=B p[3]=A → same packing as BGCE rgba_to_u32 */
++		out[i] = pack_argb(p[3], p[0], p[1], p[2]);
++	}
++	stbi_image_free(rgba);
++	*out_pixels = out;
+ 	*out_w = w;
+ 	*out_h = h;
+ 	return 0;
+diff --git a/html.c b/html.c
+index 9fb7cce..0faa366 100644
+--- a/html.c
++++ b/html.c
+@@ -512,30 +512,65 @@ static struct BGTK_Widget *convert_list(struct BGTK_Context *ctx, xmlNode *node,
+ /* Table converter                                                     */
+ /* ------------------------------------------------------------------ */
+ 
++// True if the cell has element children (button/input/...), not pure text.
++static int cell_has_element_child(xmlNode *node)
++{
++	for (xmlNode *c = node-&gt;children; c; c = c-&gt;next)
++		if (c-&gt;type == XML_ELEMENT_NODE)
++			return 1;
++	return 0;
++}
++
+ // Convert a single &lt;td&gt;/&lt;th&gt; cell. Borderless by default (settings-friendly).
+-// For &lt;th&gt;, content gets bold styling. Text is vertically centered in the cell.
++// Cells are left-aligned; content is vertically centered in the row.
++// Pure-text cells must be BGTK_TEXT (not a nested list) so text_align works
++// when draw_frame expands the child to the equalized column width.
+ static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
+-					xmlNode *node, int avail_w, int is_header)
++					xmlNode *node, int avail_w,
++					int is_header, int col)
+ {
+-	struct BGTK_Widget *content = convert_container(ctx, node, avail_w);
+-	if (!content) {
++	struct BGTK_Widget *content = NULL;
++	(void)col;
++
++	if (!cell_has_element_child(node)) {
+ 		char *txt = collect_text(node);
+ 		if (!txt || !*txt) {
+ 			free(txt);
+ 			txt = strdup(" ");
+ 		}
+ 		content = bgtk_text(ctx, txt,
+-			(BGTK_Options){.text_v_align = BGTK_VALIGN_CENTER});
++			(BGTK_Options){.text_v_align = BGTK_VALIGN_CENTER,
++				       .text_align = BGTK_ALIGN_LEFT});
+ 		free(txt);
+-		if (!content)
+-			return NULL;
++	} else {
++		content = convert_container(ctx, node, avail_w);
+ 	}
++	if (!content)
++		return NULL;
+ 	if (is_header &amp;&amp; content-&gt;type == BGTK_WIDGET_TEXT)
+ 		content-&gt;data.text.style |= BGTK_TEXT_BOLD;
+-	if (content-&gt;type == BGTK_WIDGET_TEXT)
++	if (content-&gt;type == BGTK_WIDGET_TEXT) {
+ 		content-&gt;text_v_align = BGTK_VALIGN_CENTER;
++		content-&gt;text_align = BGTK_ALIGN_LEFT;
++	}
++	/* Drop widget margin inside cells so controls share the page left edge
++	 * with Apply / &lt;p&gt; siblings (those keep their own margin). */
++	if (content-&gt;type == BGTK_WIDGET_BUTTON ||
++	    content-&gt;type == BGTK_WIDGET_TEXT_INPUT) {
++		content-&gt;margin = 0;
++	} else if (content-&gt;type == BGTK_WIDGET_LIST) {
++		for (int i = 0; i &lt; content-&gt;data.list_widget.widget_count; i++) {
++			struct BGTK_Widget *ch = content-&gt;data.list_widget.items[i];
++			if (ch &amp;&amp; (ch-&gt;type == BGTK_WIDGET_BUTTON ||
++				   ch-&gt;type == BGTK_WIDGET_TEXT_INPUT ||
++				   ch-&gt;type == BGTK_WIDGET_TEXT))
++				ch-&gt;margin = 0;
++		}
++	}
+ 
+-	int cell_pad = 4;
++	/* Keep cell chrome minimal so labels/controls share the same left edge
++	 * as block widgets below the table (&lt;p&gt;, Apply buttons, etc.). */
++	int cell_pad = 2;
+ 	struct BGTK_Widget *frame = bgtk_frame(ctx, content,
+ 		content-&gt;w + 2 * cell_pad, content-&gt;h + 2 * cell_pad,
+ 		(BGTK_Options){.padding = cell_pad, .margin = 0});
+@@ -616,7 +651,7 @@ static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
+ 			if (col &gt;= max_cols)
+ 				break;
+ 			cells[r][col] = convert_cell(ctx, c, avail_w / max_cols,
+-						     strcmp(tn, "th") == 0);
++						     strcmp(tn, "th") == 0, col);
+ 			col++;
+ 		}
+ 		row_cols[r] = col;
+@@ -636,6 +671,12 @@ static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
+ 		}
+ 	}
+ 
++	/* Gap between columns (extra width on all but last). Left-aligned
++	 * labels keep their left edge; space appears before the next col. */
++	const int col_gap = 16;
++	for (int c = 0; c &lt; max_cols - 1; c++)
++		col_widths[c] += col_gap;
++
+ 	// Equalize: every cell in a column gets the same width,
+ 	// every cell in a row gets the same height.
+ 	for (int r = 0; r &lt; num_rows; r++) {
+@@ -666,14 +707,20 @@ static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
+ 		BGTK_Options inner = {.orientation = BGTK_LIST_VERTICAL, .margin = 0};
+ 		struct BGTK_Widget *grid = bgtk_list(ctx, rows, valid_rows, inner);
+ 		if (grid) {
+-			// Wrap in a frame for outer margin (like block-level HTML).
+-			int tm = attr_int(node, "margin", 8);
+-			table = bgtk_frame(ctx, grid,
+-				grid-&gt;w + 2 * tm, grid-&gt;h + 2 * tm,
+-				(BGTK_Options){.padding = 0, .margin = tm});
+-			if (table) {
+-				table-&gt;data.frame.border_w = 0;
+-				table-&gt;data.frame.border_color = 0;
++			/* Default margin 0 so table content lines up with sibling
++			 * block widgets (paragraphs, Apply row). Override via
++			 * margin="N" on &lt;table&gt; when inset is wanted. */
++			int tm = attr_int(node, "margin", 0);
++			if (tm &gt; 0) {
++				table = bgtk_frame(ctx, grid,
++					grid-&gt;w + 2 * tm, grid-&gt;h + 2 * tm,
++					(BGTK_Options){.padding = 0, .margin = tm});
++				if (table) {
++					table-&gt;data.frame.border_w = 0;
++					table-&gt;data.frame.border_color = 0;
++				}
++			} else {
++				table = grid;
+ 			}
+ 		}
+ 	}
+diff --git a/test/test_settings.c b/test/test_settings.c
+index efc03b6..e04bada 100644
+--- a/test/test_settings.c
++++ b/test/test_settings.c
+@@ -37,12 +37,31 @@ int main(void)
+ 
+ 	struct config config;
+ 	init_config_defaults(&amp;config);
++	/* Distinct red wallpaper so preview packing (not theme paper) is obvious. */
++	config.type = BG_COLOR;
++	config.color = 0xFFE53935;
+ 
+ 	settings_build_ui(ctx, &amp;config, width, height);
+ 
+ 	/* 00: Initial view - Background page is shown */
+ 	bgtk_draw_widgets(ctx);
+ 	take_screenshot(ctx, "settings_00_background.png");
++	/* Preview must be red (0xE53935), not BGR-swapped blue-ish. */
++	{
++		uint32_t *fb = (uint32_t *)ctx-&gt;shm_buffer;
++		/* Sample inside the preview box (content panel, mid). */
++		int sx = 400, sy = 250;
++		uint32_t p = fb[sy * width + sx];
++		unsigned r = (p &gt;&gt; 16) &amp; 0xFF, g = (p &gt;&gt; 8) &amp; 0xFF, b = p &amp; 0xFF;
++		if (r &lt; 0xC0 || g &gt; 0x80 || b &gt; 0x80) {
++			fprintf(stderr,
++				"test_settings: preview color wrong at %d,%d "
++				"got #%02X%02X%02X want ~#E53935 (R/B swap?)\n",
++				sx, sy, r, g, b);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++	}
+ 
+ 	/* 00b: Click Background Apply (must hit-test after preview insert).
+ 	 * Content scrollable is on the right; Apply sits under the preview. */
+@@ -53,9 +72,9 @@ int main(void)
+ 		click.type = EV_KEY;
+ 		click.code = BTN_LEFT;
+ 		click.value = 1;
+-		/* Apply under preview; layout shifted by intro line + panel rule. */
++		/* Apply sits under the aspect-correct preview (fills leftover). */
+ 		click.x = 192;
+-		click.y = 255;
++		click.y = 400;
+ 		bgtk_inject_event(ctx, click);
+ 		click.value = 0;
+ 		if (!bgtk_inject_event(ctx, click)) {
+</pre>

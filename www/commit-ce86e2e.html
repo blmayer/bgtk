@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk ce86e2e</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit ce86e2e
+parent <a href=commit-42669cd.html>42669cd</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-13T12:17:48-03:00
+
+    fix: tighter gemini link spacing, no black blink on scroll
+
+    Link lines use GEM_V_AFTER_LINK instead of paragraph gap. Cache
+    scrollable offscreen content so wheel/j/k only re-blits the viewport,
+    and stage real BGCE frames so mid-draw clears never flash black.
+
+<a href=tree-ce86e2e.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/gemini_browser.c b/apps/gemini_browser.c
+index d00ec0f..332bb90 100644
+--- a/apps/gemini_browser.c
++++ b/apps/gemini_browser.c
+@@ -59,6 +59,8 @@ static BGTK_Options line_opts(void)
+ #define GEM_V_BEFORE_HEADER 28
+ #define GEM_V_AFTER_HEADER  20
+ #define GEM_V_AFTER_PARA    22
++/* Link lines are list-like — much tighter than paragraph spacing. */
++#define GEM_V_AFTER_LINK    4
+ #define GEM_V_EMPTY_LINE    16
+ 
+ /* Keep content_height in sync with items (scroll keys need this before draw). */
+@@ -1020,6 +1022,8 @@ static void rebuild_content_from_gemtext(const char *body)
+ 					tw-&gt;handle_event = gemini_line_handler;
+ 					if (header_level &gt; 0)
+ 						tw-&gt;h += GEM_V_AFTER_HEADER;
++					else if (is_link)
++						tw-&gt;h += GEM_V_AFTER_LINK;
+ 					else if (!vis[0])
+ 						tw-&gt;h += GEM_V_EMPTY_LINE;
+ 					else
+@@ -1066,6 +1070,8 @@ static void rebuild_content_from_gemtext(const char *body)
+ 						tw-&gt;h -= 2;
+ 				} else if (header_level &gt; 0) {
+ 					tw-&gt;h += GEM_V_AFTER_HEADER;
++				} else if (is_link) {
++					tw-&gt;h += GEM_V_AFTER_LINK;
+ 				} else {
+ 					tw-&gt;h += GEM_V_AFTER_PARA;
+ 				}
+diff --git a/bgtk.c b/bgtk.c
+index 6be0572..83e3a29 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -861,6 +861,9 @@ void bgtk_destroy(struct BGTK_Context *ctx)
+ 	}
+ 	/* Release framebuffer (mmap for real apps, malloc for mock). */
+ 	bgtk_release_buffer(ctx);
++	free(ctx-&gt;draw_back);
++	ctx-&gt;draw_back = NULL;
++	ctx-&gt;draw_back_n = 0;
+ 	bgtk_free_faces(ctx);
+ 	if (ctx-&gt;ft_library) {
+ 		FT_Done_FreeType(ctx-&gt;ft_library);
+@@ -999,16 +1002,36 @@ void bgtk_draw_widgets(struct BGTK_Context *ctx)
+ {
+ 	/* Fill with theme background (not full clear-to-zero). After resize the
+ 	 * new shm is zeroed — without a fill, gaps outside widget paint stay
+-	 * pure black. Widgets still paint their own rects on top. */
++	 * pure black. Widgets still paint their own rects on top.
++	 *
++	 * Real BGCE: paint into a staging buffer then memcpy once so the
++	 * compositor never samples a cleared/mid-frame shm (black blink on
++	 * fast scroll). Mock keeps in-place draw for screenshot tests. */
++	void *real_shm;
++	int n, i, staged;
++	uint32_t bg;
++	uint32_t *p;
++
+ 	if (!ctx)
+ 		return;
+-	if (ctx-&gt;shm_buffer &amp;&amp; ctx-&gt;width &gt; 0 &amp;&amp; ctx-&gt;height &gt; 0) {
+-		uint32_t bg = ctx-&gt;theme.background ? ctx-&gt;theme.background
+-						    : 0xFF0A0A0Au;
+-		uint32_t *p = (uint32_t *)ctx-&gt;shm_buffer;
+-		int n = ctx-&gt;width * ctx-&gt;height;
+-		int i;
+-
++	real_shm = ctx-&gt;shm_buffer;
++	n = (ctx-&gt;width &gt; 0 &amp;&amp; ctx-&gt;height &gt; 0) ? ctx-&gt;width * ctx-&gt;height : 0;
++	staged = 0;
++	if (ctx-&gt;buffer_mapped &amp;&amp; ctx-&gt;conn_fd &gt;= 0 &amp;&amp; real_shm &amp;&amp; n &gt; 0) {
++		if (!ctx-&gt;draw_back || ctx-&gt;draw_back_n &lt; n) {
++			free(ctx-&gt;draw_back);
++			ctx-&gt;draw_back = malloc((size_t)n * sizeof(uint32_t));
++			ctx-&gt;draw_back_n = ctx-&gt;draw_back ? n : 0;
++		}
++		if (ctx-&gt;draw_back) {
++			ctx-&gt;shm_buffer = ctx-&gt;draw_back;
++			staged = 1;
++		}
++	}
++	if (ctx-&gt;shm_buffer &amp;&amp; n &gt; 0) {
++		bg = ctx-&gt;theme.background ? ctx-&gt;theme.background
++					   : 0xFF0A0A0Au;
++		p = (uint32_t *)ctx-&gt;shm_buffer;
+ 		bg |= 0xFF000000u;
+ 		for (i = 0; i &lt; n; i++)
+ 			p[i] = bg;
+@@ -1017,6 +1040,10 @@ void bgtk_draw_widgets(struct BGTK_Context *ctx)
+ 		calculate_widget_size(ctx, ctx-&gt;root_widget);
+ 		draw_widget(ctx, ctx-&gt;root_widget, ctx-&gt;shm_buffer);
+ 	}
++	if (staged) {
++		memcpy(real_shm, ctx-&gt;draw_back, (size_t)n * sizeof(uint32_t));
++		ctx-&gt;shm_buffer = real_shm;
++	}
+ 	if (ctx-&gt;conn_fd &gt;= 0)
+ 		bgce_draw(ctx-&gt;conn_fd);
+ }
+diff --git a/bgtk.h b/bgtk.h
+index e066b77..89549bb 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -175,6 +175,10 @@ struct BGTK_Context {
+ 	int buffer_mapped;
+ 	int width;
+ 	int height;
++	/* Staging buffer for atomic present (real BGCE only). Avoids
++	 * mid-frame black flashes while painting into live shm. */
++	uint32_t *draw_back;
++	int draw_back_n; /* capacity in pixels */
+ 
+ 	// FreeType data (ft_face is the UI/sans face; mono/serif optional)
+ 	FT_Library ft_library;
+diff --git a/drawing.c b/drawing.c
+index 83fef5c..cb28d5d 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -821,7 +821,9 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	if (content_height &gt; 100000)
+ 		content_height = 100000;
+ 
+-	/* Reallocate offscreen buffer when page content or width changes. */
++	/* Offscreen cache: rebuild only when missing or size changed.
++	 * Scrolling only changes scroll_y — reusing tmp avoids a full page
++	 * clear+redraw every wheel/j/k tick (looked like black blinks). */
+ 	need = (size_t)w-&gt;w * (size_t)content_height;
+ 	if (need == 0)
+ 		return;
+@@ -841,43 +843,67 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		}
+ 		/* Pixel count (fits: w*h capped above). */
+ 		w-&gt;data.scrollable.widget_capacity = (int)need;
+-	}
+ 
+-	tmp_ctx = *ctx;
+-	tmp_ctx.width = w-&gt;w;
+-	tmp_ctx.height = content_height;
+-	tmp_ctx.shm_buffer = w-&gt;data.scrollable.tmp;
++		tmp_ctx = *ctx;
++		tmp_ctx.width = w-&gt;w;
++		tmp_ctx.height = content_height;
++		tmp_ctx.shm_buffer = w-&gt;data.scrollable.tmp;
+ 
+-	draw_rect(&amp;tmp_ctx, w-&gt;data.scrollable.tmp, 0, 0, w-&gt;w, content_height,
+-		  ctx-&gt;theme.background);
++		draw_rect(&amp;tmp_ctx, w-&gt;data.scrollable.tmp, 0, 0, w-&gt;w,
++			  content_height, ctx-&gt;theme.background);
+ 
+-	current_y = 0;
+-	for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
+-		struct BGTK_Widget *child = w-&gt;data.scrollable.items[i];
+-		int bottom;
+-		int inner_w = w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
++		current_y = 0;
++		for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
++			struct BGTK_Widget *child = w-&gt;data.scrollable.items[i];
++			int bottom;
++			int inner_w = w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
+ 
+-		if (!child)
+-			continue;
+-		/* EXPAND_X: fill content width (scroll body). */
+-		if ((child-&gt;flags &amp; BGTK_FLAG_EXPAND_X) &amp;&amp; inner_w &gt; 0)
+-			child-&gt;w = inner_w;
+-		child-&gt;x = w-&gt;margin + w-&gt;padding;
+-		if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+-			child-&gt;x =
+-			    w-&gt;margin + (w-&gt;w - 2 * w-&gt;margin - child-&gt;w) / 2;
++			if (!child)
++				continue;
++			/* EXPAND_X: fill content width (scroll body). */
++			if ((child-&gt;flags &amp; BGTK_FLAG_EXPAND_X) &amp;&amp; inner_w &gt; 0)
++				child-&gt;w = inner_w;
++			child-&gt;x = w-&gt;margin + w-&gt;padding;
++			if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
++				child-&gt;x = w-&gt;margin +
++					   (w-&gt;w - 2 * w-&gt;margin - child-&gt;w) /
++						   2;
++			}
++			/* Padding insets content on all sides. */
++			child-&gt;y = current_y + w-&gt;margin + w-&gt;padding;
++			/* Content-space coords (events transform into this). */
++			child-&gt;abs_x = child-&gt;x;
++			child-&gt;abs_y = child-&gt;y;
++			child-&gt;parent = w;
++			bottom = child-&gt;y + child-&gt;h;
++			if (child-&gt;y &lt; content_height &amp;&amp; bottom &gt; 0)
++				draw_widget(&amp;tmp_ctx, child,
++					    w-&gt;data.scrollable.tmp);
++			current_y += child-&gt;h + 2 * w-&gt;margin;
++		}
++	} else {
++		/* Cache hit: still refresh layout coords for hit-testing. */
++		current_y = 0;
++		for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
++			struct BGTK_Widget *child = w-&gt;data.scrollable.items[i];
++			int inner_w = w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
++
++			if (!child)
++				continue;
++			if ((child-&gt;flags &amp; BGTK_FLAG_EXPAND_X) &amp;&amp; inner_w &gt; 0)
++				child-&gt;w = inner_w;
++			child-&gt;x = w-&gt;margin + w-&gt;padding;
++			if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
++				child-&gt;x = w-&gt;margin +
++					   (w-&gt;w - 2 * w-&gt;margin - child-&gt;w) /
++						   2;
++			}
++			child-&gt;y = current_y + w-&gt;margin + w-&gt;padding;
++			child-&gt;abs_x = child-&gt;x;
++			child-&gt;abs_y = child-&gt;y;
++			child-&gt;parent = w;
++			current_y += child-&gt;h + 2 * w-&gt;margin;
+ 		}
+-		/* Padding insets content on all sides (was X-only — Y ignored). */
+-		child-&gt;y = current_y + w-&gt;margin + w-&gt;padding;
+-		/* Content-space coords (events transform into this space). */
+-		child-&gt;abs_x = child-&gt;x;
+-		child-&gt;abs_y = child-&gt;y;
+-		child-&gt;parent = w;
+-		bottom = child-&gt;y + child-&gt;h;
+-		/* Skip draw if entirely past buffer (defensive). */
+-		if (child-&gt;y &lt; content_height &amp;&amp; bottom &gt; 0)
+-			draw_widget(&amp;tmp_ctx, child, w-&gt;data.scrollable.tmp);
+-		current_y += child-&gt;h + 2 * w-&gt;margin;
+ 	}
+ 
+ 	/* Blit visible rows into the window buffer — clip to shm bounds.
+diff --git a/test/test_gemini_browser.c b/test/test_gemini_browser.c
+index d13b3b1..f39251e 100644
+--- a/test/test_gemini_browser.c
++++ b/test/test_gemini_browser.c
+@@ -46,6 +46,7 @@ static BGTK_Options line_opts(void)
+ #define GEM_V_BEFORE_HEADER 28
+ #define GEM_V_AFTER_HEADER  20
+ #define GEM_V_AFTER_PARA    22
++#define GEM_V_AFTER_LINK    4
+ #define GEM_V_EMPTY_LINE    16
+ 
+ static void gemini_recompute_scroll_height(void)
+@@ -613,6 +614,8 @@ static void rebuild_content_from_gemtext(const char *body)
+ 						tw-&gt;h -= 2;
+ 				} else if (header_level &gt; 0) {
+ 					tw-&gt;h += GEM_V_AFTER_HEADER;
++				} else if (is_link) {
++					tw-&gt;h += GEM_V_AFTER_LINK;
+ 				} else if (!vis[0]) {
+ 					tw-&gt;h += GEM_V_EMPTY_LINE;
+ 				} else {
+</pre>

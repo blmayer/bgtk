@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 8eb64bb</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 8eb64bb
+parent <a href=commit-598c742.html>598c742</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-01-03T21:33:00-03:00
+
+    Added frame widget
+
+<a href=tree-8eb64bb.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 810026d..a73cf9b 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -53,3 +53,9 @@ int res = bgtk_init(&amp;ctx);
+   - If function arguments don't fit on one line, place each on a new line and close
+     the parenthesis on its own line.
+ - **Testing**: The `app.c` file is a demo application. Use it to test new features.
++
++### Adding new widgets
++
++1. Updated bgtk.h to add the type in the enum and in the union
++2. Update widgets.c to add a function to create it
++2. Update drawing.c to update the draw_widget function
+diff --git a/bgtk.h b/bgtk.h
+index 44453c9..2180bb0 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -39,6 +39,7 @@ enum BGTK_Widget_Type {
+ 	BGTK_WIDGET_TEXT,
+ 	BGTK_WIDGET_SCROLLABLE,
+ 	BGTK_WIDGET_IMAGE,
++	BGTK_WIDGET_FRAME,
+ 	// Add more types as needed
+ };
+ 
+@@ -117,4 +118,7 @@ struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx, struct BGTK_Widget
+ // Creates an image widget.
+ struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path, BGTK_Options options);
+ 
++// Creates a frame widget.
++struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, int border_width, BGTK_Options options);
++
+ #endif
+diff --git a/drawing.c b/drawing.c
+index 88c0eaa..b85bdda 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -322,5 +322,25 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
+ 			adjusted_widget.h -= 2 * (w-&gt;margin + w-&gt;padding);
+ 			draw_image(ctx, adjusted_widget, pixels);
+ 			break;
++	       case BGTK_WIDGET_FRAME:
++		       puts("drawing frame widget");
++		       // Draw frame background
++		       draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin, ctx-&gt;theme.background);
++
++		       // Draw frame border
++		       draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, w-&gt;w - 2 * w-&gt;margin, w-&gt;data.frame.border_width, ctx-&gt;theme.button_text);  // Top
++		       draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;h - w-&gt;margin - w-&gt;data.frame.border_width, w-&gt;w - 2 * w-&gt;margin, w-&gt;data.frame.border_width, ctx-&gt;theme.button_text);  // Bottom
++		       draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, w-&gt;data.frame.border_width, w-&gt;h - 2 * w-&gt;margin, ctx-&gt;theme.button_text);  // Left
++		       draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - w-&gt;margin - w-&gt;data.frame.border_width, w-&gt;y + w-&gt;margin, w-&gt;data.frame.border_width, w-&gt;h - 2 * w-&gt;margin, ctx-&gt;theme.button_text);  // Right
++
++		       // Draw child widget inside the frame
++		       if (w-&gt;data.frame.child) {
++			       w-&gt;data.frame.child-&gt;x = w-&gt;x + w-&gt;margin + w-&gt;data.frame.border_width + w-&gt;padding;
++			       w-&gt;data.frame.child-&gt;y = w-&gt;y + w-&gt;margin + w-&gt;data.frame.border_width + w-&gt;padding;
++			       w-&gt;data.frame.child-&gt;w = w-&gt;w - 2 * (w-&gt;margin + w-&gt;data.frame.border_width + w-&gt;padding);
++			       w-&gt;data.frame.child-&gt;h = w-&gt;h - 2 * (w-&gt;margin + w-&gt;data.frame.border_width + w-&gt;padding);
++			       draw_widget(ctx, w-&gt;data.frame.child, pixels);
++		       }
++		       break;
+ 	}
+ }
+diff --git a/widgets.c b/widgets.c
+index fdb8222..61ab969 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -186,3 +186,24 @@ struct BGTK_Widget* bgtk_image(struct BGTK_Context* ctx, const char* path,
+ 
+ 	return widget;
+ }
++
++struct BGTK_Widget* bgtk_frame(struct BGTK_Context* ctx, struct BGTK_Widget* child, int width, int height, int border_width, BGTK_Options options) {
++	struct BGTK_Widget* frame = (struct BGTK_Widget*)malloc(sizeof(struct BGTK_Widget));
++	if (!frame) return NULL;
++
++	frame-&gt;ctx = ctx;
++	frame-&gt;type = BGTK_WIDGET_FRAME;
++	frame-&gt;x = 0; // Default position, can be adjusted
++	frame-&gt;y = 0;
++	frame-&gt;w = width;
++	frame-&gt;h = height;
++	frame-&gt;flags = options.flags;
++	frame-&gt;padding = options.padding;
++	frame-&gt;margin = options.margin;
++
++	frame-&gt;data.frame.child = child;
++	frame-&gt;data.frame.border_width = border_width;
++
++	return frame;
++}
++
+</pre>

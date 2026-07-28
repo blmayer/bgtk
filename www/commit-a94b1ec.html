@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk a94b1ec</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit a94b1ec
+parent <a href=commit-55d94a4.html>55d94a4</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-06-20T18:44:12-03:00
+
+    Wrapped terminal image widget in frame to show boundaries
+
+<a href=tree-a94b1ec.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/terminal.c b/apps/terminal.c
+index b476529..2ba71c4 100644
+--- a/apps/terminal.c
++++ b/apps/terminal.c
+@@ -92,12 +92,17 @@ int main(void)
+ 		return 1;
+ 	}
+ 
++	/* Compute inner area (frame border eats into the window) */
++	int bw = ctx-&gt;theme.frame_border_size;
++	int inner_w = width - 2 * bw;
++	int inner_h = height - 2 * bw;
++
+ 	/* Compute cell size and terminal dimensions */
+ 	struct Term_State tmp_ts = {0};
+ 	tmp_ts.cols = tmp_ts.rows = 1;
+ 	term_measure_cell(&amp;tmp_ts, ctx);
+-	int cols = width / tmp_ts.cell_w;
+-	int rows = height / tmp_ts.cell_h;
++	int cols = inner_w / tmp_ts.cell_w;
++	int rows = inner_h / tmp_ts.cell_h;
+ 	if (cols &lt; 1) cols = 1;
+ 	if (rows &lt; 1) rows = 1;
+ 
+@@ -106,13 +111,16 @@ int main(void)
+ 	ts-&gt;cell_w = tmp_ts.cell_w;
+ 	ts-&gt;cell_h = tmp_ts.cell_h;
+ 
+-	/* Create image widget as the drawing surface */
+-	struct BGTK_Widget *img = bgtk_image(ctx, NULL, width, height,
++	/* Create image widget as the drawing surface, wrapped in a frame */
++	struct BGTK_Widget *img = bgtk_image(ctx, NULL, inner_w, inner_h,
+ 					     (BGTK_Options){0});
+-	img-&gt;data.image.pixels = calloc((size_t)width * height, sizeof(uint32_t));
+-	img-&gt;data.image.img_w = width;
+-	img-&gt;data.image.img_h = height;
+-	ctx-&gt;root_widget = img;
++	img-&gt;data.image.pixels = calloc((size_t)inner_w * inner_h,
++					sizeof(uint32_t));
++	img-&gt;data.image.img_w = inner_w;
++	img-&gt;data.image.img_h = inner_h;
++	struct BGTK_Widget *frame = bgtk_frame(ctx, img, width, height,
++					       (BGTK_Options){0});
++	ctx-&gt;root_widget = frame;
+ 
+ 	/* Open PTY */
+ 	int master_fd;
+@@ -124,7 +132,7 @@ int main(void)
+ 	ts-&gt;pty_fd = master_fd;
+ 
+ 	/* Initial render */
+-	term_render(ts, ctx, img-&gt;data.image.pixels, width, height);
++	term_render(ts, ctx, img-&gt;data.image.pixels, inner_w, inner_h);
+ 	bgtk_draw_widgets(ctx);
+ 
+ 	/* Main loop: poll BGCE connection and PTY */
+@@ -152,7 +160,7 @@ int main(void)
+ 			if (n &gt; 0) {
+ 				term_feed(ts, buf, (int)n);
+ 				term_render(ts, ctx, img-&gt;data.image.pixels,
+-					    width, height);
++					    inner_w, inner_h);
+ 				bgtk_draw_widgets(ctx);
+ 			} else if (n == 0 ||
+ 				   (n &lt; 0 &amp;&amp; errno != EAGAIN &amp;&amp; errno != EINTR)) {
+</pre>

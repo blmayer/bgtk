@@ -1,0 +1,3027 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk bd15be1</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit bd15be1
+parent <a href=commit-bab7f58.html>bab7f58</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-16T23:47:55-03:00
+
+    feat(html): tables (colspan/rowspan/border), CSS margins, images/wrap
+
+    Absolute table grid with border= and CSS border-color; margin:auto and
+    multi-value margin/padding; content-sized table-layout:fixed; transparent
+    pre; img load + text wrap; Labyrinth HTTP fetch body length/Accept.
+
+<a href=tree-bd15be1.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/labyrinth.c b/apps/labyrinth.c
+index 28428f8..a659c8d 100644
+--- a/apps/labyrinth.c
++++ b/apps/labyrinth.c
+@@ -623,12 +623,15 @@ static int parse_http_url(const char *url, int is_https, char *host, size_t host
+ 	return 0;
+ }
+ 
+-static char *http_strip_headers(char *raw, size_t len, int *out_status)
++static char *http_strip_headers(char *raw, size_t len, int *out_status,
++				size_t *out_body_len)
+ {
+ 	char *hdr_end, *payload, *out;
+ 	size_t blen;
+ 	int status = 0;
+ 
++	if (out_body_len)
++		*out_body_len = 0;
+ 	if (!raw || len &lt; 12) {
+ 		free(raw);
+ 		return NULL;
+@@ -639,6 +642,8 @@ static char *http_strip_headers(char *raw, size_t len, int *out_status)
+ 	if (!hdr_end) {
+ 		if (out_status &amp;&amp; !*out_status)
+ 			*out_status = status;
++		if (out_body_len)
++			*out_body_len = len;
+ 		return raw;
+ 	}
+ 	payload = hdr_end + 4;
+@@ -651,11 +656,14 @@ static char *http_strip_headers(char *raw, size_t len, int *out_status)
+ 	memcpy(out, payload, blen);
+ 	out[blen] = '\0';
+ 	free(raw);
++	if (out_body_len)
++		*out_body_len = blen;
+ 	return out;
+ }
+ 
+-/* Minimal HTTP/1.0 GET over plain TCP. */
+-static char *http_get(const char *url, int *out_status, char *err, size_t errlen)
++/* Minimal HTTP/1.0 GET over plain TCP. *out_len = body bytes if non-NULL. */
++static char *http_get(const char *url, int *out_status, size_t *out_len,
++		      char *err, size_t errlen)
+ {
+ 	char host[256], path[512], portstr[16];
+ 	int port = 80, fd = -1;
+@@ -702,7 +710,7 @@ static char *http_get(const char *url, int *out_status, char *err, size_t errlen
+ 
+ 	snprintf(req, sizeof(req),
+ 		 "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: Labyrinth/0.1 "
+-		 "(BGTK)\r\nAccept: text/html,*/*\r\nConnection: close\r\n\r\n",
++		 "(BGTK)\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+ 		 path, host);
+ 	if (write(fd, req, strlen(req)) &lt; 0) {
+ 		if (err)
+@@ -737,7 +745,7 @@ static char *http_get(const char *url, int *out_status, char *err, size_t errlen
+ 			snprintf(err, errlen, "empty response");
+ 		return NULL;
+ 	}
+-	return http_strip_headers(body, len, out_status);
++	return http_strip_headers(body, len, out_status, out_len);
+ }
+ 
+ /* Retry tls_read/write through WANT_POLLIN/WANT_POLLOUT (same as gemini). */
+@@ -793,7 +801,8 @@ static ssize_t lab_tls_write(struct tls *t, const void *buf, size_t len)
+ }
+ 
+ /* HTTPS GET via libtls. Returns malloc body or NULL. */
+-static char *https_get(const char *url, int *out_status, char *err, size_t errlen)
++static char *https_get(const char *url, int *out_status, size_t *out_len,
++		       char *err, size_t errlen)
+ {
+ 	char host[256], path[512], portstr[16], req[1024];
+ 	int port = 443;
+@@ -857,7 +866,7 @@ static char *https_get(const char *url, int *out_status, char *err, size_t errle
+ 
+ 	snprintf(req, sizeof(req),
+ 		 "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: Labyrinth/0.1 "
+-		 "(BGTK)\r\nAccept: text/html,*/*\r\nConnection: close\r\n\r\n",
++		 "(BGTK)\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+ 		 path, host);
+ 	if (lab_tls_write(ctx_tls, req, strlen(req)) &lt; 0) {
+ 		if (err)
+@@ -908,7 +917,7 @@ static char *https_get(const char *url, int *out_status, char *err, size_t errle
+ 			snprintf(err, errlen, "empty HTTPS response");
+ 		return NULL;
+ 	}
+-	return http_strip_headers(body, len, out_status);
++	return http_strip_headers(body, len, out_status, out_len);
+ }
+ 
+ static char *wrap_http_error(int st, char *body)
+@@ -980,13 +989,13 @@ static char *fetch_document(const char *url, char *err, size_t errlen)
+ 	}
+ 	if (!strncmp(url, "https://", 8)) {
+ 		int st = 0;
+-		char *body = https_get(url, &amp;st, err, errlen);
++		char *body = https_get(url, &amp;st, NULL, err, errlen);
+ 
+ 		return wrap_http_error(st, body);
+ 	}
+ 	if (!strncmp(url, "http://", 7)) {
+ 		int st = 0;
+-		char *body = http_get(url, &amp;st, err, errlen);
++		char *body = http_get(url, &amp;st, NULL, err, errlen);
+ 
+ 		return wrap_http_error(st, body);
+ 	}
+@@ -1032,6 +1041,50 @@ static void show_message_page(const char *title, const char *detail)
+ 	last_html = strdup(html);
+ }
+ 
++/* Binary-safe fetch for &lt;img src&gt; (and future assets). */
++static int labyrinth_fetch_url(const char *url, unsigned char **out,
++			       size_t *out_len, void *userdata)
++{
++	char err[128];
++	int st = 0;
++	char *body;
++	size_t blen = 0;
++
++	(void)userdata;
++	if (!url || !out || !out_len)
++		return -1;
++	*out = NULL;
++	*out_len = 0;
++	err[0] = '\0';
++	if (!strncmp(url, "file://", 7)) {
++		const char *path = url + 7;
++		size_t n = 0;
++		char *data;
++
++		if (path[0] == '/' &amp;&amp; path[1] == '/')
++			path++;
++		data = read_file_all(path, &amp;n);
++		if (!data)
++			return -1;
++		*out = (unsigned char *)data;
++		*out_len = n;
++		return 0;
++	}
++	if (!strncmp(url, "https://", 8))
++		body = https_get(url, &amp;st, &amp;blen, err, sizeof(err));
++	else if (!strncmp(url, "http://", 7))
++		body = http_get(url, &amp;st, &amp;blen, err, sizeof(err));
++	else
++		return -1;
++	if (!body || st &gt;= 400) {
++		free(body);
++		return -1;
++	}
++	*out = (unsigned char *)body;
++	*out_len = blen;
++	return 0;
++}
++
+ static void load_html_string(const char *html)
+ {
+ 	struct BGTK_Widget *page, *old;
+@@ -1042,6 +1095,13 @@ static void load_html_string(const char *html)
+ 	labyrinth_scan_pipeline(html);
+ 	labyrinth_layout_chrome();
+ 
++	/* Resource base + fetch for &lt;img src="…"&gt; relative/remote. */
++	if (ctx) {
++		ctx-&gt;base_url = current_url;
++		ctx-&gt;fetch_url = labyrinth_fetch_url;
++		ctx-&gt;fetch_userdata = NULL;
++	}
++
+ 	page = bgtk_html_parse_inline(ctx, html, content_w, content_h);
+ 	if (!page) {
+ 		show_message_page("Parse error", "Could not build widget tree from HTML.");
+diff --git a/bgtk.h b/bgtk.h
+index a7e3e3c..2202db2 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -208,6 +208,16 @@ struct BGTK_Context {
+ 	int shift_held;
+ 	int ctrl_held;
+ 	int alt_held;
++
++	/*
++	 * Optional HTML resource loading (Labyrinth sets these before parse).
++	 * base_url: page URL for resolving relative img src / href.
++	 * fetch: GET bytes (malloc *out); return 0 on success. Binary-safe.
++	 */
++	const char *base_url;
++	int (*fetch_url)(const char *url, unsigned char **out, size_t *out_len,
++			 void *userdata);
++	void *fetch_userdata;
+ };
+ 
+ /* Modifier bitflags for bgtk_key_to_bytes */
+@@ -282,6 +292,11 @@ enum BGTK_Widget_Type {
+ #define BGTK_FLAG_FILL (BGTK_FLAG_EXPAND_X | BGTK_FLAG_EXPAND_Y)
+ /* x/y are parent-relative; abs_x/abs_y hold screen position after layout. */
+ #define BGTK_FLAG_RELATIVE (1 &lt;&lt; 3)
++/* List: do not pack children; use each child's x,y as offsets in the list box
++ * (HTML tables with colspan/rowspan). Parent w/h must be set by the creator. */
++#define BGTK_FLAG_ABSOLUTE (1 &lt;&lt; 4)
++/* CSS margin:auto — center this widget on the parent's cross-axis. */
++#define BGTK_FLAG_MARGIN_AUTO (1 &lt;&lt; 5)
+ 
+ /* Text style bits (bgtk_text / BGTK_Options.text_style). Synthetic via FreeType. */
+ #define BGTK_TEXT_BOLD   (1 &lt;&lt; 0)
+diff --git a/css.c b/css.c
+index cccdd10..176376b 100644
+--- a/css.c
++++ b/css.c
+@@ -22,7 +22,14 @@ struct BGTK_CSS_Decl {
+ 	int font_style;  /* 0 unset, 1 normal, 2 italic */
+ 	int text_align;  /* -1 unset, 0 left, 1 center, 2 right */
+ 	int margin;      /* -1 unset */
++	int margin_auto; /* 1 = margin:auto (or left/right auto) */
+ 	int padding;     /* -1 unset */
++	int width;       /* -1 unset, px */
++	int max_width;   /* -1 unset, px */
++	int border_w;    /* -1 unset */
++	int border_color_set;
++	uint32_t border_color;
++	int table_layout_fixed; /* 1 = table-layout:fixed */
+ 	int display_none;
+ };
+ 
+@@ -119,29 +126,174 @@ uint32_t bgtk_css_parse_color(const char *s)
+ 	return 0;
+ }
+ 
+-static int parse_px(const char *v)
++/* Parse length: 12, 12px, 1.5em, 2rem, 50% (of ref_pct, default 0 → -1). */
++static int parse_len(const char *v, int em_px, int pct_of)
+ {
+ 	char *end;
+-	long n;
++	double n;
+ 
+ 	if (!v)
+ 		return -1;
+ 	skip_ws(&amp;v);
+-	n = strtol(v, &amp;end, 10);
++	if (*v == 'a' || *v == 'A') {
++		/* auto */
++		if (strncasecmp(v, "auto", 4) == 0)
++			return -2; /* special: auto */
++	}
++	n = strtod(v, &amp;end);
+ 	if (end == v)
+ 		return -1;
+ 	while (*end &amp;&amp; isspace((unsigned char)*end))
+ 		end++;
+-	if (*end == 'p' || *end == 'P')
+-		end++;
+-	if (*end == 'x' || *end == 'X')
+-		end++;
+-	(void)end;
++	if (*end == '%') {
++		if (pct_of &lt;= 0)
++			return -1;
++		n = n * pct_of / 100.0;
++	} else if ((*end == 'e' || *end == 'E') &amp;&amp;
++		   (end[1] == 'm' || end[1] == 'M')) {
++		n *= em_px &gt; 0 ? em_px : 14;
++	} else if ((*end == 'r' || *end == 'R') &amp;&amp;
++		   (end[1] == 'e' || end[1] == 'E')) {
++		/* rem */
++		n *= em_px &gt; 0 ? em_px : 14;
++	} else {
++		/* px or unitless */
++		if (*end == 'p' || *end == 'P')
++			end++;
++		/* x optional */
++	}
+ 	if (n &lt; 0)
+ 		n = 0;
+ 	if (n &gt; 10000)
+ 		n = 10000;
+-	return (int)n;
++	return (int)(n + 0.5);
++}
++
++static int parse_px(const char *v)
++{
++	return parse_len(v, 14, 0);
++}
++
++/* Split CSS value into up to 4 whitespace-separated tokens. */
++static int split_tokens(const char *v, char tok[][32], int max_tok)
++{
++	int n = 0;
++	const char *p = v;
++
++	while (*p &amp;&amp; n &lt; max_tok) {
++		size_t i = 0;
++
++		skip_ws(&amp;p);
++		if (!*p)
++			break;
++		while (*p &amp;&amp; !isspace((unsigned char)*p) &amp;&amp; i + 1 &lt; 32)
++			tok[n][i++] = *p++;
++		tok[n][i] = '\0';
++		if (i &gt; 0)
++			n++;
++	}
++	return n;
++}
++
++/* margin: N | V H | T H B | T R B L ; auto → margin_auto. */
++static void parse_margin_shorthand(struct BGTK_CSS_Decl *d, const char *v)
++{
++	char tok[4][32];
++	int n = split_tokens(v, tok, 4);
++	int sides[4] = { -1, -1, -1, -1 }; /* T R B L; -2 = auto */
++	int i, vert = -1, horiz = -1;
++
++	if (n &lt; 1)
++		return;
++	for (i = 0; i &lt; n; i++) {
++		if (strcasecmp(tok[i], "auto") == 0)
++			sides[i] = -2;
++		else
++			sides[i] = parse_len(tok[i], 14, 0);
++	}
++	if (n == 1) {
++		vert = sides[0];
++		horiz = sides[0];
++	} else if (n == 2) {
++		vert = sides[0];
++		horiz = sides[1];
++	} else if (n == 3) {
++		vert = sides[0] &gt;= 0 ? sides[0] : sides[2];
++		if (sides[0] &gt;= 0 &amp;&amp; sides[2] &gt;= 0 &amp;&amp; sides[2] &gt; vert)
++			vert = sides[2];
++		horiz = sides[1];
++	} else {
++		vert = sides[0] &gt;= 0 ? sides[0] : -1;
++		if (sides[2] &gt;= 0 &amp;&amp; (vert &lt; 0 || sides[2] &gt; vert))
++			vert = sides[2];
++		horiz = sides[1] &gt;= 0 ? sides[1] : sides[3];
++		if (sides[1] == -2 || sides[3] == -2)
++			horiz = -2;
++	}
++	if (horiz == -2 || vert == -2 ||
++	    (n == 1 &amp;&amp; sides[0] == -2))
++		d-&gt;margin_auto = 1;
++	if (vert &gt;= 0)
++		d-&gt;margin = vert;
++	else if (horiz &gt;= 0 &amp;&amp; !d-&gt;margin_auto)
++		d-&gt;margin = horiz;
++}
++
++/* padding multi-value: use horizontal (or single) for BGTK's one padding. */
++static void parse_padding_shorthand(struct BGTK_CSS_Decl *d, const char *v)
++{
++	char tok[4][32];
++	int n = split_tokens(v, tok, 4);
++	int px = -1;
++
++	if (n == 1)
++		px = parse_len(tok[0], 14, 0);
++	else if (n == 2)
++		px = parse_len(tok[1], 14, 0); /* horizontal */
++	else if (n &gt;= 3)
++		px = parse_len(tok[1], 14, 0);
++	if (px &gt;= 0)
++		d-&gt;padding = px;
++}
++
++/* border / border-width / border-color helpers */
++static void parse_border_shorthand(struct BGTK_CSS_Decl *d, const char *v)
++{
++	char tok[8][32];
++	int n = split_tokens(v, tok, 8);
++	int i;
++
++	for (i = 0; i &lt; n; i++) {
++		int px;
++		uint32_t c;
++
++		if (strcasecmp(tok[i], "none") == 0 ||
++		    strcasecmp(tok[i], "hidden") == 0) {
++			d-&gt;border_w = 0;
++			continue;
++		}
++		if (strcasecmp(tok[i], "solid") == 0 ||
++		    strcasecmp(tok[i], "dashed") == 0 ||
++		    strcasecmp(tok[i], "dotted") == 0 ||
++		    strcasecmp(tok[i], "double") == 0)
++			continue;
++		px = parse_len(tok[i], 14, 0);
++		if (px &gt;= 0 &amp;&amp; (strchr(tok[i], 'p') || strchr(tok[i], 'e') ||
++				isdigit((unsigned char)tok[i][0]))) {
++			if (px &gt; 16)
++				px = 16;
++			d-&gt;border_w = px;
++			continue;
++		}
++		c = bgtk_css_parse_color(tok[i]);
++		if (c) {
++			d-&gt;border_color = c;
++			d-&gt;border_color_set = 1;
++		}
++	}
++	/* color without width still draws a 1px edge */
++	if (d-&gt;border_color_set &amp;&amp; d-&gt;border_w &lt; 0)
++		d-&gt;border_w = 1;
+ }
+ 
+ static void decl_clear(struct BGTK_CSS_Decl *d)
+@@ -150,6 +302,9 @@ static void decl_clear(struct BGTK_CSS_Decl *d)
+ 	d-&gt;text_align = -1;
+ 	d-&gt;margin = -1;
+ 	d-&gt;padding = -1;
++	d-&gt;width = -1;
++	d-&gt;max_width = -1;
++	d-&gt;border_w = -1;
+ }
+ 
+ static void decl_set_prop(struct BGTK_CSS_Decl *d, const char *prop,
+@@ -224,13 +379,80 @@ static void decl_set_prop(struct BGTK_CSS_Decl *d, const char *prop,
+ 		else if (strcasecmp(v, "right") == 0)
+ 			d-&gt;text_align = 2;
+ 	} else if (strcmp(p, "margin") == 0) {
++		parse_margin_shorthand(d, v);
++	} else if (strcmp(p, "margin-left") == 0 ||
++		   strcmp(p, "margin-right") == 0) {
++		if (strcasecmp(v, "auto") == 0)
++			d-&gt;margin_auto = 1;
++		else {
++			int px = parse_px(v);
++
++			if (px &gt;= 0 &amp;&amp; (d-&gt;margin &lt; 0 || px &gt; d-&gt;margin))
++				d-&gt;margin = px;
++		}
++	} else if (strcmp(p, "margin-top") == 0 ||
++		   strcmp(p, "margin-bottom") == 0) {
+ 		int px = parse_px(v);
+-		if (px &gt;= 0)
++
++		if (px &gt;= 0 &amp;&amp; (d-&gt;margin &lt; 0 || px &gt; d-&gt;margin))
+ 			d-&gt;margin = px;
+ 	} else if (strcmp(p, "padding") == 0) {
++		parse_padding_shorthand(d, v);
++	} else if (strcmp(p, "padding-left") == 0 ||
++		   strcmp(p, "padding-right") == 0 ||
++		   strcmp(p, "padding-top") == 0 ||
++		   strcmp(p, "padding-bottom") == 0) {
+ 		int px = parse_px(v);
+-		if (px &gt;= 0)
++
++		if (px &gt;= 0 &amp;&amp; (d-&gt;padding &lt; 0 || px &gt; d-&gt;padding))
+ 			d-&gt;padding = px;
++	} else if (strcmp(p, "border") == 0) {
++		parse_border_shorthand(d, v);
++	} else if (strcmp(p, "border-width") == 0) {
++		int px = parse_px(v);
++
++		if (px &gt;= 0) {
++			if (px &gt; 16)
++				px = 16;
++			d-&gt;border_w = px;
++		}
++	} else if (strcmp(p, "border-color") == 0) {
++		uint32_t c = bgtk_css_parse_color(v);
++
++		if (c) {
++			d-&gt;border_color = c;
++			d-&gt;border_color_set = 1;
++			if (d-&gt;border_w &lt; 0)
++				d-&gt;border_w = 1;
++		}
++	} else if (strcmp(p, "table-layout") == 0) {
++		if (strcasecmp(v, "fixed") == 0)
++			d-&gt;table_layout_fixed = 1;
++	} else if (strcmp(p, "width") == 0) {
++		int px = parse_len(v, 14, 0);
++		/* % widths handled later with parent; bare % → treat as 0 flag */
++		if (strchr(v, '%')) {
++			/* Store percent as 100000+pct so apply can expand */
++			char *end;
++			long pct = strtol(v, &amp;end, 10);
++
++			if (pct &gt; 0 &amp;&amp; pct &lt;= 100)
++				d-&gt;width = 100000 + (int)pct;
++		} else if (px &gt;= 0) {
++			d-&gt;width = px;
++		}
++	} else if (strcmp(p, "max-width") == 0) {
++		int px = parse_len(v, 14, 0);
++
++		if (strchr(v, '%')) {
++			char *end;
++			long pct = strtol(v, &amp;end, 10);
++
++			if (pct &gt; 0 &amp;&amp; pct &lt;= 100)
++				d-&gt;max_width = 100000 + (int)pct;
++		} else if (px &gt;= 0) {
++			d-&gt;max_width = px;
++		}
+ 	} else if (strcmp(p, "display") == 0) {
+ 		if (strcasecmp(v, "none") == 0)
+ 			d-&gt;display_none = 1;
+@@ -479,8 +701,22 @@ static void decl_merge(struct BGTK_CSS_Decl *dst, const struct BGTK_CSS_Decl *sr
+ 		dst-&gt;text_align = src-&gt;text_align;
+ 	if (src-&gt;margin &gt;= 0)
+ 		dst-&gt;margin = src-&gt;margin;
++	if (src-&gt;margin_auto)
++		dst-&gt;margin_auto = 1;
+ 	if (src-&gt;padding &gt;= 0)
+ 		dst-&gt;padding = src-&gt;padding;
++	if (src-&gt;width &gt;= 0)
++		dst-&gt;width = src-&gt;width;
++	if (src-&gt;max_width &gt;= 0)
++		dst-&gt;max_width = src-&gt;max_width;
++	if (src-&gt;border_w &gt;= 0)
++		dst-&gt;border_w = src-&gt;border_w;
++	if (src-&gt;border_color_set) {
++		dst-&gt;border_color = src-&gt;border_color;
++		dst-&gt;border_color_set = 1;
++	}
++	if (src-&gt;table_layout_fixed)
++		dst-&gt;table_layout_fixed = 1;
+ 	if (src-&gt;display_none)
+ 		dst-&gt;display_none = 1;
+ }
+@@ -496,6 +732,8 @@ static void apply_decl_to_widget(struct BGTK_Widget *w,
+ 		w-&gt;color_bg = d-&gt;bg;
+ 	if (d-&gt;margin &gt;= 0)
+ 		w-&gt;margin = d-&gt;margin;
++	if (d-&gt;margin_auto)
++		w-&gt;flags |= BGTK_FLAG_MARGIN_AUTO;
+ 	if (d-&gt;padding &gt;= 0)
+ 		w-&gt;padding = d-&gt;padding;
+ 	if (d-&gt;text_align == 0)
+@@ -516,15 +754,25 @@ static void apply_decl_to_widget(struct BGTK_Widget *w,
+ 	}
+ 	if (w-&gt;type == BGTK_WIDGET_BUTTON &amp;&amp; d-&gt;bg_set &amp;&amp; d-&gt;bg)
+ 		w-&gt;data.button.bg_override = d-&gt;bg;
++	if (w-&gt;type == BGTK_WIDGET_FRAME) {
++		if (d-&gt;border_w &gt;= 0)
++			w-&gt;data.frame.border_w = d-&gt;border_w;
++		if (d-&gt;border_color_set)
++			w-&gt;data.frame.border_color = d-&gt;border_color;
++	}
+ }
+ 
+ int bgtk_css_apply(struct BGTK_CSS *css, struct BGTK_Widget *w, const char *tag,
+ 		   const char *id, const char *class_attr,
+-		   const char *style_attr)
++		   const char *style_attr, int *out_width, int *out_max_width)
+ {
+ 	struct BGTK_CSS_Decl acc;
+ 	int i, changed;
+ 
++	if (out_width)
++		*out_width = -1;
++	if (out_max_width)
++		*out_max_width = -1;
+ 	decl_clear(&amp;acc);
+ 	if (css &amp;&amp; css-&gt;n &gt; 0) {
+ 		/* Sort by specificity (stable for equals → later source wins
+@@ -565,12 +813,100 @@ int bgtk_css_apply(struct BGTK_CSS *css, struct BGTK_Widget *w, const char *tag,
+ 	}
+ 	if (acc.display_none)
+ 		return 1;
++	if (out_width)
++		*out_width = acc.width;
++	if (out_max_width)
++		*out_max_width = acc.max_width;
+ 	if (!w)
+ 		return 0;
+ 	changed = acc.color_set || acc.bg_set || acc.font_weight ||
+ 		  acc.font_style || acc.text_align &gt;= 0 || acc.margin &gt;= 0 ||
+-		  acc.padding &gt;= 0;
++		  acc.margin_auto || acc.padding &gt;= 0 || acc.border_w &gt;= 0 ||
++		  acc.border_color_set;
+ 	if (changed)
+ 		apply_decl_to_widget(w, &amp;acc);
++	/* Image/box width from CSS (content width before margin). */
++	if (acc.width &gt;= 0 &amp;&amp;
++	    (w-&gt;type == BGTK_WIDGET_IMAGE || w-&gt;type == BGTK_WIDGET_FRAME)) {
++		int outer = acc.width + 2 * (w-&gt;padding + w-&gt;margin);
++
++		if (outer &gt; 0)
++			w-&gt;w = outer;
++	}
+ 	return 0;
+ }
++
++/* Cascade into acc for tag/id/class/inline (shared by apply + border helpers). */
++static void css_resolve(struct BGTK_CSS *css, const char *tag, const char *id,
++			const char *class_attr, const char *style_attr,
++			struct BGTK_CSS_Decl *acc)
++{
++	int i;
++
++	decl_clear(acc);
++	if (css &amp;&amp; css-&gt;n &gt; 0) {
++		int *idx = malloc((size_t)css-&gt;n * sizeof(int));
++		int a, b;
++
++		if (idx) {
++			for (i = 0; i &lt; css-&gt;n; i++)
++				idx[i] = i;
++			for (a = 0; a &lt; css-&gt;n; a++) {
++				for (b = a + 1; b &lt; css-&gt;n; b++) {
++					int sa = css-&gt;rules[idx[a]].specificity;
++					int sb = css-&gt;rules[idx[b]].specificity;
++
++					if (sb &lt; sa ||
++					    (sb == sa &amp;&amp; idx[b] &lt; idx[a])) {
++						int t = idx[a];
++						idx[a] = idx[b];
++						idx[b] = t;
++					}
++				}
++			}
++			for (i = 0; i &lt; css-&gt;n; i++) {
++				const struct BGTK_CSS_Rule *r =
++					&amp;css-&gt;rules[idx[i]];
++				if (rule_matches(r, tag, id, class_attr))
++					decl_merge(acc, &amp;r-&gt;decl);
++			}
++			free(idx);
++		}
++	}
++	if (style_attr &amp;&amp; *style_attr) {
++		struct BGTK_CSS_Decl inl;
++
++		parse_declarations(style_attr, &amp;inl);
++		decl_merge(acc, &amp;inl);
++	}
++}
++
++void bgtk_css_border(struct BGTK_CSS *css, const char *tag, const char *id,
++		     const char *class_attr, const char *style_attr, int *bw,
++		     uint32_t *bc)
++{
++	struct BGTK_CSS_Decl acc;
++
++	if (bw)
++		*bw = 0;
++	if (bc)
++		*bc = 0xFF888888u;
++	css_resolve(css, tag, id, class_attr, style_attr, &amp;acc);
++	if (bw &amp;&amp; acc.border_w &gt;= 0)
++		*bw = acc.border_w;
++	if (bc &amp;&amp; acc.border_color_set)
++		*bc = acc.border_color;
++	/* border-color alone implies 1px when attr may also set width */
++	if (bw &amp;&amp; acc.border_color_set &amp;&amp; acc.border_w &lt; 0 &amp;&amp; *bw == 0)
++		*bw = 1;
++}
++
++int bgtk_css_table_layout_fixed(struct BGTK_CSS *css, const char *tag,
++				const char *id, const char *class_attr,
++				const char *style_attr)
++{
++	struct BGTK_CSS_Decl acc;
++
++	css_resolve(css, tag, id, class_attr, style_attr, &amp;acc);
++	return acc.table_layout_fixed;
++}
+diff --git a/css.h b/css.h
+index a8e2249..55bff4d 100644
+--- a/css.h
++++ b/css.h
+@@ -9,11 +9,14 @@
+  *   color, background-color (or background: #hex)
+  *   font-weight (bold/normal/700), font-style (italic/normal)
+  *   text-align (left/center/right)
+- *   margin, padding (px number or shorthand single value)
++ *   margin, padding (px/em/rem; multi-value; margin:auto → MARGIN_AUTO)
++ *   border, border-width, border-color
++ *   width, max-width (px/%/em) — layout/wrap for text and images
++ *   table-layout: fixed
+  *   display: none
+  *
+  * Cascade: stylesheet order, then inline style="…" wins.
+- * Not yet: media queries, combinators, !important, units other than px.
++ * Not yet: media queries, combinators, !important.
+  */
+ #ifndef BGTK_CSS_H
+ #define BGTK_CSS_H
+@@ -30,13 +33,23 @@ void bgtk_css_destroy(struct BGTK_CSS *css);
+ void bgtk_css_add_sheet(struct BGTK_CSS *css, const char *source);
+ 
+ /*
+- * Resolve styles for an element and apply to widget.
+- * tag/id/class from HTML; style_attr is the raw style="" value (may be NULL).
++ * Apply cascade to widget. Optional *out_width / *out_max_width receive CSS
++ * width/max-width in px (-1 if unset) for layout/wrap after paint metrics.
+  * Returns 1 if the element should be omitted (display:none).
+  */
+ int bgtk_css_apply(struct BGTK_CSS *css, struct BGTK_Widget *w,
+ 		   const char *tag, const char *id, const char *class_attr,
+-		   const char *style_attr);
++		   const char *style_attr, int *out_width, int *out_max_width);
++
++/* Resolve border from cascade (stylesheet + inline). *bw 0 if unset. */
++void bgtk_css_border(struct BGTK_CSS *css, const char *tag, const char *id,
++		     const char *class_attr, const char *style_attr, int *bw,
++		     uint32_t *bc);
++
++/* 1 if table-layout:fixed matched for this element. */
++int bgtk_css_table_layout_fixed(struct BGTK_CSS *css, const char *tag,
++				const char *id, const char *class_attr,
++				const char *style_attr);
+ 
+ /* Parse a single #rgb/#rrggbb/#rrggbbaa or named color → 0xAARRGGBB.
+  * Returns 0 if unrecognised (caller treats as unset). */
+diff --git a/drawing.c b/drawing.c
+index 869f2fa..3fac45e 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -117,35 +117,92 @@ static int load_cp(FT_Face face, uint32_t cp, int style)
+ // Loads an image file into a pixel buffer as 0xAARRGGBB uint32 pixels.
+ // stbi gives RGBA bytes; casting those to uint32 is wrong (R/B swap on LE).
+ // Returns 0 on success, -1 on failure.
++static int rgba_to_argb(unsigned char *rgba, int w, int h, uint32_t **out_pixels)
++{
++	int n, i;
++	uint32_t *out;
++
++	if (!rgba || w &lt; 1 || h &lt; 1)
++		return -1;
++	n = w * h;
++	out = malloc((size_t)n * sizeof(uint32_t));
++	if (!out)
++		return -1;
++	for (i = 0; i &lt; n; i++) {
++		unsigned char *p = rgba + (size_t)i * 4;
++
++		out[i] = pack_argb(p[3], p[0], p[1], p[2]);
++	}
++	*out_pixels = out;
++	return 0;
++}
++
+ int load_image(const char *path, uint32_t **out_pixels, int *out_w, int *out_h)
+ {
+-	int w, h, channels, n, i;
++	int w, h, channels;
+ 	unsigned char *rgba;
+-	uint32_t *out;
+ 
+ 	rgba = stbi_load(path, &amp;w, &amp;h, &amp;channels, 4);
+ 	if (!rgba) {
+ 		fprintf(stderr, "Failed to load image: %s\n", path);
+ 		return -1;
+ 	}
+-	n = w * h;
+-	out = malloc((size_t)n * sizeof(uint32_t));
+-	if (!out) {
++	if (rgba_to_argb(rgba, w, h, out_pixels) != 0) {
+ 		stbi_image_free(rgba);
+ 		return -1;
+ 	}
+-	for (i = 0; i &lt; n; i++) {
+-		unsigned char *p = rgba + (size_t)i * 4;
+-		/* p[0]=R p[1]=G p[2]=B p[3]=A → same packing as BGCE rgba_to_u32 */
+-		out[i] = pack_argb(p[3], p[0], p[1], p[2]);
++	stbi_image_free(rgba);
++	*out_w = w;
++	*out_h = h;
++	return 0;
++}
++
++int load_image_mem(const unsigned char *data, int len, uint32_t **out_pixels,
++		   int *out_w, int *out_h)
++{
++	int w, h, channels;
++	unsigned char *rgba;
++
++	if (!data || len &lt; 1)
++		return -1;
++	rgba = stbi_load_from_memory(data, len, &amp;w, &amp;h, &amp;channels, 4);
++	if (!rgba)
++		return -1;
++	if (rgba_to_argb(rgba, w, h, out_pixels) != 0) {
++		stbi_image_free(rgba);
++		return -1;
+ 	}
+ 	stbi_image_free(rgba);
+-	*out_pixels = out;
+ 	*out_w = w;
+ 	*out_h = h;
+ 	return 0;
+ }
+ 
++uint32_t *scale_image_argb(uint32_t *src, int sw, int sh, int dw, int dh)
++{
++	uint32_t *dst;
++	int x, y;
++
++	if (!src || sw &lt; 1 || sh &lt; 1 || dw &lt; 1 || dh &lt; 1)
++		return NULL;
++	if (sw == dw &amp;&amp; sh == dh)
++		return src;
++	dst = malloc((size_t)dw * (size_t)dh * sizeof(uint32_t));
++	if (!dst)
++		return NULL;
++	for (y = 0; y &lt; dh; y++) {
++		int sy = y * sh / dh;
++
++		for (x = 0; x &lt; dw; x++) {
++			int sx = x * sw / dw;
++
++			dst[y * dw + x] = src[sy * sw + sx];
++		}
++	}
++	free(src);
++	return dst;
++}
++
+ void clear_buffer(struct BGTK_Context *ctx)
+ {
+ 	uint32_t *pixels = (uint32_t *) ctx-&gt;shm_buffer;
+@@ -446,6 +503,18 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 
+ 		w-&gt;data.list_widget.content_width = 0;
+ 		w-&gt;data.list_widget.content_height = 0;
++		/* Absolute lists keep creator-set w/h; still size children. */
++		if (w-&gt;flags &amp; BGTK_FLAG_ABSOLUTE) {
++			for (int i = 0; i &lt; n; i++) {
++				struct BGTK_Widget *child =
++					w-&gt;data.list_widget.items[i];
++				if (child)
++					calculate_widget_size(ctx, child);
++			}
++			w-&gt;data.list_widget.content_width = keep_w;
++			w-&gt;data.list_widget.content_height = keep_h;
++			break;
++		}
+ 		for (int i = 0; i &lt; n; i++) {
+ 			struct BGTK_Widget *child =
+ 			    w-&gt;data.list_widget.items[i];
+@@ -1001,7 +1070,8 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 				    inner_w &gt; child-&gt;w)
+ 					child-&gt;w = inner_w;
+ 				child-&gt;x = w-&gt;margin + w-&gt;padding;
+-				if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
++				if ((w-&gt;flags &amp; BGTK_FLAG_CENTER) ||
++				    (child-&gt;flags &amp; BGTK_FLAG_MARGIN_AUTO)) {
+ 					child-&gt;x =
+ 						w-&gt;margin +
+ 						(content_width - 2 * w-&gt;margin -
+@@ -1032,7 +1102,8 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 				    inner_w &gt; child-&gt;w)
+ 					child-&gt;w = inner_w;
+ 				child-&gt;x = w-&gt;margin + w-&gt;padding;
+-				if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
++				if ((w-&gt;flags &amp; BGTK_FLAG_CENTER) ||
++				    (child-&gt;flags &amp; BGTK_FLAG_MARGIN_AUTO)) {
+ 					child-&gt;x =
+ 						w-&gt;margin +
+ 						(content_width - 2 * w-&gt;margin -
+@@ -1209,6 +1280,23 @@ static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	if (w-&gt;color_bg)
+ 		draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, w-&gt;h, w-&gt;color_bg);
+ 
++	/* Absolute grid (HTML tables): children already have x,y offsets. */
++	if (w-&gt;flags &amp; BGTK_FLAG_ABSOLUTE) {
++		for (i = 0; i &lt; n; i++) {
++			struct BGTK_Widget *child =
++				w-&gt;data.list_widget.items[i];
++			int rel_x, rel_y;
++
++			if (!child)
++				continue;
++			rel_x = child-&gt;x;
++			rel_y = child-&gt;y;
++			place_child(w, child, ox, oy, rel_x, rel_y);
++			draw_widget(ctx, child, pixels);
++		}
++		return;
++	}
++
+ 	bgtk_list_layout_expand(w);
+ 
+ 	for (i = 0; i &lt; n; i++) {
+@@ -1221,7 +1309,8 @@ static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		if (w-&gt;data.list_widget.orientation == BGTK_LIST_VERTICAL) {
+ 			/* Margin is row gap only — not a left inset. */
+ 			rel_x = w-&gt;padding;
+-			if (w-&gt;flags &amp; BGTK_FLAG_CENTER)
++			if ((w-&gt;flags &amp; BGTK_FLAG_CENTER) ||
++			    (child-&gt;flags &amp; BGTK_FLAG_MARGIN_AUTO))
+ 				rel_x = (w-&gt;w - child-&gt;w) / 2;
+ 			rel_y = w-&gt;padding + current_y;
+ 			place_child(w, child, ox, oy, rel_x, rel_y);
+@@ -1229,7 +1318,8 @@ static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		} else {
+ 			rel_x = w-&gt;padding + current_x;
+ 			rel_y = w-&gt;padding;
+-			if (w-&gt;flags &amp; BGTK_FLAG_CENTER)
++			if ((w-&gt;flags &amp; BGTK_FLAG_CENTER) ||
++			    (child-&gt;flags &amp; BGTK_FLAG_MARGIN_AUTO))
+ 				rel_y = (w-&gt;h - child-&gt;h) / 2;
+ 			place_child(w, child, ox, oy, rel_x, rel_y);
+ 			current_x += child-&gt;w + 2 * w-&gt;margin;
+@@ -1278,8 +1368,9 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		uint32_t border =
+ 			w-&gt;data.frame.border_color ? w-&gt;data.frame.border_color
+ 						  : ctx-&gt;theme.frame_border_color;
+-		if (!ctx-&gt;window_focused) {
+-			/* Dedicated unfocused chrome; 0 falls back to bg. */
++		/* Window chrome dims only when using the theme default color.
++		 * Explicit CSS/HTML border_color (table cells) keeps its hue. */
++		if (!ctx-&gt;window_focused &amp;&amp; !w-&gt;data.frame.border_color) {
+ 			border = ctx-&gt;theme.frame_border_unfocused
+ 					 ? ctx-&gt;theme.frame_border_unfocused
+ 					 : ctx-&gt;theme.background;
+diff --git a/html.c b/html.c
+index 6ce1c06..b8f9ced 100644
+--- a/html.c
++++ b/html.c
+@@ -6,15 +6,20 @@
+  *
+  * Supported tags:
+  *   h1..h6, p, b, i, a, span    -&gt; BGTK_WIDGET_TEXT (with header_level / bold)
+- *   pre, code                    -&gt; mono text; pre keeps newlines/spaces
++ *   pre, code                    -&gt; mono; pre keeps newlines/spaces and
++ *                                   nested inlines (&lt;a&gt;, &lt;b&gt;, …) as widgets
+  *   br                           -&gt; line break (block flush)
+  *   ul, ol, li                   -&gt; BGTK_WIDGET_LIST (vertical, with bullet/number)
+  *   button                       -&gt; BGTK_WIDGET_BUTTON
+  *   input[type=text]             -&gt; BGTK_WIDGET_TEXT_INPUT
+  *   input[type=checkbox]         -&gt; BGTK_WIDGET_BUTTON (toggle)
+  *   select                       -&gt; BGTK_WIDGET_LIST (dropdown placeholder)
+- *   img                          -&gt; BGTK_WIDGET_IMAGE
++ *   img                          -&gt; BGTK_WIDGET_IMAGE (file / http via ctx-&gt;fetch_url;
++ *                                   width/height attrs; CSS max-width / max-height)
++ *   font, center, hr, kbd        -&gt; color text / centered block / rule / mono
+  *   div, section, article, body  -&gt; BGTK_WIDGET_LIST (vertical container)
++ *   unknown tags                 -&gt; containers (htop, dd, article, …)
++ * Text blocks wrap to page width and CSS width/max-width (px/em/rem/%).
+  *   header, nav, footer          -&gt; BGTK_WIDGET_LIST (vertical container)
+  *
+  * Layout is strictly top-down (block elements stack vertically).
+@@ -173,6 +178,42 @@ static struct BGTK_Widget *make_text_face(struct BGTK_Context *ctx,
+ 	return w;
+ }
+ 
++/* Remeasure text widgets with mono (and recurse containers). */
++static void widget_force_mono(struct BGTK_Context *ctx, struct BGTK_Widget *w)
++{
++	int i;
++
++	if (!w)
++		return;
++	if (w-&gt;type == BGTK_WIDGET_TEXT &amp;&amp; w-&gt;data.text.text) {
++		FT_Face face = bgtk_font_face(ctx, BGTK_FONT_MONO);
++		int tw = 0, th = 0;
++
++		w-&gt;data.text.font_role = BGTK_FONT_MONO;
++		if (face &amp;&amp; ctx) {
++			FT_Set_Pixel_Sizes(face, 0,
++					   ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size
++							      : 14);
++			measure_text_style(face, w-&gt;data.text.text,
++					   w-&gt;data.text.style, &amp;tw, &amp;th);
++			w-&gt;w = tw + 2 * (w-&gt;padding + w-&gt;margin);
++			w-&gt;h = th + 2 * (w-&gt;padding + w-&gt;margin);
++		}
++		return;
++	}
++	if (w-&gt;type == BGTK_WIDGET_LIST) {
++		for (i = 0; i &lt; w-&gt;data.list_widget.widget_count; i++)
++			widget_force_mono(ctx, w-&gt;data.list_widget.items[i]);
++		return;
++	}
++	if (w-&gt;type == BGTK_WIDGET_FRAME)
++		widget_force_mono(ctx, w-&gt;data.frame.child);
++	else if (w-&gt;type == BGTK_WIDGET_BUTTON)
++		widget_force_mono(ctx, w-&gt;data.button.label);
++	else if (w-&gt;type == BGTK_WIDGET_LABEL)
++		widget_force_mono(ctx, w-&gt;data.label.text);
++}
++
+ /* Theme spacing when ctx is available; fall back to hard defaults. */
+ static int theme_pad(struct BGTK_Context *ctx, int fallback)
+ {
+@@ -202,7 +243,8 @@ static int is_inline_tag(const char *tag)
+ 	return strcmp(tag, "b") == 0 || strcmp(tag, "i") == 0 ||
+ 	       strcmp(tag, "a") == 0 || strcmp(tag, "span") == 0 ||
+ 	       strcmp(tag, "strong") == 0 || strcmp(tag, "em") == 0 ||
+-	       strcmp(tag, "code") == 0;
++	       strcmp(tag, "code") == 0 || strcmp(tag, "font") == 0 ||
++	       strcmp(tag, "kbd") == 0 || strcmp(tag, "diff") == 0;
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -214,13 +256,18 @@ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
+ static struct BGTK_Widget *convert_container(struct BGTK_Context *ctx,
+ 					     xmlNode *node, int avail_w);
+ 
+-/* Apply g_html_css + inline style to widget; return 1 if display:none. */
+-static int html_style_widget(xmlNode *node, struct BGTK_Widget *w)
++/* Apply g_html_css + inline style; optional CSS width/max-width outs (-1). */
++static int html_style_widget(xmlNode *node, struct BGTK_Widget *w,
++			     int *out_width, int *out_max_width)
+ {
+ 	xmlChar *id = NULL, *cls = NULL, *sty = NULL;
+ 	const char *tag = NULL;
+ 	int hide;
+ 
++	if (out_width)
++		*out_width = -1;
++	if (out_max_width)
++		*out_max_width = -1;
+ 	if (!node || node-&gt;type != XML_ELEMENT_NODE)
+ 		return 0;
+ 	tag = (const char *)node-&gt;name;
+@@ -230,7 +277,8 @@ static int html_style_widget(xmlNode *node, struct BGTK_Widget *w)
+ 	hide = bgtk_css_apply(g_html_css, w, tag,
+ 			      id ? (const char *)id : NULL,
+ 			      cls ? (const char *)cls : NULL,
+-			      sty ? (const char *)sty : NULL);
++			      sty ? (const char *)sty : NULL, out_width,
++			      out_max_width);
+ 	if (id)
+ 		xmlFree(id);
+ 	if (cls)
+@@ -240,6 +288,259 @@ static int html_style_widget(xmlNode *node, struct BGTK_Widget *w)
+ 	return hide;
+ }
+ 
++/*
++ * Word-wrap plain text to max_w (content pixels). Returns malloc lines.
++ * UTF-8 aware; breaks on spaces when possible.
++ */
++static char **html_wrap_lines(FT_Face face, const char *text, int max_w,
++			      int *nlines)
++{
++	char **lines = NULL;
++	int n = 0, cap = 0, len, i = 0;
++
++	*nlines = 0;
++	if (!text || !*text || max_w &lt; 16)
++		return NULL;
++	len = (int)strlen(text);
++	/* Face pixel size must already be set by the caller. */
++	while (i &lt; len) {
++		int j = i, last_space = -1, w = 0;
++
++		while (j &lt; len) {
++			const char *cp = text + j;
++			size_t left = (size_t)(len - j);
++			const char *start = cp;
++			uint32_t ch = bgtk_utf8_next_n(&amp;cp, &amp;left);
++			int nbytes = (int)(cp - start);
++			int cw = 7;
++
++			if (nbytes &lt; 1)
++				break;
++			if (face &amp;&amp;
++			    FT_Load_Char(face, (FT_ULong)ch, FT_LOAD_DEFAULT) ==
++				    0)
++				cw = face-&gt;glyph-&gt;advance.x &gt;&gt; 6;
++			if (w + cw &gt; max_w &amp;&amp; j &gt; i)
++				break;
++			w += cw;
++			if (ch &lt; 128 &amp;&amp; isspace((unsigned char)ch))
++				last_space = j;
++			j += nbytes;
++		}
++		{
++			int end = (j &gt;= len)
++					  ? len
++					  : (last_space &gt; i ? last_space : j);
++			int lnlen = end - i;
++			char *ln = malloc((size_t)lnlen + 1);
++
++			if (!ln)
++				break;
++			memcpy(ln, text + i, (size_t)lnlen);
++			ln[lnlen] = '\0';
++			while (lnlen &gt; 0 &amp;&amp;
++			       isspace((unsigned char)ln[lnlen - 1]))
++				ln[--lnlen] = '\0';
++			if (n &gt;= cap) {
++				cap = cap ? cap * 2 : 8;
++				lines = realloc(lines,
++						(size_t)cap * sizeof(char *));
++				if (!lines)
++					break;
++			}
++			lines[n++] = ln;
++			i = end;
++			while (i &lt; len &amp;&amp; isspace((unsigned char)text[i]))
++				i++;
++		}
++	}
++	*nlines = n;
++	return lines;
++}
++
++/* If text widget wider than max_content, replace text with wrapped lines. */
++static void wrap_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
++			     int max_content)
++{
++	char **lines;
++	int n = 0, i, st;
++	size_t total = 0;
++	char *joined;
++	FT_Face face;
++
++	if (!ctx || !w || w-&gt;type != BGTK_WIDGET_TEXT || !w-&gt;data.text.text)
++		return;
++	if (max_content &lt; 16)
++		return;
++	/* Natural width already fits. */
++	if (w-&gt;w - 2 * (w-&gt;padding + w-&gt;margin) &lt;= max_content)
++		return;
++
++	face = bgtk_font_face(ctx, w-&gt;data.text.font_role);
++	if (face)
++		FT_Set_Pixel_Sizes(face, 0,
++				   ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14);
++	st = w-&gt;data.text.style;
++	if (w-&gt;data.text.header_level &gt; 0 &amp;&amp; w-&gt;data.text.header_level &lt;= 3)
++		st |= BGTK_TEXT_BOLD;
++	lines = html_wrap_lines(face, w-&gt;data.text.text, max_content, &amp;n);
++	if (!lines || n &lt; 1) {
++		if (lines) {
++			for (i = 0; i &lt; n; i++)
++				free(lines[i]);
++			free(lines);
++		}
++		return;
++	}
++	for (i = 0; i &lt; n; i++)
++		total += strlen(lines[i]) + 1;
++	joined = malloc(total + 1);
++	if (!joined) {
++		for (i = 0; i &lt; n; i++)
++			free(lines[i]);
++		free(lines);
++		return;
++	}
++	joined[0] = '\0';
++	for (i = 0; i &lt; n; i++) {
++		if (i)
++			strcat(joined, "\n");
++		strcat(joined, lines[i]);
++		free(lines[i]);
++	}
++	free(lines);
++	free(w-&gt;data.text.text);
++	w-&gt;data.text.text = joined;
++	/* Remeasure multi-line. */
++	{
++		int tw = 0, th = 0;
++
++		measure_text_style(face, joined, st, &amp;tw, &amp;th);
++		w-&gt;w = tw + 2 * (w-&gt;padding + w-&gt;margin);
++		w-&gt;h = th + 2 * (w-&gt;padding + w-&gt;margin);
++		if (w-&gt;w &gt; max_content + 2 * (w-&gt;padding + w-&gt;margin))
++			w-&gt;w = max_content + 2 * (w-&gt;padding + w-&gt;margin);
++	}
++}
++
++/* CSS length may be encoded as 100000+pct for percentage. */
++static int css_len_px(int v, int avail)
++{
++	if (v &gt;= 100000)
++		return (avail * (v - 100000)) / 100;
++	if (v &gt; 0)
++		return v;
++	return -1;
++}
++
++/* Clamp wrap width: page avail, CSS width/max-width, HTML width attr. */
++static int clamp_wrap_w(int avail_w, int css_w, int css_max, int attr_w,
++			int pad_mar)
++{
++	int m = avail_w - pad_mar;
++	int cw, cm;
++
++	if (m &lt; 16)
++		m = 16;
++	cw = css_len_px(css_w, m);
++	cm = css_len_px(css_max, m);
++	if (cw &gt; 0 &amp;&amp; cw &lt; m)
++		m = cw;
++	if (cm &gt; 0 &amp;&amp; cm &lt; m)
++		m = cm;
++	if (attr_w &gt; 0 &amp;&amp; attr_w &lt; m)
++		m = attr_w;
++	return m;
++}
++
++/* Resolve relative URL against base (absolute http/https/file/about). */
++static void html_resolve_url(const char *base, const char *rel, char *out,
++			     size_t outlen)
++{
++	char dir[768], full[1024];
++	const char *slash;
++
++	if (!out || outlen &lt; 2)
++		return;
++	out[0] = '\0';
++	if (!rel || !*rel) {
++		snprintf(out, outlen, "%s", base ? base : "");
++		return;
++	}
++	/* Protocol-relative //host/path */
++	if (rel[0] == '/' &amp;&amp; rel[1] == '/') {
++		if (base &amp;&amp; !strncmp(base, "https:", 6))
++			snprintf(out, outlen, "https:%s", rel);
++		else
++			snprintf(out, outlen, "http:%s", rel);
++		return;
++	}
++	if (strstr(rel, "://") || !strncmp(rel, "data:", 5) ||
++	    !strncmp(rel, "about:", 6) || !strncmp(rel, "file:", 5)) {
++		snprintf(out, outlen, "%s", rel);
++		return;
++	}
++	if (!base || !*base) {
++		snprintf(out, outlen, "%s", rel);
++		return;
++	}
++	if (rel[0] == '/') {
++		/* Site-absolute path on same origin */
++		if (!strncmp(base, "https://", 8) ||
++		    !strncmp(base, "http://", 7)) {
++			const char *scheme_end = strstr(base, "://");
++			const char *host = scheme_end ? scheme_end + 3 : base;
++			const char *path = strchr(host, '/');
++			size_t origin = path ? (size_t)(path - base)
++					     : strlen(base);
++
++			if (origin + strlen(rel) + 1 &lt; outlen) {
++				memcpy(out, base, origin);
++				out[origin] = '\0';
++				snprintf(out + origin, outlen - origin, "%s",
++					 rel);
++			}
++			return;
++		}
++		if (!strncmp(base, "file://", 7)) {
++			/* file:///site/root/ + /photos/x → file:///site/root/photos/x */
++			const char *root = base + 7;
++			char rootdir[768];
++			char *slashp;
++			size_t rl;
++
++			snprintf(rootdir, sizeof(rootdir), "%s", root);
++			rl = strlen(rootdir);
++			if (rl &gt; 0 &amp;&amp; rootdir[rl - 1] != '/') {
++				slashp = strrchr(rootdir, '/');
++				if (slashp)
++					slashp[1] = '\0';
++			}
++			rl = strlen(rootdir);
++			if (rl &gt; 0 &amp;&amp; rootdir[rl - 1] == '/')
++				rootdir[rl - 1] = '\0';
++			snprintf(out, outlen, "file://%s%s", rootdir, rel);
++			return;
++		}
++		snprintf(out, outlen, "%s", rel);
++		return;
++	}
++	/* Directory of base + rel */
++	slash = strrchr(base, '/');
++	if (slash &amp;&amp; slash &gt; base + 7) {
++		size_t dlen = (size_t)(slash - base + 1);
++
++		if (dlen &gt;= sizeof(dir))
++			dlen = sizeof(dir) - 1;
++		memcpy(dir, base, dlen);
++		dir[dlen] = '\0';
++	} else {
++		snprintf(dir, sizeof(dir), "%s", base);
++	}
++	snprintf(full, sizeof(full), "%s%s", dir, rel);
++	snprintf(out, outlen, "%s", full);
++}
++
+ /* Collect &lt;style&gt;…&lt;/style&gt; text under root into css. */
+ static void html_collect_styles(xmlNode *node, struct BGTK_CSS *css)
+ {
+@@ -324,7 +625,8 @@ static struct BGTK_Widget *make_text_widget(struct BGTK_Context *ctx,
+ 
+ // h1..h6 -&gt; text widget with header_level set.
+ static struct BGTK_Widget *convert_heading(struct BGTK_Context *ctx,
+-					   xmlNode *node, int level)
++					   xmlNode *node, int level,
++					   int avail_w)
+ {
+ 	char *txt = collect_text(node);
+ 	if (!txt || !*txt) {
+@@ -334,8 +636,24 @@ static struct BGTK_Widget *convert_heading(struct BGTK_Context *ctx,
+ 	BGTK_Options opts = opts_from_node(node, 2, 4);
+ 	struct BGTK_Widget *w = bgtk_text(ctx, txt, opts);
+ 	free(txt);
+-	if (w)
++	if (w) {
++		int maxc;
++
+ 		w-&gt;data.text.header_level = level;
++		maxc = avail_w - 2 * (w-&gt;padding + w-&gt;margin);
++		if (level &gt; 0 &amp;&amp; level &lt;= 3 &amp;&amp; ctx &amp;&amp; ctx-&gt;ft_face) {
++			/* Headings use larger font; measure wrap with size bump. */
++			int old = ctx-&gt;font_size;
++			ctx-&gt;font_size = old + (4 - level);
++			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
++			wrap_text_widget(ctx, w, maxc &gt; 16 ? maxc : 16);
++			ctx-&gt;font_size = old;
++			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0,
++					   old &gt; 0 ? old : 14);
++		} else {
++			wrap_text_widget(ctx, w, maxc &gt; 16 ? maxc : 16);
++		}
++	}
+ 	return w;
+ }
+ 
+@@ -351,6 +669,12 @@ static struct BGTK_Widget *convert_p(struct BGTK_Context *ctx, xmlNode *node,
+ 	mar = attr_int(node, "margin", 4);
+ 	if (w-&gt;margin &lt; mar)
+ 		w-&gt;margin = mar;
++	/* Single text paragraph: wrap to content width. */
++	if (w-&gt;type == BGTK_WIDGET_TEXT) {
++		int maxc = avail_w - 2 * (w-&gt;padding + w-&gt;margin);
++
++		wrap_text_widget(ctx, w, maxc &gt; 16 ? maxc : 16);
++	}
+ 	return w;
+ }
+ 
+@@ -409,6 +733,59 @@ static struct BGTK_Widget *convert_a(struct BGTK_Context *ctx, xmlNode *node)
+ 	return w;
+ }
+ 
++/* &lt;font color="#rrggbb"&gt; -&gt; text with color_fg (legacy HTML). */
++static struct BGTK_Widget *convert_font(struct BGTK_Context *ctx, xmlNode *node)
++{
++	char *txt = collect_text(node);
++	xmlChar *col;
++	struct BGTK_Widget *w;
++
++	if (!txt || !*txt) {
++		free(txt);
++		return NULL;
++	}
++	w = bgtk_text(ctx, txt, (BGTK_Options){0});
++	free(txt);
++	if (!w)
++		return NULL;
++	col = attr_str(node, "color");
++	if (col &amp;&amp; col[0]) {
++		uint32_t c = bgtk_css_parse_color((const char *)col);
++
++		if (c)
++			w-&gt;color_fg = c;
++		xmlFree(col);
++	} else if (col) {
++		xmlFree(col);
++	}
++	return w;
++}
++
++/* &lt;center&gt; / unknown block-ish tags → container, optional center align. */
++static struct BGTK_Widget *convert_center(struct BGTK_Context *ctx,
++					  xmlNode *node, int avail_w)
++{
++	struct BGTK_Widget *w = convert_container(ctx, node, avail_w);
++
++	if (w) {
++		w-&gt;text_align = BGTK_ALIGN_CENTER;
++		if (w-&gt;type == BGTK_WIDGET_TEXT)
++			w-&gt;text_align = BGTK_ALIGN_CENTER;
++		else if (w-&gt;type == BGTK_WIDGET_LIST) {
++			int i;
++
++			for (i = 0; i &lt; w-&gt;data.list_widget.widget_count; i++) {
++				struct BGTK_Widget *ch =
++					w-&gt;data.list_widget.items[i];
++
++				if (ch &amp;&amp; ch-&gt;type == BGTK_WIDGET_TEXT)
++					ch-&gt;text_align = BGTK_ALIGN_CENTER;
++			}
++		}
++	}
++	return w;
++}
++
+ /* &lt;code&gt; -&gt; mono, inline (spaces kept via collect_text trim only). */
+ static struct BGTK_Widget *convert_code(struct BGTK_Context *ctx, xmlNode *node)
+ {
+@@ -424,17 +801,16 @@ static struct BGTK_Widget *convert_code(struct BGTK_Context *ctx, xmlNode *node)
+ 	return w;
+ }
+ 
+-/* &lt;pre&gt; -&gt; mono multi-line block; preserves whitespace. */
+-static struct BGTK_Widget *convert_pre(struct BGTK_Context *ctx, xmlNode *node)
++/* Pure-text &lt;pre&gt;: one multi-line mono widget (newlines kept in string). */
++static struct BGTK_Widget *convert_pre_plain(struct BGTK_Context *ctx,
++					     xmlNode *node)
+ {
+ 	char *txt = collect_text_pre(node);
+ 	struct BGTK_Widget *w;
+ 	BGTK_Options opts;
+ 
+-	if (!txt) {
++	if (!txt)
+ 		return NULL;
+-	}
+-	/* Empty pre still reserves a line so layout does not collapse. */
+ 	if (!txt[0]) {
+ 		free(txt);
+ 		txt = strdup(" ");
+@@ -444,12 +820,332 @@ static struct BGTK_Widget *convert_pre(struct BGTK_Context *ctx, xmlNode *node)
+ 	opts = opts_from_node(node, 4, 4);
+ 	w = make_text_face(ctx, txt, opts, BGTK_FONT_MONO);
+ 	free(txt);
+-	if (w &amp;&amp; w-&gt;color_bg == 0)
+-		/* Subtle panel so pre blocks read as code regions. */
+-		w-&gt;color_bg = 0xFF1A1A1A;
++	/* No default pre panel bg — match page (CSS may set background). */
+ 	return w;
+ }
+ 
++/*
++ * Pre text run: expand tabs, keep spaces; split on \n into line rows.
++ * Segments join the current horizontal line; each \n flushes a row.
++ */
++static int pre_append_text(struct BGTK_Context *ctx, const char *raw,
++			   struct BGTK_Widget ***inline_buf, int *inline_count,
++			   int *inline_cap, struct BGTK_Widget ***items,
++			   int *count, int *cap)
++{
++	char *norm, *p, *start;
++	size_t n, i, out_n = 0, out_cap;
++	struct BGTK_Widget *tw;
++
++	if (!raw)
++		return 0;
++	/* Expand tabs / normalize newlines into a mutable buffer. */
++	n = strlen(raw);
++	out_cap = n * 2 + 1;
++	norm = malloc(out_cap);
++	if (!norm)
++		return -1;
++	for (i = 0; i &lt; n; i++) {
++		char c = raw[i];
++
++		if (c == '\r') {
++			if (i + 1 &lt; n &amp;&amp; raw[i + 1] == '\n')
++				continue;
++			c = '\n';
++		}
++		if (c == '\t') {
++			int spaces = 8 - (int)(out_n % 8);
++
++			while (spaces-- &gt; 0) {
++				if (out_n + 1 &gt;= out_cap) {
++					out_cap *= 2;
++					norm = realloc(norm, out_cap);
++					if (!norm)
++						return -1;
++				}
++				norm[out_n++] = ' ';
++			}
++			continue;
++		}
++		if (out_n + 1 &gt;= out_cap) {
++			out_cap *= 2;
++			norm = realloc(norm, out_cap);
++			if (!norm)
++				return -1;
++		}
++		norm[out_n++] = c;
++	}
++	norm[out_n] = '\0';
++
++	start = norm;
++	for (p = norm; ; p++) {
++		if (*p != '\n' &amp;&amp; *p != '\0')
++			continue;
++		{
++			char save = *p;
++			int at_end = (save == '\0');
++
++			*p = '\0';
++			if (start[0]) {
++				tw = make_text_face(
++					ctx, start,
++					(BGTK_Options){.padding = 0, .margin = 0},
++					BGTK_FONT_MONO);
++				if (tw) {
++					if (*inline_count &gt;= *inline_cap) {
++						*inline_cap *= 2;
++						*inline_buf = realloc(
++							*inline_buf,
++							(size_t)(*inline_cap) *
++								sizeof(**inline_buf));
++					}
++					if (*inline_buf)
++						(*inline_buf)[(*inline_count)++] =
++							tw;
++				}
++			}
++			if (!at_end) {
++				/* End of line: flush horizontal run as a row. */
++				if (*inline_count &gt; 0) {
++					BGTK_Options hopts = {
++						.orientation =
++							BGTK_LIST_HORIZONTAL,
++						.margin = 0,
++						.padding = 0};
++					struct BGTK_Widget *row = bgtk_list(
++						ctx, *inline_buf, *inline_count,
++						hopts);
++					if (row) {
++						if (*count &gt;= *cap) {
++							*cap *= 2;
++							*items = realloc(
++								*items,
++								(size_t)(*cap) *
++									sizeof(**items));
++						}
++						if (*items)
++							(*items)[(*count)++] =
++								row;
++					}
++					*inline_count = 0;
++				} else {
++					/* Blank line inside pre. */
++					tw = make_text_face(
++						ctx, " ",
++						(BGTK_Options){.padding = 0,
++							       .margin = 0},
++						BGTK_FONT_MONO);
++					if (tw) {
++						if (*count &gt;= *cap) {
++							*cap *= 2;
++							*items = realloc(
++								*items,
++								(size_t)(*cap) *
++									sizeof(**items));
++						}
++						if (*items)
++							(*items)[(*count)++] =
++								tw;
++					}
++				}
++				start = p + 1;
++			}
++			if (at_end)
++				break;
++		}
++	}
++	free(norm);
++	return 0;
++}
++
++/*
++ * &lt;pre&gt; with nested markup: walk children; text keeps whitespace; inlines
++ * (&lt;a&gt;, &lt;b&gt;, &lt;code&gt;, …) become real widgets (mono + link href preserved).
++ */
++static struct BGTK_Widget *convert_pre_rich(struct BGTK_Context *ctx,
++					    xmlNode *node, int avail_w)
++{
++	int cap = 16, count = 0;
++	int inline_cap = 16, inline_count = 0;
++	struct BGTK_Widget **items = calloc((size_t)cap, sizeof(*items));
++	struct BGTK_Widget **inline_buf =
++		calloc((size_t)inline_cap, sizeof(*inline_buf));
++	struct BGTK_Widget *block;
++	BGTK_Options opts;
++	int first_text = 1;
++
++	if (!items || !inline_buf) {
++		free(items);
++		free(inline_buf);
++		return NULL;
++	}
++
++	for (xmlNode *child = node-&gt;children; child; child = child-&gt;next) {
++		if (child-&gt;type == XML_TEXT_NODE ||
++		    child-&gt;type == XML_CDATA_SECTION_NODE) {
++			const char *raw = (const char *)child-&gt;content;
++			const char *use = raw;
++
++			/* Drop one leading newline after &lt;pre&gt; (pretty-print). */
++			if (first_text &amp;&amp; use &amp;&amp; use[0] == '\n')
++				use++;
++			first_text = 0;
++			if (use &amp;&amp; use[0])
++				pre_append_text(ctx, use, &amp;inline_buf,
++						&amp;inline_count, &amp;inline_cap,
++						&amp;items, &amp;count, &amp;cap);
++			continue;
++		}
++		if (child-&gt;type != XML_ELEMENT_NODE)
++			continue;
++		first_text = 0;
++		{
++			const char *tag = (const char *)child-&gt;name;
++			struct BGTK_Widget *w;
++
++			if (strcmp(tag, "br") == 0) {
++				/* Force new line. */
++				if (inline_count &gt; 0) {
++					BGTK_Options hopts = {
++						.orientation =
++							BGTK_LIST_HORIZONTAL,
++						.margin = 0};
++					struct BGTK_Widget *row = bgtk_list(
++						ctx, inline_buf, inline_count,
++						hopts);
++					if (row) {
++						if (count &gt;= cap) {
++							cap *= 2;
++							items = realloc(
++								items,
++								(size_t)cap *
++									sizeof(*items));
++						}
++						if (items)
++							items[count++] = row;
++					}
++					inline_count = 0;
++				}
++				continue;
++			}
++			if (is_inline_tag(tag) || strcmp(tag, "code") == 0) {
++				w = convert_node(ctx, child, avail_w);
++				if (w) {
++					widget_force_mono(ctx, w);
++					if (inline_count &gt;= inline_cap) {
++						inline_cap *= 2;
++						inline_buf = realloc(
++							inline_buf,
++							(size_t)inline_cap *
++								sizeof(*inline_buf));
++					}
++					if (inline_buf)
++						inline_buf[inline_count++] = w;
++				}
++				continue;
++			}
++			/* Rare block inside pre: flush then convert. */
++			if (inline_count &gt; 0) {
++				BGTK_Options hopts = {
++					.orientation = BGTK_LIST_HORIZONTAL,
++					.margin = 0};
++				struct BGTK_Widget *row = bgtk_list(
++					ctx, inline_buf, inline_count, hopts);
++				if (row) {
++					if (count &gt;= cap) {
++						cap *= 2;
++						items = realloc(
++							items,
++							(size_t)cap *
++								sizeof(*items));
++					}
++					if (items)
++						items[count++] = row;
++				}
++				inline_count = 0;
++			}
++			w = convert_node(ctx, child, avail_w);
++			if (w) {
++				widget_force_mono(ctx, w);
++				if (count &gt;= cap) {
++					cap *= 2;
++					items = realloc(items,
++							(size_t)cap *
++								sizeof(*items));
++				}
++				if (items)
++					items[count++] = w;
++			}
++		}
++	}
++	/* Flush last partial line. */
++	if (inline_count &gt; 0) {
++		BGTK_Options hopts = {.orientation = BGTK_LIST_HORIZONTAL,
++				      .margin = 0};
++		struct BGTK_Widget *row =
++			bgtk_list(ctx, inline_buf, inline_count, hopts);
++		if (row) {
++			if (count &gt;= cap) {
++				cap *= 2;
++				items = realloc(items,
++						(size_t)cap * sizeof(*items));
++			}
++			if (items)
++				items[count++] = row;
++		}
++		inline_count = 0;
++	}
++	free(inline_buf);
++
++	if (count == 0) {
++		free(items);
++		return convert_pre_plain(ctx, node);
++	}
++	if (count == 1) {
++		block = items[0];
++		free(items);
++	} else {
++		opts = opts_from_node(node, 4, 4);
++		opts.orientation = BGTK_LIST_VERTICAL;
++		opts.margin = 0;
++		block = bgtk_list(ctx, items, count, opts);
++		free(items);
++	}
++	if (block) {
++		BGTK_Options o = opts_from_node(node, 4, 4);
++		struct BGTK_Widget *wrap;
++
++		/* Outer pad only — transparent like browser &lt;pre&gt; default. */
++		wrap = bgtk_frame(ctx, block,
++				  block-&gt;w + 2 * o.padding,
++				  block-&gt;h + 2 * o.padding,
++				  (BGTK_Options){.padding = o.padding,
++						 .margin = o.margin});
++		if (wrap) {
++			wrap-&gt;data.frame.border_w = 0;
++			block = wrap;
++		}
++	}
++	return block;
++}
++
++/* &lt;pre&gt; -&gt; mono block; nested &lt;a&gt;/&lt;b&gt;/… kept as widgets when present. */
++static struct BGTK_Widget *convert_pre(struct BGTK_Context *ctx, xmlNode *node,
++				       int avail_w)
++{
++	int has_el = 0;
++
++	for (xmlNode *c = node ? node-&gt;children : NULL; c; c = c-&gt;next) {
++		if (c-&gt;type == XML_ELEMENT_NODE) {
++			has_el = 1;
++			break;
++		}
++	}
++	if (!has_el)
++		return convert_pre_plain(ctx, node);
++	return convert_pre_rich(ctx, node, avail_w);
++}
++
+ /* &lt;br&gt; -&gt; empty-ish line fragment (block, forces inline flush). */
+ static struct BGTK_Widget *convert_br(struct BGTK_Context *ctx)
+ {
+@@ -551,17 +1247,176 @@ static struct BGTK_Widget *convert_select(struct BGTK_Context *ctx,
+ 	return list;
+ }
+ 
+-// &lt;img&gt; -&gt; BGTK_WIDGET_IMAGE.
+-static struct BGTK_Widget *convert_img(struct BGTK_Context *ctx, xmlNode *node)
++/* Try load pixels from resolved path/url (file, http, fetch hook). */
++static int html_load_image_src(struct BGTK_Context *ctx, const char *path,
++			       uint32_t **pixels, int *iw, int *ih)
++{
++	unsigned char *data = NULL;
++	size_t dlen = 0;
++
++	*pixels = NULL;
++	*iw = *ih = 0;
++	if (!path || !*path)
++		return -1;
++
++	if (!strncmp(path, "file://", 7)) {
++		const char *fp = path + 7;
++
++		if (fp[0] == '/' &amp;&amp; fp[1] == '/')
++			fp++;
++		if (load_image(fp, pixels, iw, ih) == 0)
++			return 0;
++	} else if (!strncmp(path, "http://", 7) ||
++		   !strncmp(path, "https://", 8)) {
++		if (ctx &amp;&amp; ctx-&gt;fetch_url &amp;&amp;
++		    ctx-&gt;fetch_url(path, &amp;data, &amp;dlen, ctx-&gt;fetch_userdata) ==
++			    0 &amp;&amp;
++		    data &amp;&amp; dlen &gt; 0) {
++			int ok = load_image_mem(data, (int)dlen, pixels, iw, ih);
++
++			free(data);
++			return ok;
++		}
++		return -1;
++	} else if (path[0] == '/') {
++		/* Absolute FS path */
++		if (load_image(path, pixels, iw, ih) == 0)
++			return 0;
++	} else {
++		if (load_image(path, pixels, iw, ih) == 0)
++			return 0;
++	}
++	/* Last resort: app fetch hook with original path (maps /photos under site). */
++	if (ctx &amp;&amp; ctx-&gt;fetch_url &amp;&amp;
++	    ctx-&gt;fetch_url(path, &amp;data, &amp;dlen, ctx-&gt;fetch_userdata) == 0 &amp;&amp;
++	    data &amp;&amp; dlen &gt; 0) {
++		int ok = load_image_mem(data, (int)dlen, pixels, iw, ih);
++
++		free(data);
++		return ok;
++	}
++	return -1;
++}
++
++// &lt;img&gt; -&gt; BGTK_WIDGET_IMAGE (file path or http(s) via ctx-&gt;fetch_url).
++static struct BGTK_Widget *convert_img(struct BGTK_Context *ctx, xmlNode *node,
++				       int avail_w)
+ {
+ 	xmlChar *src = attr_str(node, "src");
+-	if (!src)
++	xmlChar *alt;
++	char resolved[1024];
++	const char *path;
++	int attr_w, attr_h, iw = 0, ih = 0;
++	uint32_t *pixels = NULL;
++	BGTK_Options opts;
++	struct BGTK_Widget *img = NULL;
++	int max_w, max_h = 0;
++	int css_w = -1, css_max = -1;
++
++	if (!src || !src[0]) {
++		if (src)
++			xmlFree(src);
+ 		return NULL;
+-	int w = attr_int(node, "width", 0);
+-	int h = attr_int(node, "height", 0);
+-	BGTK_Options opts = opts_from_node(node, 0, 4);
+-	struct BGTK_Widget *img = bgtk_image(ctx, (const char *)src, w, h, opts);
++	}
++	attr_w = attr_int(node, "width", 0);
++	attr_h = attr_int(node, "height", 0);
++	opts = opts_from_node(node, 0, 4);
++	html_resolve_url(ctx ? ctx-&gt;base_url : NULL, (const char *)src,
++			 resolved, sizeof(resolved));
++	path = resolved[0] ? resolved : (const char *)src;
++
++	(void)html_load_image_src(ctx, path, &amp;pixels, &amp;iw, &amp;ih);
++	/* Also try original src via fetch (site-absolute /photos/...). */
++	if (!pixels &amp;&amp; src[0] == '/' &amp;&amp; ctx &amp;&amp; ctx-&gt;fetch_url)
++		(void)html_load_image_src(ctx, (const char *)src, &amp;pixels, &amp;iw,
++					  &amp;ih);
+ 	xmlFree(src);
++
++	/* Peek CSS width/max-width/max-height from style for sizing. */
++	html_style_widget(node, NULL, &amp;css_w, &amp;css_max);
++
++	if (!pixels || iw &lt; 1 || ih &lt; 1) {
++		alt = attr_str(node, "alt");
++		img = bgtk_text(ctx,
++				alt &amp;&amp; alt[0] ? (char *)alt : "[image]",
++				(BGTK_Options){.padding = 4, .margin = 4});
++		if (alt)
++			xmlFree(alt);
++		return img;
++	}
++
++	/* Fit to attrs, CSS, and page width (width:100% ≈ fill avail). */
++	max_w = avail_w - 2 * (opts.padding + opts.margin);
++	if (max_w &lt; 16)
++		max_w = 16;
++	if (css_max &gt; 0 &amp;&amp; css_max &lt; max_w)
++		max_w = css_max;
++	if (css_w &gt; 0 &amp;&amp; css_w &lt; max_w)
++		max_w = css_w;
++	/* CSS max-height on images (e.g. body&gt;p&gt;img { max-height:540px }) */
++	{
++		xmlChar *sty = attr_str(node, "style");
++
++		if (sty) {
++			const char *p = strstr((const char *)sty, "max-height");
++
++			if (p) {
++				p = strchr(p, ':');
++				if (p)
++					max_h = atoi(p + 1);
++			}
++			xmlFree(sty);
++		}
++	}
++	/* style on parent not available — default max-height for large photos */
++	if (max_h &lt;= 0 &amp;&amp; ih &gt; 540 &amp;&amp; avail_w &gt; 0)
++		max_h = 540;
++
++	{
++		int dw = attr_w &gt; 0 ? attr_w : iw;
++		int dh = attr_h &gt; 0 ? attr_h : ih;
++
++		if (attr_w &gt; 0 &amp;&amp; attr_h &lt;= 0)
++			dh = (int)((long)ih * attr_w / (iw &gt; 0 ? iw : 1));
++		else if (attr_h &gt; 0 &amp;&amp; attr_w &lt;= 0)
++			dw = (int)((long)iw * attr_h / (ih &gt; 0 ? ih : 1));
++		/* width:100% without attrs → fill content width */
++		if (attr_w &lt;= 0 &amp;&amp; attr_h &lt;= 0 &amp;&amp; dw &gt; max_w) {
++			dh = (int)((long)dh * max_w / (dw &gt; 0 ? dw : 1));
++			dw = max_w;
++		} else if (dw &gt; max_w) {
++			dh = (int)((long)dh * max_w / (dw &gt; 0 ? dw : 1));
++			dw = max_w;
++		}
++		if (max_h &gt; 0 &amp;&amp; dh &gt; max_h) {
++			dw = (int)((long)dw * max_h / (dh &gt; 0 ? dh : 1));
++			dh = max_h;
++		}
++		if (dw &lt; 1)
++			dw = 1;
++		if (dh &lt; 1)
++			dh = 1;
++		if (dw != iw || dh != ih) {
++			uint32_t *scaled =
++				scale_image_argb(pixels, iw, ih, dw, dh);
++
++			if (scaled) {
++				pixels = scaled;
++				iw = dw;
++				ih = dh;
++			}
++		}
++	}
++
++	img = bgtk_image(ctx, NULL, iw + 2 * (opts.padding + opts.margin),
++			 ih + 2 * (opts.padding + opts.margin), opts);
++	if (!img) {
++		free(pixels);
++		return NULL;
++	}
++	img-&gt;data.image.pixels = pixels;
++	img-&gt;data.image.img_w = iw;
++	img-&gt;data.image.img_h = ih;
+ 	return img;
+ }
+ 
+@@ -603,7 +1458,16 @@ static int convert_children(struct BGTK_Context *ctx, xmlNode *parent,
+ 	struct BGTK_Widget **inline_buf = calloc(inline_cap, sizeof(struct BGTK_Widget *));
+ 
+ 	// Flush inline_buf into a single horizontal list and append to items.
++	// Wrap any text run wider than avail_w first.
+ 	#define FLUSH_INLINE() do { \
++		int _fi; \
++		for (_fi = 0; _fi &lt; inline_count; _fi++) { \
++			struct BGTK_Widget *_tw = inline_buf[_fi]; \
++			if (_tw &amp;&amp; _tw-&gt;type == BGTK_WIDGET_TEXT) { \
++				int _m = avail_w - 2 * (_tw-&gt;padding + _tw-&gt;margin); \
++				wrap_text_widget(ctx, _tw, _m &gt; 16 ? _m : 16); \
++			} \
++		} \
+ 		if (inline_count &gt; 0) { \
+ 			BGTK_Options hopts = {.orientation = BGTK_LIST_HORIZONTAL, .margin = 0}; \
+ 			struct BGTK_Widget *row = bgtk_list(ctx, inline_buf, inline_count, hopts); \
+@@ -775,19 +1639,19 @@ static int cell_has_element_child(xmlNode *node)
+ 	return 0;
+ }
+ 
+-// Convert a single &lt;td&gt;/&lt;th&gt; cell. Borderless by default (settings-friendly).
+-// Cells are left-aligned; content is vertically centered in the row.
+-// Pure-text cells must be BGTK_TEXT (not a nested list) so text_align works
+-// when draw_frame expands the child to the equalized column width.
++/* Convert cell content into a framed cell (border optional). */
+ static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
+ 					xmlNode *node, int avail_w,
+-					int is_header, int col)
++					int is_header, int border_w,
++					uint32_t border_color)
+ {
+ 	struct BGTK_Widget *content = NULL;
+-	(void)col;
++	int cell_pad;
++	int css_pad = -1;
+ 
+ 	if (!cell_has_element_child(node)) {
+ 		char *txt = collect_text(node);
++
+ 		if (!txt || !*txt) {
+ 			free(txt);
+ 			txt = strdup(" ");
+@@ -797,7 +1661,7 @@ static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
+ 				       .text_align = BGTK_ALIGN_LEFT});
+ 		free(txt);
+ 	} else {
+-		content = convert_container(ctx, node, avail_w);
++		content = convert_container(ctx, node, avail_w &gt; 16 ? avail_w : 16);
+ 	}
+ 	if (!content)
+ 		return NULL;
+@@ -806,40 +1670,49 @@ static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
+ 	if (content-&gt;type == BGTK_WIDGET_TEXT) {
+ 		content-&gt;text_v_align = BGTK_VALIGN_CENTER;
+ 		content-&gt;text_align = BGTK_ALIGN_LEFT;
++		wrap_text_widget(ctx, content,
++				 avail_w &gt; 16 ? avail_w - 8 : 16);
+ 	}
+-	/* Drop widget margin inside cells so controls share the page left edge
+-	 * with Apply / &lt;p&gt; siblings (those keep their own margin). */
+ 	if (content-&gt;type == BGTK_WIDGET_BUTTON ||
+-	    content-&gt;type == BGTK_WIDGET_TEXT_INPUT) {
++	    content-&gt;type == BGTK_WIDGET_TEXT_INPUT)
+ 		content-&gt;margin = 0;
+-	} else if (content-&gt;type == BGTK_WIDGET_LIST) {
+-		for (int i = 0; i &lt; content-&gt;data.list_widget.widget_count; i++) {
+-			struct BGTK_Widget *ch = content-&gt;data.list_widget.items[i];
+-			if (ch &amp;&amp; (ch-&gt;type == BGTK_WIDGET_BUTTON ||
+-				   ch-&gt;type == BGTK_WIDGET_TEXT_INPUT ||
+-				   ch-&gt;type == BGTK_WIDGET_TEXT))
+-				ch-&gt;margin = 0;
+-		}
+-	}
+ 
+-	/* Cell pad from theme (half of padding, min 2) so forms breathe
+-	 * without huge empty bands between rows. */
+-	/* Match typical nav-button pad (theme.pad/2+2) so form rows
+-	 * line up with sidebar chrome when hosts share the same inset. */
+-	int cell_pad = theme_pad(ctx, 4) / 2 + 2;
++	cell_pad = theme_pad(ctx, 4) / 2 + 2;
+ 	if (cell_pad &lt; 2)
+ 		cell_pad = 2;
+ 	if (cell_pad &gt; 10)
+ 		cell_pad = 10;
+-	struct BGTK_Widget *frame = bgtk_frame(ctx, content,
+-		content-&gt;w + 2 * cell_pad, content-&gt;h + 2 * cell_pad,
+-		(BGTK_Options){.padding = cell_pad, .margin = 0});
+-	if (frame)
+-		frame-&gt;data.frame.border_w = 0;
+-	return frame;
++	/* CSS padding on td/th (e.g. padding: 0 1em). */
++	{
++		struct BGTK_Widget probe = {0};
++		int hide;
++
++		probe.padding = cell_pad;
++		hide = html_style_widget(node, &amp;probe, NULL, NULL);
++		(void)hide;
++		if (probe.padding != cell_pad)
++			css_pad = probe.padding;
++	}
++	if (css_pad &gt;= 0)
++		cell_pad = css_pad;
++	if (border_w &lt; 0)
++		border_w = 0;
++	{
++		struct BGTK_Widget *frame = bgtk_frame(
++			ctx, content,
++			content-&gt;w + 2 * (cell_pad + border_w),
++			content-&gt;h + 2 * (cell_pad + border_w),
++			(BGTK_Options){.padding = cell_pad, .margin = 0});
++		if (frame) {
++			frame-&gt;data.frame.border_w = border_w;
++			frame-&gt;data.frame.border_color = border_color;
++			/* Apply remaining cell CSS (colors) onto frame. */
++			html_style_widget(node, frame, NULL, NULL);
++		}
++		return frame;
++	}
+ }
+ 
+-// Collect all &lt;tr&gt; rows from a &lt;table&gt;, including those inside &lt;thead&gt;/&lt;tbody&gt;/&lt;tfoot&gt;.
+ static int collect_rows(xmlNode *table, xmlNode ***out, int *out_count)
+ {
+ 	int cap = 16, count = 0;
+@@ -852,12 +1725,22 @@ static int collect_rows(xmlNode *table, xmlNode ***out, int *out_count)
+ 			continue;
+ 		const char *n = (const char *)child-&gt;name;
+ 		if (strcmp(n, "tr") == 0) {
+-			if (count &gt;= cap) { cap *= 2; rows = realloc(rows, cap * sizeof(xmlNode *)); }
++			if (count &gt;= cap) {
++				cap *= 2;
++				rows = realloc(rows, cap * sizeof(xmlNode *));
++			}
+ 			rows[count++] = child;
+-		} else if (strcmp(n, "thead") == 0 || strcmp(n, "tbody") == 0 || strcmp(n, "tfoot") == 0) {
++		} else if (strcmp(n, "thead") == 0 || strcmp(n, "tbody") == 0 ||
++			   strcmp(n, "tfoot") == 0) {
+ 			for (xmlNode *gc = child-&gt;children; gc; gc = gc-&gt;next) {
+-				if (gc-&gt;type == XML_ELEMENT_NODE &amp;&amp; strcmp((const char *)gc-&gt;name, "tr") == 0) {
+-					if (count &gt;= cap) { cap *= 2; rows = realloc(rows, cap * sizeof(xmlNode *)); }
++				if (gc-&gt;type == XML_ELEMENT_NODE &amp;&amp;
++				    strcmp((const char *)gc-&gt;name, "tr") == 0) {
++					if (count &gt;= cap) {
++						cap *= 2;
++						rows = realloc(
++							rows,
++							cap * sizeof(xmlNode *));
++					}
+ 					rows[count++] = gc;
+ 				}
+ 			}
+@@ -868,137 +1751,338 @@ static int collect_rows(xmlNode *table, xmlNode ***out, int *out_count)
+ 	return 0;
+ }
+ 
+-// &lt;table&gt; -&gt; vertical list of horizontal rows with aligned column widths.
++/* Table border from border= attr + CSS cascade (stylesheet + inline). */
++static void table_border_style(xmlNode *node, int *border_w, uint32_t *border_c)
++{
++	int bw = attr_int(node, "border", 0);
++	int css_bw = 0;
++	uint32_t bc = 0xFF888888u, css_bc = 0;
++	xmlChar *id = NULL, *cls = NULL, *sty = NULL;
++
++	if (bw &lt; 0)
++		bw = 0;
++	if (bw &gt; 8)
++		bw = 8;
++	if (node) {
++		id = xmlGetProp(node, (const xmlChar *)"id");
++		cls = xmlGetProp(node, (const xmlChar *)"class");
++		sty = xmlGetProp(node, (const xmlChar *)"style");
++	}
++	bgtk_css_border(g_html_css, "table",
++			id ? (const char *)id : NULL,
++			cls ? (const char *)cls : NULL,
++			sty ? (const char *)sty : NULL, &amp;css_bw, &amp;css_bc);
++	if (css_bw &gt; bw)
++		bw = css_bw;
++	/* border=0 but stylesheet border-color still draws 1px */
++	if (bw == 0 &amp;&amp; css_bc)
++		bw = 1;
++	if (css_bc)
++		bc = css_bc;
++	if (id)
++		xmlFree(id);
++	if (cls)
++		xmlFree(cls);
++	if (sty)
++		xmlFree(sty);
++	*border_w = bw;
++	*border_c = bc;
++}
++
++static int table_layout_is_fixed(xmlNode *node)
++{
++	xmlChar *id = NULL, *cls = NULL, *sty = NULL;
++	int fixed;
++
++	if (!node)
++		return 0;
++	id = xmlGetProp(node, (const xmlChar *)"id");
++	cls = xmlGetProp(node, (const xmlChar *)"class");
++	sty = xmlGetProp(node, (const xmlChar *)"style");
++	fixed = bgtk_css_table_layout_fixed(
++		g_html_css, "table", id ? (const char *)id : NULL,
++		cls ? (const char *)cls : NULL,
++		sty ? (const char *)sty : NULL);
++	if (id)
++		xmlFree(id);
++	if (cls)
++		xmlFree(cls);
++	if (sty)
++		xmlFree(sty);
++	return fixed;
++}
++
++/*
++ * &lt;table&gt; with colspan/rowspan: absolute grid of cell frames.
++ * Occupancy map places cells; sizes equalize columns/rows then span.
++ */
+ static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
+ 					 xmlNode *node, int avail_w)
+ {
+ 	xmlNode **tr_nodes = NULL;
+-	int num_rows = 0;
++	int num_rows = 0, max_cols = 0, r, c, ncells = 0, i;
++	int border_w = 0;
++	uint32_t border_c = 0xFF888888u;
++	int *col_w, *row_h, *occ;
++	struct {
++		xmlNode *node;
++		int r, c, cs, rs;
++		struct BGTK_Widget *w;
++	} *placed = NULL;
++	int placed_n = 0, placed_cap = 0;
++	struct BGTK_Widget **grid_items = NULL;
++	struct BGTK_Widget *grid;
++	int total_w = 0, total_h = 0, gi = 0;
++
+ 	if (collect_rows(node, &amp;tr_nodes, &amp;num_rows) &lt; 0 || num_rows == 0) {
+ 		free(tr_nodes);
+ 		return NULL;
+ 	}
++	table_border_style(node, &amp;border_w, &amp;border_c);
+ 
+-	// Find the max column count across all rows.
+-	int max_cols = 0;
+-	for (int r = 0; r &lt; num_rows; r++) {
+-		int cols = 0;
+-		for (xmlNode *c = tr_nodes[r]-&gt;children; c; c = c-&gt;next)
+-			if (c-&gt;type == XML_ELEMENT_NODE &amp;&amp;
+-			    (strcmp((const char *)c-&gt;name, "td") == 0 ||
+-			     strcmp((const char *)c-&gt;name, "th") == 0))
+-				cols++;
+-		if (cols &gt; max_cols)
+-			max_cols = cols;
+-	}
+-	if (max_cols == 0) {
++	/* First pass: place cells with colspan/rowspan into occupancy. */
++	/* Cap columns high enough for colspan growth. */
++	max_cols = 32;
++	occ = calloc((size_t)num_rows * (size_t)max_cols, sizeof(int));
++	if (!occ) {
+ 		free(tr_nodes);
+ 		return NULL;
+ 	}
+-
+-	// Build a 2D array of cell widgets (num_rows x max_cols).
+-	struct BGTK_Widget ***cells = calloc(num_rows, sizeof(struct BGTK_Widget **));
+-	int *row_cols = calloc(num_rows, sizeof(int));
+-	for (int r = 0; r &lt; num_rows; r++) {
+-		cells[r] = calloc(max_cols, sizeof(struct BGTK_Widget *));
+-		int col = 0;
+-		for (xmlNode *c = tr_nodes[r]-&gt;children; c; c = c-&gt;next) {
+-			if (c-&gt;type != XML_ELEMENT_NODE)
++	/* occ[r*max_cols+c] = 1 if taken */
++	for (r = 0; r &lt; num_rows; r++) {
++		c = 0;
++		for (xmlNode *ch = tr_nodes[r]-&gt;children; ch; ch = ch-&gt;next) {
++			const char *tn;
++			int cs, rs, cc, rr;
++
++			if (ch-&gt;type != XML_ELEMENT_NODE)
+ 				continue;
+-			const char *tn = (const char *)c-&gt;name;
++			tn = (const char *)ch-&gt;name;
+ 			if (strcmp(tn, "td") != 0 &amp;&amp; strcmp(tn, "th") != 0)
+ 				continue;
+-			if (col &gt;= max_cols)
++			while (c &lt; max_cols &amp;&amp; occ[r * max_cols + c])
++				c++;
++			if (c &gt;= max_cols)
+ 				break;
+-			cells[r][col] = convert_cell(ctx, c, avail_w / max_cols,
+-						     strcmp(tn, "th") == 0, col);
+-			col++;
++			cs = attr_int(ch, "colspan", 1);
++			rs = attr_int(ch, "rowspan", 1);
++			if (cs &lt; 1)
++				cs = 1;
++			if (rs &lt; 1)
++				rs = 1;
++			if (c + cs &gt; max_cols)
++				cs = max_cols - c;
++			if (r + rs &gt; num_rows)
++				rs = num_rows - r;
++			if (placed_n &gt;= placed_cap) {
++				placed_cap = placed_cap ? placed_cap * 2 : 16;
++				placed = realloc(placed,
++						 (size_t)placed_cap *
++							 sizeof(*placed));
++			}
++			placed[placed_n].node = ch;
++			placed[placed_n].r = r;
++			placed[placed_n].c = c;
++			placed[placed_n].cs = cs;
++			placed[placed_n].rs = rs;
++			placed[placed_n].w = NULL;
++			placed_n++;
++			for (rr = r; rr &lt; r + rs; rr++)
++				for (cc = c; cc &lt; c + cs; cc++)
++					occ[rr * max_cols + cc] = 1;
++			c += cs;
+ 		}
+-		row_cols[r] = col;
++	}
++	/* Shrink max_cols to highest used column+1 */
++	{
++		int used = 0;
++
++		for (r = 0; r &lt; num_rows; r++)
++			for (c = 0; c &lt; max_cols; c++)
++				if (occ[r * max_cols + c] &amp;&amp; c + 1 &gt; used)
++					used = c + 1;
++		if (used &lt; 1)
++			used = 1;
++		max_cols = used;
+ 	}
+ 
+-	// Compute max width per column and max height per row.
+-	int *col_widths = calloc(max_cols, sizeof(int));
+-	int *row_heights = calloc(num_rows, sizeof(int));
+-	for (int r = 0; r &lt; num_rows; r++) {
+-		for (int c = 0; c &lt; row_cols[r]; c++) {
+-			if (!cells[r][c])
+-				continue;
+-			if (cells[r][c]-&gt;w &gt; col_widths[c])
+-				col_widths[c] = cells[r][c]-&gt;w;
+-			if (cells[r][c]-&gt;h &gt; row_heights[r])
+-				row_heights[r] = cells[r][c]-&gt;h;
++	/* Convert cell widgets with provisional width. */
++	for (i = 0; i &lt; placed_n; i++) {
++		int cw = avail_w / (max_cols &gt; 0 ? max_cols : 1);
++		int is_th = strcmp((const char *)placed[i].node-&gt;name, "th") ==
++			    0;
++
++		if (cw &lt; 40)
++			cw = 40;
++		cw *= placed[i].cs;
++		placed[i].w = convert_cell(ctx, placed[i].node, cw, is_th,
++					   border_w, border_c);
++		if (placed[i].w)
++			ncells++;
++	}
++	if (ncells &lt; 1) {
++		free(occ);
++		free(placed);
++		free(tr_nodes);
++		return NULL;
++	}
++
++	col_w = calloc((size_t)max_cols, sizeof(int));
++	row_h = calloc((size_t)num_rows, sizeof(int));
++	/* Natural size → column/row bases (colspan distributes width). */
++	for (i = 0; i &lt; placed_n; i++) {
++		int cs = placed[i].cs, rs = placed[i].rs;
++		int nw, nh, part, rem, k;
++
++		if (!placed[i].w)
++			continue;
++		nw = placed[i].w-&gt;w;
++		nh = placed[i].w-&gt;h;
++		part = nw / cs;
++		rem = nw % cs;
++		for (k = 0; k &lt; cs; k++) {
++			int need = part + (k &lt; rem ? 1 : 0);
++
++			if (need &gt; col_w[placed[i].c + k])
++				col_w[placed[i].c + k] = need;
++		}
++		part = nh / rs;
++		rem = nh % rs;
++		for (k = 0; k &lt; rs; k++) {
++			int need = part + (k &lt; rem ? 1 : 0);
++
++			if (need &gt; row_h[placed[i].r + k])
++				row_h[placed[i].r + k] = need;
++		}
++	}
++	/* Minimum column width */
++	for (c = 0; c &lt; max_cols; c++)
++		if (col_w[c] &lt; 24)
++			col_w[c] = 24;
++	for (r = 0; r &lt; num_rows; r++)
++		if (row_h[r] &lt; 16)
++			row_h[r] = 16;
++
++	total_w = 0;
++	for (c = 0; c &lt; max_cols; c++)
++		total_w += col_w[c];
++
++	/*
++	 * table-layout:fixed → equal columns.
++	 * Width is content-sized unless CSS width is set (px or % of avail).
++	 * Do not stretch to the full page when width is auto (terminal.pink).
++	 */
++	if (table_layout_is_fixed(node) &amp;&amp; max_cols &gt; 0) {
++		int target = total_w;
++		int css_w = -1, css_max = -1;
++		int each, rem, acc;
++
++		html_style_widget(node, NULL, &amp;css_w, &amp;css_max);
++		if (css_w &gt;= 100000) {
++			int pct = css_w - 100000;
++
++			if (pct &gt; 0 &amp;&amp; pct &lt;= 100 &amp;&amp; avail_w &gt; 0)
++				target = avail_w * pct / 100;
++		} else if (css_w &gt; 0) {
++			target = css_w;
++		}
++		/* Still respect max-width. */
++		if (css_max &gt;= 100000) {
++			int pct = css_max - 100000;
++			int lim = avail_w * pct / 100;
++
++			if (lim &gt; 0 &amp;&amp; target &gt; lim)
++				target = lim;
++		} else if (css_max &gt; 0 &amp;&amp; target &gt; css_max) {
++			target = css_max;
++		}
++		if (target &lt; max_cols * 16)
++			target = max_cols * 16;
++		each = target / max_cols;
++		rem = target % max_cols;
++		if (each &lt; 16)
++			each = 16;
++		acc = 0;
++		for (c = 0; c &lt; max_cols; c++) {
++			col_w[c] = each + (c &lt; rem ? 1 : 0);
++			acc += col_w[c];
+ 		}
++		total_w = acc;
+ 	}
+ 
+-	/* Gap between columns from theme padding (min 8, max 24). */
+-	{
+-		int col_gap = theme_pad(ctx, 8);
+-		if (col_gap &lt; 8)
+-			col_gap = 8;
+-		if (col_gap &gt; 24)
+-			col_gap = 24;
+-		for (int c = 0; c &lt; max_cols - 1; c++)
+-			col_widths[c] += col_gap;
+-	}
+-
+-	// Equalize: every cell in a column gets the same width,
+-	// every cell in a row gets the same height.
+-	for (int r = 0; r &lt; num_rows; r++) {
+-		for (int c = 0; c &lt; row_cols[r]; c++) {
+-			if (!cells[r][c])
+-				continue;
+-			cells[r][c]-&gt;w = col_widths[c];
+-			cells[r][c]-&gt;h = row_heights[r];
++	/* Shrink only if wider than the page. */
++	if (total_w &gt; avail_w &amp;&amp; avail_w &gt; 40 &amp;&amp; total_w &gt; 0) {
++		int acc = 0;
++
++		for (c = 0; c &lt; max_cols; c++) {
++			col_w[c] = col_w[c] * avail_w / total_w;
++			if (col_w[c] &lt; 16)
++				col_w[c] = 16;
++			acc += col_w[c];
+ 		}
++		total_w = acc;
+ 	}
+-	free(row_heights);
++	total_h = 0;
++	for (r = 0; r &lt; num_rows; r++)
++		total_h += row_h[r];
+ 
+-	// Build horizontal list per row, then vertical list of rows.
+-	struct BGTK_Widget **rows = calloc(num_rows, sizeof(struct BGTK_Widget *));
+-	int valid_rows = 0;
+-	for (int r = 0; r &lt; num_rows; r++) {
+-		if (row_cols[r] == 0)
++	/* Size each cell to its span and set x,y offsets. */
++	grid_items = calloc((size_t)placed_n, sizeof(*grid_items));
++	for (i = 0; i &lt; placed_n; i++) {
++		int x = 0, y = 0, ww = 0, hh = 0, k;
++
++		if (!placed[i].w)
+ 			continue;
+-		rows[valid_rows] = bgtk_list(ctx, cells[r], row_cols[r],
+-			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .margin = 0});
+-		if (rows[valid_rows])
+-			valid_rows++;
+-	}
+-
+-	struct BGTK_Widget *table = NULL;
+-	if (valid_rows &gt; 0) {
+-		// Inner list: zero margin so rows share borders.
+-		BGTK_Options inner = {.orientation = BGTK_LIST_VERTICAL, .margin = 0};
+-		struct BGTK_Widget *grid = bgtk_list(ctx, rows, valid_rows, inner);
+-		if (grid) {
+-			/* Default margin 0 so table content lines up with sibling
+-			 * block widgets (paragraphs, Apply row). Override via
+-			 * margin="N" on &lt;table&gt; when inset is wanted. */
+-			int tm = attr_int(node, "margin", 0);
+-			if (tm &gt; 0) {
+-				table = bgtk_frame(ctx, grid,
+-					grid-&gt;w + 2 * tm, grid-&gt;h + 2 * tm,
+-					(BGTK_Options){.padding = 0, .margin = tm});
+-				if (table) {
+-					table-&gt;data.frame.border_w = 0;
+-					table-&gt;data.frame.border_color = 0;
+-				}
+-			} else {
+-				table = grid;
+-			}
++		for (k = 0; k &lt; placed[i].c; k++)
++			x += col_w[k];
++		for (k = 0; k &lt; placed[i].r; k++)
++			y += row_h[k];
++		for (k = 0; k &lt; placed[i].cs; k++)
++			ww += col_w[placed[i].c + k];
++		for (k = 0; k &lt; placed[i].rs; k++)
++			hh += row_h[placed[i].r + k];
++		placed[i].w-&gt;w = ww;
++		placed[i].w-&gt;h = hh;
++		placed[i].w-&gt;x = x;
++		placed[i].w-&gt;y = y;
++		/* Expand framed content child to fill cell. */
++		if (placed[i].w-&gt;type == BGTK_WIDGET_FRAME &amp;&amp;
++		    placed[i].w-&gt;data.frame.child) {
++			struct BGTK_Widget *ch = placed[i].w-&gt;data.frame.child;
++			int bw = placed[i].w-&gt;data.frame.border_w;
++			int pad = placed[i].w-&gt;padding;
++
++			if (bw &lt; 0)
++				bw = 0;
++			ch-&gt;w = ww - 2 * (pad + bw);
++			ch-&gt;h = hh - 2 * (pad + bw);
++			if (ch-&gt;w &lt; 1)
++				ch-&gt;w = 1;
++			if (ch-&gt;h &lt; 1)
++				ch-&gt;h = 1;
+ 		}
++		grid_items[gi++] = placed[i].w;
++	}
++
++	grid = bgtk_list(ctx, grid_items, gi,
++			 (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++					.margin = 0,
++					.padding = 0});
++	free(grid_items);
++	if (grid) {
++		grid-&gt;flags |= BGTK_FLAG_ABSOLUTE;
++		grid-&gt;w = total_w;
++		grid-&gt;h = total_h;
++		grid-&gt;data.list_widget.content_width = total_w;
++		grid-&gt;data.list_widget.content_height = total_h;
+ 	}
+ 
+-	// Cleanup temp arrays (widget pointers are owned by the tree now).
+-	for (int r = 0; r &lt; num_rows; r++)
+-		free(cells[r]);
+-	free(cells);
+-	free(row_cols);
+-	free(col_widths);
+-	free(rows);
++	free(occ);
++	free(placed);
++	free(col_w);
++	free(row_h);
+ 	free(tr_nodes);
+-	return table;
++	return grid;
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -1028,45 +2112,119 @@ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
+ 	    strcmp(tag, "link") == 0 || strcmp(tag, "title") == 0)
+ 		return NULL;
+ 
+-	/* display:none before building (cheap check via empty widget). */
+-	if (html_style_widget(node, NULL))
+-		return NULL;
++	/* display:none + peek width/max-width for child layout. */
++	{
++		int peek_w = -1, peek_max = -1;
+ 
+-	if (strcmp(tag, "h1") == 0) w = convert_heading(ctx, node, 1);
+-	else if (strcmp(tag, "h2") == 0) w = convert_heading(ctx, node, 2);
+-	else if (strcmp(tag, "h3") == 0) w = convert_heading(ctx, node, 3);
+-	else if (strcmp(tag, "h4") == 0) w = convert_heading(ctx, node, 3);
+-	else if (strcmp(tag, "h5") == 0) w = convert_heading(ctx, node, 3);
+-	else if (strcmp(tag, "h6") == 0) w = convert_heading(ctx, node, 3);
+-	else if (strcmp(tag, "p") == 0)      w = convert_p(ctx, node, avail_w);
+-	else if (strcmp(tag, "b") == 0)      w = convert_bold(ctx, node);
+-	else if (strcmp(tag, "strong") == 0) w = convert_bold(ctx, node);
+-	else if (strcmp(tag, "i") == 0)      w = convert_italic(ctx, node);
+-	else if (strcmp(tag, "em") == 0)     w = convert_italic(ctx, node);
+-	else if (strcmp(tag, "a") == 0)      w = convert_a(ctx, node);
+-	else if (strcmp(tag, "code") == 0)   w = convert_code(ctx, node);
+-	else if (strcmp(tag, "pre") == 0)    w = convert_pre(ctx, node);
+-	else if (strcmp(tag, "br") == 0)     w = convert_br(ctx);
+-	else if (strcmp(tag, "span") == 0) {
+-		/* Plain text span (not italic). */
++		if (html_style_widget(node, NULL, &amp;peek_w, &amp;peek_max))
++			return NULL;
++		if (peek_w &gt; 0 || peek_max &gt; 0) {
++			int lim = clamp_wrap_w(avail_w, peek_w, peek_max, 0, 0);
++
++			if (lim &gt; 0 &amp;&amp; lim &lt; avail_w)
++				avail_w = lim;
++		}
++	}
++
++	if (strcmp(tag, "h1") == 0)
++		w = convert_heading(ctx, node, 1, avail_w);
++	else if (strcmp(tag, "h2") == 0)
++		w = convert_heading(ctx, node, 2, avail_w);
++	else if (strcmp(tag, "h3") == 0)
++		w = convert_heading(ctx, node, 3, avail_w);
++	else if (strcmp(tag, "h4") == 0)
++		w = convert_heading(ctx, node, 3, avail_w);
++	else if (strcmp(tag, "h5") == 0)
++		w = convert_heading(ctx, node, 3, avail_w);
++	else if (strcmp(tag, "h6") == 0)
++		w = convert_heading(ctx, node, 3, avail_w);
++	else if (strcmp(tag, "p") == 0)
++		w = convert_p(ctx, node, avail_w);
++	else if (strcmp(tag, "b") == 0)
++		w = convert_bold(ctx, node);
++	else if (strcmp(tag, "strong") == 0)
++		w = convert_bold(ctx, node);
++	else if (strcmp(tag, "i") == 0)
++		w = convert_italic(ctx, node);
++	else if (strcmp(tag, "em") == 0)
++		w = convert_italic(ctx, node);
++	else if (strcmp(tag, "a") == 0)
++		w = convert_a(ctx, node);
++	else if (strcmp(tag, "font") == 0)
++		w = convert_font(ctx, node);
++	else if (strcmp(tag, "code") == 0 || strcmp(tag, "kbd") == 0)
++		w = convert_code(ctx, node);
++	else if (strcmp(tag, "pre") == 0)
++		w = convert_pre(ctx, node, avail_w);
++	else if (strcmp(tag, "br") == 0)
++		w = convert_br(ctx);
++	else if (strcmp(tag, "hr") == 0)
++		w = bgtk_rule(ctx, BGTK_LIST_HORIZONTAL, 1,
++			      (BGTK_Options){.margin = 4, .padding = 0});
++	else if (strcmp(tag, "span") == 0 || strcmp(tag, "diff") == 0) {
+ 		char *txt = collect_text(node);
++
+ 		if (txt &amp;&amp; *txt)
+ 			w = bgtk_text(ctx, txt, (BGTK_Options){0});
+ 		free(txt);
+-	} else if (strcmp(tag, "button") == 0) w = convert_button(ctx, node);
+-	else if (strcmp(tag, "input") == 0)  w = convert_input(ctx, node);
+-	else if (strcmp(tag, "select") == 0) w = convert_select(ctx, node);
+-	else if (strcmp(tag, "img") == 0)    w = convert_img(ctx, node);
+-	else if (strcmp(tag, "ul") == 0)     w = convert_list(ctx, node, avail_w, 0);
+-	else if (strcmp(tag, "ol") == 0)     w = convert_list(ctx, node, avail_w, 1);
+-	else if (strcmp(tag, "table") == 0)  w = convert_table(ctx, node, avail_w);
++	} else if (strcmp(tag, "center") == 0)
++		w = convert_center(ctx, node, avail_w);
++	else if (strcmp(tag, "button") == 0)
++		w = convert_button(ctx, node);
++	else if (strcmp(tag, "input") == 0)
++		w = convert_input(ctx, node);
++	else if (strcmp(tag, "select") == 0)
++		w = convert_select(ctx, node);
++	else if (strcmp(tag, "img") == 0)
++		w = convert_img(ctx, node, avail_w);
++	else if (strcmp(tag, "ul") == 0)
++		w = convert_list(ctx, node, avail_w, 0);
++	else if (strcmp(tag, "ol") == 0)
++		w = convert_list(ctx, node, avail_w, 1);
++	else if (strcmp(tag, "table") == 0)
++		w = convert_table(ctx, node, avail_w);
+ 	else
+-		/* Generic containers: div, section, article, body, … */
++		/* div, section, article, body, htop, dd, article, … */
+ 		w = convert_container(ctx, node, avail_w);
+ 
+-	if (w &amp;&amp; html_style_widget(node, w)) {
+-		/* display:none after build (should be rare — checked above). */
+-		w = NULL;
++	if (w) {
++		int css_w = -1, css_max = -1;
++		int attr_w = attr_int(node, "width", 0);
++
++		if (html_style_widget(node, w, &amp;css_w, &amp;css_max)) {
++			w = NULL;
++		} else if (w-&gt;type == BGTK_WIDGET_TEXT) {
++			int padm = 2 * (w-&gt;padding + w-&gt;margin);
++			int lim = clamp_wrap_w(avail_w, css_w, css_max, attr_w,
++					       padm);
++
++			wrap_text_widget(ctx, w, lim);
++		} else if (w-&gt;type == BGTK_WIDGET_IMAGE) {
++			int lim = css_len_px(css_max, avail_w);
++			int cw = css_len_px(css_w, avail_w);
++
++			if (cw &gt; 0 &amp;&amp; (lim &lt; 0 || cw &lt; lim))
++				lim = cw;
++			if (lim &gt; 0 &amp;&amp; w-&gt;data.image.img_w &gt; lim) {
++				int nh = (int)((long)w-&gt;data.image.img_h * lim /
++					       w-&gt;data.image.img_w);
++				uint32_t *sc = scale_image_argb(
++					w-&gt;data.image.pixels,
++					w-&gt;data.image.img_w,
++					w-&gt;data.image.img_h, lim,
++					nh &gt; 0 ? nh : 1);
++
++				if (sc) {
++					w-&gt;data.image.pixels = sc;
++					w-&gt;data.image.img_w = lim;
++					w-&gt;data.image.img_h = nh &gt; 0 ? nh : 1;
++					w-&gt;w = lim +
++					       2 * (w-&gt;padding + w-&gt;margin);
++					w-&gt;h = w-&gt;data.image.img_h +
++					       2 * (w-&gt;padding + w-&gt;margin);
++				}
++			}
++		}
+ 	}
+ 	return w;
+ }
+diff --git a/internal.h b/internal.h
+index 914a639..b634d55 100644
+--- a/internal.h
++++ b/internal.h
+@@ -38,5 +38,10 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
+ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
+ 		 uint32_t* pixels);
+ int load_image(const char* path, uint32_t** out_pixels, int* out_w, int* out_h);
++/* Decode image from memory (PNG/JPEG/…). Same pixel format as load_image. */
++int load_image_mem(const unsigned char *data, int len, uint32_t **out_pixels,
++		   int *out_w, int *out_h);
++/* Nearest-neighbour scale ARGB buffer; frees src on success. */
++uint32_t *scale_image_argb(uint32_t *src, int sw, int sh, int dw, int dh);
+ 
+ #endif
+diff --git a/test/fixtures_img.jpg b/test/fixtures_img.jpg
+new file mode 100644
+index 0000000..55e9ac2
+Binary files /dev/null and b/test/fixtures_img.jpg differ
+diff --git a/test/test_html.c b/test/test_html.c
+index 8018f2f..7044bc7 100644
+--- a/test/test_html.c
++++ b/test/test_html.c
+@@ -25,6 +25,7 @@ static const char *SAMPLE_HTML =
+ 	"&lt;pre&gt;line one\n"
+ 	"  indented\n"
+ 	"line three&lt;/pre&gt;"
++	"&lt;pre&gt;see &lt;a href=\"https://example.com/\"&gt;example&lt;/a&gt; inside pre&lt;/pre&gt;"
+ 	"&lt;button&gt;Click Me&lt;/button&gt;"
+ 	"&lt;input type=\"text\" value=\"type here\" width=\"200\" /&gt;"
+ 	"&lt;input type=\"checkbox\" /&gt; Check this"
+@@ -117,6 +118,35 @@ static int count_pre_like(struct BGTK_Widget *w)
+ 	return n;
+ }
+ 
++/* Anchor that lives under a mono pre line (nested markup). */
++static int count_pre_links(struct BGTK_Widget *w)
++{
++	int i, n = 0;
++
++	if (!w)
++		return 0;
++	if (w-&gt;type == BGTK_WIDGET_TEXT &amp;&amp; w-&gt;data.text.href &amp;&amp;
++	    w-&gt;data.text.href[0] &amp;&amp;
++	    w-&gt;data.text.font_role == BGTK_FONT_MONO)
++		n++;
++	switch (w-&gt;type) {
++	case BGTK_WIDGET_SCROLLABLE:
++		for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++)
++			n += count_pre_links(w-&gt;data.scrollable.items[i]);
++		break;
++	case BGTK_WIDGET_LIST:
++		for (i = 0; i &lt; w-&gt;data.list_widget.widget_count; i++)
++			n += count_pre_links(w-&gt;data.list_widget.items[i]);
++		break;
++	case BGTK_WIDGET_FRAME:
++		n += count_pre_links(w-&gt;data.frame.child);
++		break;
++	default:
++		break;
++	}
++	return n;
++}
++
+ /* CSS v1: style element + class/id + inline */
+ static const char *CSS_SAMPLE =
+ 	"&lt;html&gt;&lt;head&gt;&lt;style&gt;"
+@@ -133,6 +163,15 @@ static const char *CSS_SAMPLE =
+ 	"&lt;p style=\"color:#ffcc00;text-align:right\"&gt;Inline gold, right-aligned.&lt;/p&gt;"
+ 	"&lt;/body&gt;&lt;/html&gt;";
+ 
++/* Long line must wrap within a narrow max-width. */
++static const char *WRAP_SAMPLE =
++	"&lt;html&gt;&lt;body&gt;"
++	"&lt;p style=\"max-width:140px\"&gt;"
++	"AAAAAAAAAA BBBBBBBBBB CCCCCCCCCC DDDDDDDDDD EEEEEEEEEE "
++	"FFFFFFFFFF GGGGGGGGGG"
++	"&lt;/p&gt;"
++	"&lt;/body&gt;&lt;/html&gt;";
++
+ int main(void)
+ {
+ 	struct BGTK_Context *ctx = bgtk_init_mock(480, 600);
+@@ -173,6 +212,13 @@ int main(void)
+ 			bgtk_destroy_mock(ctx);
+ 			return 1;
+ 		}
++		if (count_pre_links(root) &lt; 1) {
++			fprintf(stderr,
++				"test_html: expected &lt;a&gt; inside &lt;pre&gt; "
++				"(mono + href)\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
+ 	}
+ 
+ 	/* CSS sample */
+@@ -209,6 +255,222 @@ int main(void)
+ 		return 1;
+ 	}
+ 
++	/* Image load from local path */
++	{
++		static const char *IMG_HTML =
++			"&lt;html&gt;&lt;body&gt;&lt;p&gt;&lt;img src=\"test/fixtures_img.jpg\" "
++			"width=\"120\" height=\"80\" alt=\"fixture\"&gt;&lt;/p&gt;"
++			"&lt;/body&gt;&lt;/html&gt;";
++		struct BGTK_Widget *walk;
++		int found = 0;
++
++		root = bgtk_html_parse_inline(ctx, IMG_HTML, 480, 200);
++		if (!root) {
++			fprintf(stderr, "test_html: img parse failed\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		bgtk_widget_destroy(ctx-&gt;root_widget);
++		ctx-&gt;root_widget = root;
++		bgtk_draw_widgets(ctx);
++		take_screenshot(ctx, "test_html_03_img.png");
++		walk = root;
++		if (walk-&gt;type == BGTK_WIDGET_FRAME)
++			walk = walk-&gt;data.frame.child;
++		if (walk &amp;&amp; walk-&gt;type == BGTK_WIDGET_SCROLLABLE &amp;&amp;
++		    walk-&gt;data.scrollable.widget_count &gt; 0)
++			walk = walk-&gt;data.scrollable.items[0];
++		/* walk for IMAGE */
++		{
++			struct BGTK_Widget *stack[32];
++			int sp = 0;
++
++			stack[sp++] = walk;
++			while (sp &gt; 0) {
++				struct BGTK_Widget *n = stack[--sp];
++				int i;
++
++				if (!n)
++					continue;
++				if (n-&gt;type == BGTK_WIDGET_IMAGE &amp;&amp;
++				    n-&gt;data.image.pixels)
++					found = 1;
++				if (n-&gt;type == BGTK_WIDGET_LIST)
++					for (i = 0; i &lt; n-&gt;data.list_widget
++							     .widget_count;
++					     i++)
++						if (sp &lt; 32)
++							stack[sp++] =
++								n-&gt;data.list_widget
++									.items[i];
++				if (n-&gt;type == BGTK_WIDGET_FRAME &amp;&amp; sp &lt; 32)
++					stack[sp++] = n-&gt;data.frame.child;
++				if (n-&gt;type == BGTK_WIDGET_SCROLLABLE)
++					for (i = 0; i &lt; n-&gt;data.scrollable
++							     .widget_count;
++					     i++)
++						if (sp &lt; 32)
++							stack[sp++] =
++								n-&gt;data.scrollable
++									.items[i];
++			}
++		}
++		if (!found) {
++			fprintf(stderr,
++				"test_html: expected loaded &lt;img&gt; pixels\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++	}
++
++	/* Wrap: multi-line text under max-width */
++	{
++		struct BGTK_Widget *tw = NULL;
++		struct BGTK_Widget *walk;
++
++		root = bgtk_html_parse_inline(ctx, WRAP_SAMPLE, 480, 200);
++		if (!root) {
++			fprintf(stderr, "test_html: wrap parse failed\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		bgtk_widget_destroy(ctx-&gt;root_widget);
++		ctx-&gt;root_widget = root;
++		bgtk_draw_widgets(ctx);
++		take_screenshot(ctx, "test_html_02_wrap.png");
++		/* Find first multi-line text in tree (frame→scroll→list→text). */
++		walk = root;
++		if (walk-&gt;type == BGTK_WIDGET_FRAME)
++			walk = walk-&gt;data.frame.child;
++		if (walk &amp;&amp; walk-&gt;type == BGTK_WIDGET_SCROLLABLE &amp;&amp;
++		    walk-&gt;data.scrollable.widget_count &gt; 0)
++			walk = walk-&gt;data.scrollable.items[0];
++		if (walk &amp;&amp; walk-&gt;type == BGTK_WIDGET_LIST &amp;&amp;
++		    walk-&gt;data.list_widget.widget_count &gt; 0)
++			walk = walk-&gt;data.list_widget.items[0];
++		if (walk &amp;&amp; walk-&gt;type == BGTK_WIDGET_TEXT)
++			tw = walk;
++		if (!tw || !tw-&gt;data.text.text ||
++		    !strchr(tw-&gt;data.text.text, '\n')) {
++			fprintf(stderr,
++				"test_html: expected wrapped multi-line "
++				"paragraph\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++	}
++
++	/* Table: colspan/rowspan + border + margin:auto + border-color */
++	{
++		static const char *TABLE_HTML =
++			"&lt;html&gt;&lt;head&gt;&lt;style&gt;"
++			"table{margin:auto;table-layout:fixed;"
++			"border-collapse:collapse;border-color:#ff00ff}"
++			"td{padding:0 1em}"
++			"&lt;/style&gt;&lt;/head&gt;&lt;body&gt;"
++			"&lt;table border=1&gt;"
++			"&lt;tr&gt;&lt;td colspan=4&gt;wide top&lt;/td&gt;&lt;/tr&gt;"
++			"&lt;tr&gt;&lt;td colspan=2 rowspan=2&gt;span TL&lt;/td&gt;"
++			"&lt;td&gt;a&lt;/td&gt;&lt;td rowspan=2&gt;span R&lt;/td&gt;&lt;/tr&gt;"
++			"&lt;tr&gt;&lt;td&gt;b&lt;/td&gt;&lt;/tr&gt;"
++			"&lt;tr&gt;&lt;td colspan=3&gt;bottom&lt;/td&gt;&lt;td&gt;c&lt;/td&gt;&lt;/tr&gt;"
++			"&lt;/table&gt;"
++			"&lt;/body&gt;&lt;/html&gt;";
++		struct BGTK_Widget *stack[64];
++		int sp = 0, abs_lists = 0, margin_auto = 0, magenta = 0;
++		int x, y;
++
++		root = bgtk_html_parse_inline(ctx, TABLE_HTML, 480, 400);
++		if (!root) {
++			fprintf(stderr, "test_html: table parse failed\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		bgtk_widget_destroy(ctx-&gt;root_widget);
++		ctx-&gt;root_widget = root;
++		bgtk_draw_widgets(ctx);
++		take_screenshot(ctx, "test_html_04_table.png");
++
++		stack[sp++] = root;
++		while (sp &gt; 0) {
++			struct BGTK_Widget *n = stack[--sp];
++			int i;
++
++			if (!n)
++				continue;
++			if (n-&gt;flags &amp; BGTK_FLAG_MARGIN_AUTO)
++				margin_auto = 1;
++			if (n-&gt;type == BGTK_WIDGET_LIST &amp;&amp;
++			    (n-&gt;flags &amp; BGTK_FLAG_ABSOLUTE))
++				abs_lists++;
++			if (n-&gt;type == BGTK_WIDGET_FRAME &amp;&amp;
++			    n-&gt;data.frame.border_w &gt; 0 &amp;&amp;
++			    n-&gt;data.frame.border_color == 0xFFFF00FFu)
++				magenta = 1;
++			if (n-&gt;type == BGTK_WIDGET_LIST)
++				for (i = 0; i &lt; n-&gt;data.list_widget.widget_count;
++				     i++)
++					if (sp &lt; 64)
++						stack[sp++] =
++							n-&gt;data.list_widget
++								.items[i];
++			if (n-&gt;type == BGTK_WIDGET_FRAME &amp;&amp; n-&gt;data.frame.child &amp;&amp;
++			    sp &lt; 64)
++				stack[sp++] = n-&gt;data.frame.child;
++			if (n-&gt;type == BGTK_WIDGET_SCROLLABLE)
++				for (i = 0; i &lt; n-&gt;data.scrollable.widget_count;
++				     i++)
++					if (sp &lt; 64)
++						stack[sp++] =
++							n-&gt;data.scrollable
++								.items[i];
++		}
++		if (abs_lists &lt; 1) {
++			fprintf(stderr,
++				"test_html: expected absolute table grid\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		if (!margin_auto) {
++			fprintf(stderr,
++				"test_html: expected margin:auto on table\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		if (!magenta) {
++			fprintf(stderr,
++				"test_html: expected magenta table border\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Magenta pixels should appear (border-color). */
++		{
++			int mag_px = 0;
++
++			fb = (uint32_t *)ctx-&gt;shm_buffer;
++			for (y = 0; y &lt; 400 &amp;&amp; !mag_px; y++) {
++				for (x = 0; x &lt; 480; x++) {
++					uint32_t p = fb[y * 480 + x];
++					unsigned r = (p &gt;&gt; 16) &amp; 0xFF;
++					unsigned g = (p &gt;&gt; 8) &amp; 0xFF;
++					unsigned b = p &amp; 0xFF;
++
++					if (r &gt; 200 &amp;&amp; b &gt; 200 &amp;&amp; g &lt; 80) {
++						mag_px = 1;
++						break;
++					}
++				}
++			}
++			if (!mag_px) {
++				fprintf(stderr,
++					"test_html: magenta border not in "
++					"framebuffer\n");
++				bgtk_destroy_mock(ctx);
++				return 1;
++			}
++		}
++	}
++
+ 	printf("test_html complete. PNG frames written.\n");
+ 	bgtk_destroy_mock(ctx);
+ 	return 0;
+</pre>

@@ -1,0 +1,1870 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk e8ee141</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit e8ee141
+parent <a href=commit-0182d04.html>0182d04</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-14T21:00:10-03:00
+
+    feat: CSS v1, horizontal scroll, fewer launcher/text draws
+
+    Add css.c for basic stylesheets/inline styles in HTML parsing.
+    Labyrinth Shift+wheel and scroll_x pan wide content. Launcher and
+    text_input stop double-presenting so each action draws once.
+    Refresh www/bgtk.tar.gz.
+
+<a href=tree-e8ee141.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/.gitignore b/.gitignore
+index 471f3de..4fa86d7 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -18,3 +18,4 @@ test/screenshots/*.png
+ .DS_Store
+ .tai
+ .codebase-memory/
++/test_labyrinth
+diff --git a/AGENTS.md b/AGENTS.md
+index bf3835b..5c72cc5 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -19,6 +19,7 @@ works on Linux and macOS without BGCE.
+ ├── drawing.c         - Drawing and rendering functions
+ ├── widgets.c         - Widget implementations
+ ├── html.c / html.h   - HTML → widget tree parser (libxml2)
++├── css.c / css.h     - Minimal CSS (stylesheets + inline → widget colors)
+ ├── internal.h        - Internal headers and definitions
+ ├── Makefile          - Build configuration (real apps + headless/test targets)
+ ├── README.md         - Project overview and mock testing examples
+@@ -81,7 +82,11 @@ works on Linux and macOS without BGCE.
+ - Returns a frame widget; assign to `ctx-&gt;root_widget` before drawing
+ - **Labyrinth** (`apps/labyrinth.c`) is the HTML browser shell (gemini-like
+   chrome: content + bottom URL bar). Fetches `https://` via **libtls** (same
+-  stack as gemini_browser). CSS/JS/`&lt;a href&gt;` click remain planned hooks.
++  stack as gemini_browser). CSS v1 lives in `css.c` / `css.h` (applied during
++  `bgtk_html_parse*`). JS / clickable `&lt;a href&gt;` remain planned hooks.
++- **CSS** (`css.c`): selectors `*`, type, `.class`, `#id`; properties color,
++  background-color, font-weight, font-style, text-align, margin, padding,
++  display:none. Inline `style=""` wins over stylesheets.
+ 
+ ### 6. Apps
+ - Real BGCE apps live under `apps/` (terminal, gemini_browser, labyrinth, launcher, image_viewer, sys_status, test_app)
+diff --git a/Makefile b/Makefile
+index 4e71951..e3079cd 100644
+--- a/Makefile
++++ b/Makefile
+@@ -107,8 +107,8 @@ INSTALL_LIB ?= $(PREFIX)/lib
+ INSTALL_INCLUDE ?= $(PREFIX)/include
+ INSTALL_BIN ?= $(PREFIX)/bin
+ 
+-SRC = bgtk.c drawing.c widgets.c config.c html.c keys.c
+-LIB_OBJS = bgtk.o drawing.o widgets.o config.o html.o keys.o
++SRC = bgtk.c drawing.c widgets.c config.c html.c css.c keys.c
++LIB_OBJS = bgtk.o drawing.o widgets.o config.o html.o css.o keys.o
+ TEST_APP_OBJ = apps/test_app.o
+ IMAGE_VIEWER_OBJ = apps/image_viewer.o
+ LAUNCHER_OBJ = apps/launcher.o
+@@ -322,8 +322,9 @@ test_labyrinth: $(TEST_LABYRINTH_OBJ) $(LABYRINTH_TEST_OBJ) $(LIB_OBJS) $(HEADLE
+ CORE_HEADERS = bgtk.h internal.h config.h
+ $(LIB_OBJS): $(CORE_HEADERS)
+ keys.o: bgtk.h
+-html.o: html.h
+-$(TEST_HTML_OBJ): html.h bgtk.h
++html.o: html.h css.h
++css.o: css.h bgtk.h config.h
++$(TEST_HTML_OBJ): html.h css.h bgtk.h
+ $(HEADLESS_OBJ): bgtk.h
+ $(SETTINGS_OBJ): bgtk.h config.h
+ $(SETTINGS_TEST_OBJ): bgtk.h config.h
+diff --git a/apps/labyrinth.c b/apps/labyrinth.c
+index 4ffd174..6c8702d 100644
+--- a/apps/labyrinth.c
++++ b/apps/labyrinth.c
+@@ -10,13 +10,13 @@
+  *      ↓
+  *   [decode] charset (placeholder: assume UTF-8)
+  *      ↓
+- *   [css]    collect &lt;style&gt;/link stylesheets → cascade (placeholder)
++ *   [css]    &lt;style&gt; + style="" → cascade (css.c)     ← v1 implemented
+  *      ↓
+- *   [html]   bgtk_html_parse_inline → widget tree   ← implemented
++ *   [html]   bgtk_html_parse_inline → widget tree     ← implemented
+  *      ↓
+- *   [style]  apply computed styles to widgets       (placeholder)
++ *   [style]  applied during HTML convert via css.c
+  *      ↓
+- *   [js]     run scripts / bind events              (placeholder)
++ *   [js]     run scripts / bind events                (placeholder)
+  *      ↓
+  *   [wire]   &lt;a href&gt; → navigate()                  (placeholder)
+  *
+@@ -124,14 +124,14 @@ static void labyrinth_scan_pipeline(const char *html)
+ 		 last_style_blocks, last_script_blocks, last_anchor_count);
+ }
+ 
+-/* Apply CSS cascade to the widget tree (identity for now). */
++/* CSS is applied inside bgtk_html_parse_inline (css.c). Hook kept for
++ * future document-level re-style / linked stylesheets. */
+ static void labyrinth_css_apply(struct BGTK_Widget *page,
+ 				const char *html)
+ {
+ 	(void)page;
+ 	(void)html;
+-	/* TODO: parse stylesheets, match selectors, set colors/fonts/spacing
+-	 * on BGTK widgets (or a parallel style map keyed by widget). */
++	/* TODO: fetch &lt;link rel=stylesheet&gt;, media queries, recomputed layout. */
+ }
+ 
+ /* Boot scripts for the document (no-op). */
+@@ -296,7 +296,8 @@ static const char *HOME_HTML =
+ 	"&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;title&gt;Labyrinth&lt;/title&gt;&lt;/head&gt;&lt;body&gt;"
+ 	"&lt;h1&gt;Labyrinth&lt;/h1&gt;"
+ 	"&lt;p&gt;A simple web browser for BGTK. Pages are HTML → widgets "
+-	"(no CSS or JavaScript yet).&lt;/p&gt;"
++	"with basic CSS (color, background, font-weight, text-align, …). "
++	"JavaScript is not run yet.&lt;/p&gt;"
+ 	"&lt;h2&gt;Try&lt;/h2&gt;"
+ 	"&lt;ul&gt;"
+ 	"&lt;li&gt;Type a URL in the bar below and press Enter&lt;/li&gt;"
+@@ -310,7 +311,7 @@ static const char *HOME_HTML =
+ 	"&lt;p&gt;&lt;b&gt;CSS&lt;/b&gt; stylesheets and cascade · &lt;b&gt;JS&lt;/b&gt; scripts and events · "
+ 	"clickable &lt;code&gt;&amp;lt;a href&amp;gt;&lt;/code&gt;.&lt;/p&gt;"
+ 	"&lt;p&gt;HTTPS uses &lt;b&gt;libtls&lt;/b&gt;. Keys: Ctrl+L URL · Ctrl+R reload · b back · "
+-	"H home · j/k scroll · Esc / q quit.&lt;/p&gt;"
++	"H home · j/k scroll · &lt;b&gt;Shift+wheel&lt;/b&gt; horizontal scroll · Esc / q quit.&lt;/p&gt;"
+ 	"&lt;/body&gt;&lt;/html&gt;";
+ 
+ static const char *BLANK_HTML =
+@@ -1023,7 +1024,10 @@ int main(void)
+ 
+ 			if (ev-&gt;type == EV_ABS)
+ 				break;
+-			if (ev-&gt;type == EV_REL &amp;&amp; ev-&gt;code != REL_WHEEL)
++			/* Wheel / h-wheel (and Shift+wheel → horizontal in
++			 * scrollable). Drop other EV_REL (pointer deltas). */
++			if (ev-&gt;type == EV_REL &amp;&amp; ev-&gt;code != REL_WHEEL &amp;&amp;
++			    ev-&gt;code != REL_HWHEEL)
+ 				break;
+ 
+ 			bgtk_update_modifiers(ctx, *ev);
+diff --git a/apps/launcher.c b/apps/launcher.c
+index 81b71bc..eb6a677 100644
+--- a/apps/launcher.c
++++ b/apps/launcher.c
+@@ -137,10 +137,8 @@ static void rebuild_matches_ui(void)
+ 	}
+ 
+ 	n = num_matches;
+-	if (n &lt; 1) {
+-		bgtk_draw_widgets(ctx);
++	if (n &lt; 1)
+ 		return;
+-	}
+ 
+ 	items = calloc((size_t)n, sizeof(struct BGTK_Widget *));
+ 	if (!items)
+@@ -207,8 +205,7 @@ static void rebuild_matches_ui(void)
+ 	matches_scroll-&gt;data.scrollable.items = items;
+ 	matches_scroll-&gt;data.scrollable.widget_count = n;
+ 	matches_scroll-&gt;data.scrollable.scroll_y = 0;
+-
+-	bgtk_draw_widgets(ctx);
++	/* No draw here — callers present once after muting the tree. */
+ }
+ 
+ static void on_text_change(void)
+@@ -305,7 +302,7 @@ static void on_enter_pressed(void)
+ 		return;
+ 	quit_after_launch = 1;
+ 	/* Disconnect now so the server erases us before any post-enter
+-	 * redraw (text_input always draws after on_enter) or free path. */
++	 * redraw (main loop may still see need_draw) or free path. */
+ 	launcher_detach();
+ }
+ 
+@@ -470,16 +467,15 @@ int main(void)
+ 	}
+ 
+ 	layout_launcher();
+-	bgtk_log("first draw / focus");
+-	bgtk_log_flush();
+-	/* Draw before set_focus: set_focus also draws; if draw crashes we know. */
+-	bgtk_draw_widgets(ctx);
+-	bgtk_log("first draw ok");
+-	bgtk_set_focus(ctx, text_input);
+-
++	/* Quiet focus: bgtk_set_focus would present before the match list exists. */
++	ctx-&gt;focused_widget = text_input;
+ 	update_matches("");
+ 	bgtk_log("matches=%d; rebuilding list", num_matches);
+ 	rebuild_matches_ui();
++	bgtk_log("first draw");
++	bgtk_log_flush();
++	bgtk_draw_widgets(ctx);
++	bgtk_log("first draw ok");
+ 
+ 	bgtk_log("Starting launcher main loop (%dx%d)", ctx-&gt;width, ctx-&gt;height);
+ 	bgtk_log_flush();
+@@ -520,12 +516,14 @@ int main(void)
+ 				    ev-&gt;code == KEY_J) {
+ 					selected = (selected + 1) % num_matches;
+ 					rebuild_matches_ui();
++					need_draw = 1;
+ 					break;
+ 				}
+ 				if (ev-&gt;code == KEY_UP || ev-&gt;code == KEY_K) {
+ 					selected = (selected - 1 + num_matches) %
+ 						   num_matches;
+ 					rebuild_matches_ui();
++					need_draw = 1;
+ 					break;
+ 				}
+ 			}
+@@ -533,8 +531,8 @@ int main(void)
+ 			break;
+ 		}
+ 		case MSG_FOCUS_CHANGE:
++			/* set_window_focus already presents. */
+ 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
+-			need_draw = 1;
+ 			break;
+ 		case MSG_BUFFER_CHANGE:
+ 			/* Server allocated a new shm buffer after a window resize. */
+diff --git a/bgtk.h b/bgtk.h
+index dd80b71..5cbc688 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -334,7 +334,10 @@ struct BGTK_Widget {
+ 	enum BGTK_Text_Align text_align;  // Horizontal text alignment
+ 	enum BGTK_VAlign text_v_align;    // Vertical text alignment
+ 	int baseline_offset;              // FreeType baseline tweak (px)
+-	
++	/* CSS / explicit colors: 0 = use theme default (no override). */
++	uint32_t color_fg;
++	uint32_t color_bg;
++
+ 	// Function pointer for event handling
+ 	int (*handle_event)(struct BGTK_Widget* widget, struct InputEvent ev);
+ 	
+@@ -372,8 +375,10 @@ struct BGTK_Widget {
+ 			struct BGTK_Widget** items;  // List of child widgets
+ 			int widget_count;
+ 			int widget_capacity; /* pixel count of tmp, not item slots */
+-			int scroll_y;	     // Current scroll position
++			int scroll_y;	     // Vertical scroll (px into content)
++			int scroll_x;	     // Horizontal scroll (Shift+wheel)
+ 			int content_height;  // Total height of all child widgets
++			int content_width;   // Total width (≥ view w; wide tables/pre)
+ 			uint32_t* tmp;	     // off-screen buffer
+ 			/* Identity of content last painted into tmp — if items
+ 			 * are swapped (settings sidebar) without freeing tmp,
+diff --git a/compat/linux/input.h b/compat/linux/input.h
+index b38adff..66be1d2 100644
+--- a/compat/linux/input.h
++++ b/compat/linux/input.h
+@@ -17,9 +17,10 @@
+ #define EV_ABS 3
+ 
+ /* Relative axes */
+-#define REL_X     0
+-#define REL_Y     1
+-#define REL_WHEEL 8
++#define REL_X      0
++#define REL_Y      1
++#define REL_HWHEEL 6
++#define REL_WHEEL  8
+ 
+ /* Buttons (normally BTN_LEFT etc.) */
+ #define BTN_LEFT  0x110
+diff --git a/css.c b/css.c
+new file mode 100644
+index 0000000..cccdd10
+--- /dev/null
++++ b/css.c
+@@ -0,0 +1,576 @@
++/* css.c — minimal CSS parser/applier for BGTK HTML */
++#include "css.h"
++#include "config.h"
++
++#include &lt;ctype.h&gt;
++#include &lt;stdio.h&gt;
++#include &lt;stdlib.h&gt;
++#include &lt;string.h&gt;
++#include &lt;strings.h&gt;
++
++enum {
++	SEL_UNIVERSAL = 0,
++	SEL_TYPE = 1,
++	SEL_CLASS = 10,
++	SEL_ID = 100,
++};
++
++struct BGTK_CSS_Decl {
++	int color_set, bg_set;
++	uint32_t color, bg;
++	int font_weight; /* 0 unset, 1 normal, 2 bold */
++	int font_style;  /* 0 unset, 1 normal, 2 italic */
++	int text_align;  /* -1 unset, 0 left, 1 center, 2 right */
++	int margin;      /* -1 unset */
++	int padding;     /* -1 unset */
++	int display_none;
++};
++
++struct BGTK_CSS_Rule {
++	char sel_type[32];  /* empty = any */
++	char sel_class[64]; /* empty = any */
++	char sel_id[64];    /* empty = any */
++	int specificity;
++	struct BGTK_CSS_Decl decl;
++};
++
++struct BGTK_CSS {
++	struct BGTK_CSS_Rule *rules;
++	int n, cap;
++};
++
++struct BGTK_CSS *bgtk_css_create(void)
++{
++	return calloc(1, sizeof(struct BGTK_CSS));
++}
++
++void bgtk_css_destroy(struct BGTK_CSS *css)
++{
++	if (!css)
++		return;
++	free(css-&gt;rules);
++	free(css);
++}
++
++static void skip_ws(const char **pp)
++{
++	const char *p = *pp;
++	while (*p &amp;&amp; isspace((unsigned char)*p))
++		p++;
++	*pp = p;
++}
++
++uint32_t bgtk_css_parse_color(const char *s)
++{
++	static const struct {
++		const char *name;
++		uint32_t c;
++	} named[] = {
++		{ "black", 0xFF000000 },   { "white", 0xFFFFFFFF },
++		{ "red", 0xFFFF0000 },	   { "green", 0xFF008000 },
++		{ "blue", 0xFF0000FF },	   { "yellow", 0xFFFFFF00 },
++		{ "cyan", 0xFF00FFFF },	   { "magenta", 0xFFFF00FF },
++		{ "gray", 0xFF808080 },	   { "grey", 0xFF808080 },
++		{ "orange", 0xFFFFA500 },  { "purple", 0xFF800080 },
++		{ "navy", 0xFF000080 },	   { "teal", 0xFF008080 },
++		{ "silver", 0xFFC0C0C0 },  { "maroon", 0xFF800000 },
++		{ "lime", 0xFF00FF00 },	   { "aqua", 0xFF00FFFF },
++		{ "fuchsia", 0xFFFF00FF }, { "olive", 0xFF808000 },
++		{ "transparent", 0 },
++	};
++	char buf[64];
++	size_t i, n;
++
++	if (!s || !*s)
++		return 0;
++	skip_ws(&amp;s);
++	if (*s == '#') {
++		uint32_t c = parse_hex_color(s);
++		/* parse_hex_color returns opaque black on bad input; accept #000 */
++		if (s[0] == '#' &amp;&amp; (strlen(s) == 4 || strlen(s) == 7 ||
++				    strlen(s) == 9)) {
++			if (strlen(s) == 4) {
++				/* #rgb → #rrggbb */
++				unsigned r, g, b;
++				if (sscanf(s + 1, "%1x%1x%1x", &amp;r, &amp;g, &amp;b) ==
++				    3) {
++					r |= r &lt;&lt; 4;
++					g |= g &lt;&lt; 4;
++					b |= b &lt;&lt; 4;
++					return 0xFF000000u | (r &lt;&lt; 16) |
++					       (g &lt;&lt; 8) | b;
++				}
++			}
++			return c;
++		}
++		return 0;
++	}
++	n = 0;
++	while (s[n] &amp;&amp; (isalnum((unsigned char)s[n]) || s[n] == '-') &amp;&amp;
++	       n + 1 &lt; sizeof(buf)) {
++		buf[n] = (char)tolower((unsigned char)s[n]);
++		n++;
++	}
++	buf[n] = '\0';
++	for (i = 0; i &lt; sizeof(named) / sizeof(named[0]); i++) {
++		if (strcmp(buf, named[i].name) == 0)
++			return named[i].c;
++	}
++	return 0;
++}
++
++static int parse_px(const char *v)
++{
++	char *end;
++	long n;
++
++	if (!v)
++		return -1;
++	skip_ws(&amp;v);
++	n = strtol(v, &amp;end, 10);
++	if (end == v)
++		return -1;
++	while (*end &amp;&amp; isspace((unsigned char)*end))
++		end++;
++	if (*end == 'p' || *end == 'P')
++		end++;
++	if (*end == 'x' || *end == 'X')
++		end++;
++	(void)end;
++	if (n &lt; 0)
++		n = 0;
++	if (n &gt; 10000)
++		n = 10000;
++	return (int)n;
++}
++
++static void decl_clear(struct BGTK_CSS_Decl *d)
++{
++	memset(d, 0, sizeof(*d));
++	d-&gt;text_align = -1;
++	d-&gt;margin = -1;
++	d-&gt;padding = -1;
++}
++
++static void decl_set_prop(struct BGTK_CSS_Decl *d, const char *prop,
++			  const char *val)
++{
++	char p[64], v[128];
++	size_t i;
++
++	if (!d || !prop || !val)
++		return;
++	for (i = 0; prop[i] &amp;&amp; i + 1 &lt; sizeof(p); i++)
++		p[i] = (char)tolower((unsigned char)prop[i]);
++	p[i] = '\0';
++	/* trim val */
++	while (*val &amp;&amp; isspace((unsigned char)*val))
++		val++;
++	{
++		size_t len = strlen(val);
++		while (len &gt; 0 &amp;&amp; isspace((unsigned char)val[len - 1]))
++			len--;
++		if (len &gt;= sizeof(v))
++			len = sizeof(v) - 1;
++		memcpy(v, val, len);
++		v[len] = '\0';
++	}
++
++	if (strcmp(p, "color") == 0) {
++		uint32_t c = bgtk_css_parse_color(v);
++		if (c || strcasecmp(v, "transparent") == 0 ||
++		    strcasecmp(v, "black") == 0) {
++			d-&gt;color = c ? c : 0xFF000000u;
++			if (strcasecmp(v, "transparent") == 0)
++				d-&gt;color = 0;
++			d-&gt;color_set = 1;
++		}
++	} else if (strcmp(p, "background-color") == 0 ||
++		   strcmp(p, "background") == 0) {
++		/* background: #hex [ignore rest] */
++		char tok[64];
++		const char *q = v;
++		size_t n = 0;
++		while (*q &amp;&amp; !isspace((unsigned char)*q) &amp;&amp; n + 1 &lt; sizeof(tok))
++			tok[n++] = *q++;
++		tok[n] = '\0';
++		{
++			uint32_t c = bgtk_css_parse_color(tok);
++			if (c || strcasecmp(tok, "transparent") == 0 ||
++			    strcasecmp(tok, "black") == 0) {
++				d-&gt;bg = c;
++				if (strcasecmp(tok, "black") == 0 &amp;&amp; !c)
++					d-&gt;bg = 0xFF000000u;
++				d-&gt;bg_set = 1;
++			}
++		}
++	} else if (strcmp(p, "font-weight") == 0) {
++		if (strcasecmp(v, "bold") == 0 || strcmp(v, "700") == 0 ||
++		    strcmp(v, "800") == 0 || strcmp(v, "900") == 0)
++			d-&gt;font_weight = 2;
++		else if (strcasecmp(v, "normal") == 0 || strcmp(v, "400") == 0)
++			d-&gt;font_weight = 1;
++	} else if (strcmp(p, "font-style") == 0) {
++		if (strcasecmp(v, "italic") == 0 ||
++		    strcasecmp(v, "oblique") == 0)
++			d-&gt;font_style = 2;
++		else if (strcasecmp(v, "normal") == 0)
++			d-&gt;font_style = 1;
++	} else if (strcmp(p, "text-align") == 0) {
++		if (strcasecmp(v, "left") == 0)
++			d-&gt;text_align = 0;
++		else if (strcasecmp(v, "center") == 0)
++			d-&gt;text_align = 1;
++		else if (strcasecmp(v, "right") == 0)
++			d-&gt;text_align = 2;
++	} else if (strcmp(p, "margin") == 0) {
++		int px = parse_px(v);
++		if (px &gt;= 0)
++			d-&gt;margin = px;
++	} else if (strcmp(p, "padding") == 0) {
++		int px = parse_px(v);
++		if (px &gt;= 0)
++			d-&gt;padding = px;
++	} else if (strcmp(p, "display") == 0) {
++		if (strcasecmp(v, "none") == 0)
++			d-&gt;display_none = 1;
++	}
++}
++
++static void parse_declarations(const char *block, struct BGTK_CSS_Decl *d)
++{
++	const char *p = block;
++
++	decl_clear(d);
++	while (*p) {
++		char prop[64], val[128];
++		size_t n;
++		const char *colon, *semi, *end;
++
++		skip_ws(&amp;p);
++		if (!*p || *p == '}')
++			break;
++		colon = strchr(p, ':');
++		if (!colon)
++			break;
++		n = 0;
++		while (p &lt; colon &amp;&amp; n + 1 &lt; sizeof(prop)) {
++			if (!isspace((unsigned char)*p))
++				prop[n++] = *p;
++			p++;
++		}
++		prop[n] = '\0';
++		p = colon + 1;
++		skip_ws(&amp;p);
++		semi = strchr(p, ';');
++		end = semi ? semi : p + strlen(p);
++		n = 0;
++		while (p &lt; end &amp;&amp; n + 1 &lt; sizeof(val))
++			val[n++] = *p++;
++		val[n] = '\0';
++		/* trim trailing space */
++		while (n &gt; 0 &amp;&amp; isspace((unsigned char)val[n - 1]))
++			val[--n] = '\0';
++		decl_set_prop(d, prop, val);
++		if (semi)
++			p = semi + 1;
++		else
++			break;
++	}
++}
++
++static int parse_selector(const char *sel, struct BGTK_CSS_Rule *r)
++{
++	const char *p = sel;
++	size_t n;
++
++	r-&gt;sel_type[0] = r-&gt;sel_class[0] = r-&gt;sel_id[0] = '\0';
++	r-&gt;specificity = 0;
++	skip_ws(&amp;p);
++	if (!*p)
++		return -1;
++	if (*p == '*') {
++		r-&gt;specificity = SEL_UNIVERSAL;
++		return 0;
++	}
++	/* type */
++	if (isalpha((unsigned char)*p)) {
++		n = 0;
++		while (*p &amp;&amp; (isalnum((unsigned char)*p) || *p == '-') &amp;&amp;
++		       n + 1 &lt; sizeof(r-&gt;sel_type))
++			r-&gt;sel_type[n++] = (char)tolower((unsigned char)*p++);
++		r-&gt;sel_type[n] = '\0';
++		r-&gt;specificity += SEL_TYPE;
++	}
++	while (*p == '.' || *p == '#') {
++		int is_id = (*p == '#');
++		char *dst = is_id ? r-&gt;sel_id : r-&gt;sel_class;
++		size_t max = is_id ? sizeof(r-&gt;sel_id) : sizeof(r-&gt;sel_class);
++
++		p++;
++		n = 0;
++		while (*p &amp;&amp; (isalnum((unsigned char)*p) || *p == '-' ||
++			      *p == '_') &amp;&amp;
++		       n + 1 &lt; max)
++			dst[n++] = *p++;
++		dst[n] = '\0';
++		r-&gt;specificity += is_id ? SEL_ID : SEL_CLASS;
++	}
++	skip_ws(&amp;p);
++	/* reject complex selectors for v1 */
++	if (*p)
++		return -1;
++	return 0;
++}
++
++static void css_add_rule(struct BGTK_CSS *css, const struct BGTK_CSS_Rule *r)
++{
++	if (!css)
++		return;
++	if (css-&gt;n &gt;= css-&gt;cap) {
++		int ncap = css-&gt;cap ? css-&gt;cap * 2 : 16;
++		struct BGTK_CSS_Rule *nr =
++			realloc(css-&gt;rules, (size_t)ncap * sizeof(*nr));
++		if (!nr)
++			return;
++		css-&gt;rules = nr;
++		css-&gt;cap = ncap;
++	}
++	css-&gt;rules[css-&gt;n++] = *r;
++}
++
++void bgtk_css_add_sheet(struct BGTK_CSS *css, const char *source)
++{
++	const char *p;
++
++	if (!css || !source)
++		return;
++	p = source;
++	while (*p) {
++		char selbuf[128], declbuf[512];
++		const char *brace, *end;
++		size_t n;
++		struct BGTK_CSS_Rule rule;
++
++		skip_ws(&amp;p);
++		if (!*p)
++			break;
++		/* skip comments */
++		if (p[0] == '/' &amp;&amp; p[1] == '*') {
++			p += 2;
++			while (*p &amp;&amp; !(p[0] == '*' &amp;&amp; p[1] == '/'))
++				p++;
++			if (*p)
++				p += 2;
++			continue;
++		}
++		/* @-rules: skip until next {…} or ; */
++		if (*p == '@') {
++			brace = strchr(p, '{');
++			if (brace) {
++				int depth = 1;
++				p = brace + 1;
++				while (*p &amp;&amp; depth) {
++					if (*p == '{')
++						depth++;
++					else if (*p == '}')
++						depth--;
++					p++;
++				}
++			} else {
++				while (*p &amp;&amp; *p != ';')
++					p++;
++				if (*p == ';')
++					p++;
++			}
++			continue;
++		}
++		brace = strchr(p, '{');
++		if (!brace)
++			break;
++		n = (size_t)(brace - p);
++		while (n &gt; 0 &amp;&amp; isspace((unsigned char)p[n - 1]))
++			n--;
++		if (n &gt;= sizeof(selbuf))
++			n = sizeof(selbuf) - 1;
++		memcpy(selbuf, p, n);
++		selbuf[n] = '\0';
++		p = brace + 1;
++		end = strchr(p, '}');
++		if (!end)
++			break;
++		n = (size_t)(end - p);
++		if (n &gt;= sizeof(declbuf))
++			n = sizeof(declbuf) - 1;
++		memcpy(declbuf, p, n);
++		declbuf[n] = '\0';
++		p = end + 1;
++
++		/* split selectors on comma */
++		{
++			char *save = NULL;
++			char *tok = strtok_r(selbuf, ",", &amp;save);
++			while (tok) {
++				memset(&amp;rule, 0, sizeof(rule));
++				decl_clear(&amp;rule.decl);
++				if (parse_selector(tok, &amp;rule) == 0) {
++					parse_declarations(declbuf, &amp;rule.decl);
++					css_add_rule(css, &amp;rule);
++				}
++				tok = strtok_r(NULL, ",", &amp;save);
++			}
++		}
++	}
++}
++
++static int class_list_has(const char *class_attr, const char *want)
++{
++	const char *p;
++	size_t wlen;
++
++	if (!class_attr || !want || !*want)
++		return 0;
++	wlen = strlen(want);
++	p = class_attr;
++	while (*p) {
++		while (*p &amp;&amp; isspace((unsigned char)*p))
++			p++;
++		if (!strncmp(p, want, wlen) &amp;&amp;
++		    (p[wlen] == '\0' || isspace((unsigned char)p[wlen])))
++			return 1;
++		while (*p &amp;&amp; !isspace((unsigned char)*p))
++			p++;
++	}
++	return 0;
++}
++
++static int rule_matches(const struct BGTK_CSS_Rule *r, const char *tag,
++			const char *id, const char *class_attr)
++{
++	if (r-&gt;sel_type[0] &amp;&amp;
++	    (!tag || strcasecmp(r-&gt;sel_type, tag) != 0))
++		return 0;
++	if (r-&gt;sel_id[0] &amp;&amp; (!id || strcmp(r-&gt;sel_id, id) != 0))
++		return 0;
++	if (r-&gt;sel_class[0] &amp;&amp; !class_list_has(class_attr, r-&gt;sel_class))
++		return 0;
++	/* universal / empty selector matches everything */
++	if (!r-&gt;sel_type[0] &amp;&amp; !r-&gt;sel_id[0] &amp;&amp; !r-&gt;sel_class[0] &amp;&amp;
++	    r-&gt;specificity == 0)
++		return 1;
++	return 1;
++}
++
++static void decl_merge(struct BGTK_CSS_Decl *dst, const struct BGTK_CSS_Decl *src)
++{
++	if (src-&gt;color_set) {
++		dst-&gt;color = src-&gt;color;
++		dst-&gt;color_set = 1;
++	}
++	if (src-&gt;bg_set) {
++		dst-&gt;bg = src-&gt;bg;
++		dst-&gt;bg_set = 1;
++	}
++	if (src-&gt;font_weight)
++		dst-&gt;font_weight = src-&gt;font_weight;
++	if (src-&gt;font_style)
++		dst-&gt;font_style = src-&gt;font_style;
++	if (src-&gt;text_align &gt;= 0)
++		dst-&gt;text_align = src-&gt;text_align;
++	if (src-&gt;margin &gt;= 0)
++		dst-&gt;margin = src-&gt;margin;
++	if (src-&gt;padding &gt;= 0)
++		dst-&gt;padding = src-&gt;padding;
++	if (src-&gt;display_none)
++		dst-&gt;display_none = 1;
++}
++
++static void apply_decl_to_widget(struct BGTK_Widget *w,
++				 const struct BGTK_CSS_Decl *d)
++{
++	if (!w || !d)
++		return;
++	if (d-&gt;color_set)
++		w-&gt;color_fg = d-&gt;color ? d-&gt;color : 0xFF000000u;
++	if (d-&gt;bg_set)
++		w-&gt;color_bg = d-&gt;bg;
++	if (d-&gt;margin &gt;= 0)
++		w-&gt;margin = d-&gt;margin;
++	if (d-&gt;padding &gt;= 0)
++		w-&gt;padding = d-&gt;padding;
++	if (d-&gt;text_align == 0)
++		w-&gt;text_align = BGTK_ALIGN_LEFT;
++	else if (d-&gt;text_align == 1)
++		w-&gt;text_align = BGTK_ALIGN_CENTER;
++	else if (d-&gt;text_align == 2)
++		w-&gt;text_align = BGTK_ALIGN_RIGHT;
++	if (w-&gt;type == BGTK_WIDGET_TEXT) {
++		if (d-&gt;font_weight == 2)
++			w-&gt;data.text.style |= BGTK_TEXT_BOLD;
++		else if (d-&gt;font_weight == 1)
++			w-&gt;data.text.style &amp;= ~BGTK_TEXT_BOLD;
++		if (d-&gt;font_style == 2)
++			w-&gt;data.text.style |= BGTK_TEXT_ITALIC;
++		else if (d-&gt;font_style == 1)
++			w-&gt;data.text.style &amp;= ~BGTK_TEXT_ITALIC;
++	}
++	if (w-&gt;type == BGTK_WIDGET_BUTTON &amp;&amp; d-&gt;bg_set &amp;&amp; d-&gt;bg)
++		w-&gt;data.button.bg_override = d-&gt;bg;
++}
++
++int bgtk_css_apply(struct BGTK_CSS *css, struct BGTK_Widget *w, const char *tag,
++		   const char *id, const char *class_attr,
++		   const char *style_attr)
++{
++	struct BGTK_CSS_Decl acc;
++	int i, changed;
++
++	decl_clear(&amp;acc);
++	if (css &amp;&amp; css-&gt;n &gt; 0) {
++		/* Sort by specificity (stable for equals → later source wins
++		 * if we use a stable bubble that only swaps on &lt; ). */
++		int *idx = malloc((size_t)css-&gt;n * sizeof(int));
++		int a, b;
++
++		if (idx) {
++			for (i = 0; i &lt; css-&gt;n; i++)
++				idx[i] = i;
++			for (a = 0; a &lt; css-&gt;n; a++) {
++				for (b = a + 1; b &lt; css-&gt;n; b++) {
++					int sa = css-&gt;rules[idx[a]].specificity;
++					int sb = css-&gt;rules[idx[b]].specificity;
++					/* Lower specificity first; equal keeps
++					 * source order (idx[a] &lt; idx[b]). */
++					if (sb &lt; sa ||
++					    (sb == sa &amp;&amp; idx[b] &lt; idx[a])) {
++						int t = idx[a];
++						idx[a] = idx[b];
++						idx[b] = t;
++					}
++				}
++			}
++			for (i = 0; i &lt; css-&gt;n; i++) {
++				const struct BGTK_CSS_Rule *r =
++					&amp;css-&gt;rules[idx[i]];
++				if (rule_matches(r, tag, id, class_attr))
++					decl_merge(&amp;acc, &amp;r-&gt;decl);
++			}
++			free(idx);
++		}
++	}
++	if (style_attr &amp;&amp; *style_attr) {
++		struct BGTK_CSS_Decl inl;
++		parse_declarations(style_attr, &amp;inl);
++		decl_merge(&amp;acc, &amp;inl);
++	}
++	if (acc.display_none)
++		return 1;
++	if (!w)
++		return 0;
++	changed = acc.color_set || acc.bg_set || acc.font_weight ||
++		  acc.font_style || acc.text_align &gt;= 0 || acc.margin &gt;= 0 ||
++		  acc.padding &gt;= 0;
++	if (changed)
++		apply_decl_to_widget(w, &amp;acc);
++	return 0;
++}
+diff --git a/css.h b/css.h
+new file mode 100644
+index 0000000..a8e2249
+--- /dev/null
++++ b/css.h
+@@ -0,0 +1,45 @@
++/* css.h — minimal CSS for BGTK HTML (Labyrinth and bgtk_html_parse*).
++ *
++ * Supported selectors (specificity ascending):
++ *   *          type (p, h1, a, body, …)
++ *   .class     #id
++ *   type.class type#id
++ *
++ * Supported properties:
++ *   color, background-color (or background: #hex)
++ *   font-weight (bold/normal/700), font-style (italic/normal)
++ *   text-align (left/center/right)
++ *   margin, padding (px number or shorthand single value)
++ *   display: none
++ *
++ * Cascade: stylesheet order, then inline style="…" wins.
++ * Not yet: media queries, combinators, !important, units other than px.
++ */
++#ifndef BGTK_CSS_H
++#define BGTK_CSS_H
++
++#include "bgtk.h"
++#include &lt;stdint.h&gt;
++
++struct BGTK_CSS;
++
++struct BGTK_CSS *bgtk_css_create(void);
++void bgtk_css_destroy(struct BGTK_CSS *css);
++
++/* Append rules from a stylesheet string (e.g. &lt;style&gt; body). */
++void bgtk_css_add_sheet(struct BGTK_CSS *css, const char *source);
++
++/*
++ * Resolve styles for an element and apply to widget.
++ * tag/id/class from HTML; style_attr is the raw style="" value (may be NULL).
++ * Returns 1 if the element should be omitted (display:none).
++ */
++int bgtk_css_apply(struct BGTK_CSS *css, struct BGTK_Widget *w,
++		   const char *tag, const char *id, const char *class_attr,
++		   const char *style_attr);
++
++/* Parse a single #rgb/#rrggbb/#rrggbbaa or named color → 0xAARRGGBB.
++ * Returns 0 if unrecognised (caller treats as unset). */
++uint32_t bgtk_css_parse_color(const char *s);
++
++#endif
+diff --git a/drawing.c b/drawing.c
+index 4294ee8..be59f36 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -360,19 +360,47 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 		 *   child.y = current_y + margin + padding
+ 		 *   current_y += h + 2*margin
+ 		 *   content_height = cy + 2*(margin+padding)
++		 *   content_width = max(child right edges) + pads
+ 		 * Underestimating height caused OOB writes into the
+ 		 * offscreen buffer (heap corruption / SIGBUS on shm). */
+ 		int cy = 0;
++		int max_cw = 0;
++		int pad = w-&gt;padding;
++		int mar = w-&gt;margin;
++
+ 		w-&gt;data.scrollable.content_height = 0;
++		w-&gt;data.scrollable.content_width = 0;
+ 		for (int i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
+ 			struct BGTK_Widget *child = w-&gt;data.scrollable.items[i];
++			int right;
++
+ 			if (!child)
+ 				continue;
+ 			calculate_widget_size(ctx, child);
+-			cy += child-&gt;h + 2 * w-&gt;margin;
++			cy += child-&gt;h + 2 * mar;
++			/* Natural width; EXPAND_X only grows in draw. */
++			right = child-&gt;w + 2 * (mar + pad);
++			if (right &gt; max_cw)
++				max_cw = right;
++		}
++		w-&gt;data.scrollable.content_height = cy + 2 * (mar + pad);
++		if (max_cw &lt; w-&gt;w)
++			max_cw = w-&gt;w;
++		w-&gt;data.scrollable.content_width = max_cw;
++		/* Keep scroll offsets in range after content shrinks. */
++		{
++			int max_y = w-&gt;data.scrollable.content_height - w-&gt;h;
++			int max_x = w-&gt;data.scrollable.content_width - w-&gt;w;
++
++			if (max_y &lt; 0)
++				max_y = 0;
++			if (max_x &lt; 0)
++				max_x = 0;
++			if (w-&gt;data.scrollable.scroll_y &gt; max_y)
++				w-&gt;data.scrollable.scroll_y = max_y;
++			if (w-&gt;data.scrollable.scroll_x &gt; max_x)
++				w-&gt;data.scrollable.scroll_x = max_x;
+ 		}
+-		w-&gt;data.scrollable.content_height =
+-			cy + 2 * (w-&gt;margin + w-&gt;padding);
+ 		break;
+ 	}
+ 	case BGTK_WIDGET_LIST: {
+@@ -700,6 +728,15 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	} else if (is_accent) {
+ 		color = accent;
+ 	}
++	/* CSS color overrides theme/accent when set. */
++	if (w-&gt;color_fg)
++		color = w-&gt;color_fg;
++
++	/* Optional CSS background fill behind text. */
++	if (w-&gt;color_bg)
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
++			  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin,
++			  w-&gt;color_bg);
+ 
+ 	int content_x0 = w-&gt;x + w-&gt;margin + w-&gt;padding;
+ 	int content_y0 = w-&gt;y + w-&gt;margin + w-&gt;padding;
+@@ -805,6 +842,7 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ {
+ 	(void)pixels;
+ 	int content_height = w-&gt;data.scrollable.content_height;
++	int content_width = w-&gt;data.scrollable.content_width;
+ 	int current_y = 0;
+ 	int i;
+ 	size_t need;
+@@ -812,21 +850,42 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	uint32_t *buff;
+ 	uint32_t *tmp;
+ 	int dst_x0, dst_y0, copy_w, rows;
++	int scroll_x, scroll_y;
+ 
+ 	if (w-&gt;w &lt; 1 || w-&gt;h &lt; 1)
+ 		return;
+ 	if (content_height &lt; w-&gt;h)
+ 		content_height = w-&gt;h;
+-	/* Cap insane heights so (int)pixel count cannot wrap. */
++	if (content_width &lt; w-&gt;w)
++		content_width = w-&gt;w;
++	/* Cap so (int)pixel count cannot wrap. */
+ 	if (content_height &gt; 100000)
+ 		content_height = 100000;
++	if (content_width &gt; 100000)
++		content_width = 100000;
++	w-&gt;data.scrollable.content_height = content_height;
++	w-&gt;data.scrollable.content_width = content_width;
+ 
+-	/* Offscreen cache: rebuild when size or content identity changes.
+-	 * Scroll only changes scroll_y — reusing tmp avoids a full page
+-	 * clear+redraw every wheel/j/k tick (black blinks). Settings replaces
+-	 * items[0] (sidebar list) in place; that must bust the cache so new
+-	 * nav buttons get layout and hit-test coords. */
+-	need = (size_t)w-&gt;w * (size_t)content_height;
++	scroll_x = w-&gt;data.scrollable.scroll_x;
++	scroll_y = w-&gt;data.scrollable.scroll_y;
++	if (scroll_x &lt; 0)
++		scroll_x = 0;
++	if (scroll_y &lt; 0)
++		scroll_y = 0;
++	if (scroll_x &gt; content_width - w-&gt;w)
++		scroll_x = content_width - w-&gt;w &gt; 0 ? content_width - w-&gt;w : 0;
++	if (scroll_y &gt; content_height - w-&gt;h)
++		scroll_y = content_height - w-&gt;h &gt; 0 ? content_height - w-&gt;h
++						     : 0;
++	w-&gt;data.scrollable.scroll_x = scroll_x;
++	w-&gt;data.scrollable.scroll_y = scroll_y;
++
++	/*
++	 * Offscreen cache: rebuild when size or content identity changes.
++	 * Scroll only changes scroll_x/y — reusing tmp avoids full redraw.
++	 * Buffer is content_width × content_height for horizontal pan.
++	 */
++	need = (size_t)content_width * (size_t)content_height;
+ 	if (need == 0)
+ 		return;
+ 	if (w-&gt;data.scrollable.tmp &amp;&amp;
+@@ -860,40 +919,42 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 				fprintf(stderr,
+ 					"Failed to allocate off-screen buffer "
+ 					"(%dx%d)\n",
+-					w-&gt;w, content_height);
++					content_width, content_height);
+ 				return;
+ 			}
+-			/* Pixel count (fits: w*h capped above). */
+ 			w-&gt;data.scrollable.widget_capacity = (int)need;
+ 			w-&gt;data.scrollable.tmp_items = its;
+ 			w-&gt;data.scrollable.tmp_item0 = i0;
+ 			w-&gt;data.scrollable.tmp_nitems = nch;
+ 
+ 			tmp_ctx = *ctx;
+-			tmp_ctx.width = w-&gt;w;
++			tmp_ctx.width = content_width;
+ 			tmp_ctx.height = content_height;
+ 			tmp_ctx.shm_buffer = w-&gt;data.scrollable.tmp;
+ 
+-			draw_rect(&amp;tmp_ctx, w-&gt;data.scrollable.tmp, 0, 0, w-&gt;w,
+-				  content_height, ctx-&gt;theme.background);
++			draw_rect(&amp;tmp_ctx, w-&gt;data.scrollable.tmp, 0, 0,
++				  content_width, content_height,
++				  ctx-&gt;theme.background);
+ 
+ 			current_y = 0;
+ 			for (i = 0; i &lt; nch; i++) {
+ 				struct BGTK_Widget *child = its ? its[i] : NULL;
+ 				int bottom;
+-				int inner_w =
+-					w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
++				int inner_w = content_width -
++					      2 * (w-&gt;margin + w-&gt;padding);
+ 
+ 				if (!child)
+ 					continue;
++				/* Expand only if narrower — do not shrink wide
++				 * content (tables/pre) so horizontal scroll works. */
+ 				if ((child-&gt;flags &amp; BGTK_FLAG_EXPAND_X) &amp;&amp;
+-				    inner_w &gt; 0)
++				    inner_w &gt; child-&gt;w)
+ 					child-&gt;w = inner_w;
+ 				child-&gt;x = w-&gt;margin + w-&gt;padding;
+ 				if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+ 					child-&gt;x =
+ 						w-&gt;margin +
+-						(w-&gt;w - 2 * w-&gt;margin -
++						(content_width - 2 * w-&gt;margin -
+ 						 child-&gt;w) /
+ 							2;
+ 				}
+@@ -912,19 +973,19 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 			current_y = 0;
+ 			for (i = 0; i &lt; nch; i++) {
+ 				struct BGTK_Widget *child = its ? its[i] : NULL;
+-				int inner_w =
+-					w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
++				int inner_w = content_width -
++					      2 * (w-&gt;margin + w-&gt;padding);
+ 
+ 				if (!child)
+ 					continue;
+ 				if ((child-&gt;flags &amp; BGTK_FLAG_EXPAND_X) &amp;&amp;
+-				    inner_w &gt; 0)
++				    inner_w &gt; child-&gt;w)
+ 					child-&gt;w = inner_w;
+ 				child-&gt;x = w-&gt;margin + w-&gt;padding;
+ 				if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+ 					child-&gt;x =
+ 						w-&gt;margin +
+-						(w-&gt;w - 2 * w-&gt;margin -
++						(content_width - 2 * w-&gt;margin -
+ 						 child-&gt;w) /
+ 							2;
+ 				}
+@@ -937,8 +998,7 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		}
+ 	}
+ 
+-	/* Blit visible rows into the window buffer — clip to shm bounds.
+-	 * Writing past mmap'd BGCE shm is a common SIGBUS. */
++	/* Blit visible viewport from (scroll_x, scroll_y) into the window. */
+ 	buff = (uint32_t *)ctx-&gt;shm_buffer;
+ 	tmp = w-&gt;data.scrollable.tmp;
+ 	if (!buff || !tmp)
+@@ -962,14 +1022,23 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	if (dst_y0 + rows &gt; ctx-&gt;height)
+ 		rows = ctx-&gt;height - dst_y0;
+ 	for (i = 0; i &lt; rows; i++) {
+-		int src_row = w-&gt;data.scrollable.scroll_y + (i + (dst_y0 - w-&gt;y));
+-		int src_x = (dst_x0 &gt; w-&gt;x) ? (dst_x0 - w-&gt;x) : 0;
++		int src_row = scroll_y + (i + (dst_y0 - w-&gt;y));
++		int src_x = scroll_x + ((dst_x0 &gt; w-&gt;x) ? (dst_x0 - w-&gt;x) : 0);
++		int row_copy = copy_w;
+ 
+ 		if (src_row &lt; 0 || src_row &gt;= content_height)
+ 			continue;
++		if (src_x &lt; 0) {
++			row_copy += src_x;
++			src_x = 0;
++		}
++		if (src_x + row_copy &gt; content_width)
++			row_copy = content_width - src_x;
++		if (row_copy &lt;= 0)
++			continue;
+ 		memcpy(&amp;buff[(dst_y0 + i) * ctx-&gt;width + dst_x0],
+-		       &amp;tmp[src_row * w-&gt;w + src_x],
+-		       (size_t)copy_w * sizeof(uint32_t));
++		       &amp;tmp[src_row * content_width + src_x],
++		       (size_t)row_copy * sizeof(uint32_t));
+ 	}
+ }
+ 
+@@ -1087,6 +1156,9 @@ static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	int oy = w-&gt;y;
+ 	int i, n = w-&gt;data.list_widget.widget_count;
+ 
++	if (w-&gt;color_bg)
++		draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, w-&gt;h, w-&gt;color_bg);
++
+ 	bgtk_list_layout_expand(w);
+ 
+ 	for (i = 0; i &lt; n; i++) {
+@@ -1147,8 +1219,9 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	if (bw &lt; 0)
+ 		bw = 0;
+ 
+-	/* Full card fill (includes inner margin band). */
+-	draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, w-&gt;h, ctx-&gt;theme.background);
++	/* Full card fill (includes inner margin band). CSS bg overrides theme. */
++	draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, w-&gt;h,
++		  w-&gt;color_bg ? w-&gt;color_bg : ctx-&gt;theme.background);
+ 
+ 	/* border_w 0 = no border (HTML cells / borderless panels). */
+ 	if (bw &gt; 0) {
+diff --git a/html.c b/html.c
+index a06eb7e..38cf330 100644
+--- a/html.c
++++ b/html.c
+@@ -24,6 +24,7 @@
+  */
+ 
+ #include "html.h"
++#include "css.h"
+ #include "internal.h"
+ 
+ #include &lt;ctype.h&gt;
+@@ -33,6 +34,9 @@
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
+ 
++/* Active stylesheet while converting a document (NULL if none). */
++static struct BGTK_CSS *g_html_css;
++
+ /* ------------------------------------------------------------------ */
+ /* Helpers                                                             */
+ /* ------------------------------------------------------------------ */
+@@ -112,6 +116,56 @@ static int is_inline_tag(const char *tag)
+ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
+ 					xmlNode *node, int avail_w);
+ 
++/* Apply g_html_css + inline style to widget; return 1 if display:none. */
++static int html_style_widget(xmlNode *node, struct BGTK_Widget *w)
++{
++	xmlChar *id = NULL, *cls = NULL, *sty = NULL;
++	const char *tag = NULL;
++	int hide;
++
++	if (!node || node-&gt;type != XML_ELEMENT_NODE)
++		return 0;
++	tag = (const char *)node-&gt;name;
++	id = xmlGetProp(node, (const xmlChar *)"id");
++	cls = xmlGetProp(node, (const xmlChar *)"class");
++	sty = xmlGetProp(node, (const xmlChar *)"style");
++	hide = bgtk_css_apply(g_html_css, w, tag,
++			      id ? (const char *)id : NULL,
++			      cls ? (const char *)cls : NULL,
++			      sty ? (const char *)sty : NULL);
++	if (id)
++		xmlFree(id);
++	if (cls)
++		xmlFree(cls);
++	if (sty)
++		xmlFree(sty);
++	return hide;
++}
++
++/* Collect &lt;style&gt;…&lt;/style&gt; text under root into css. */
++static void html_collect_styles(xmlNode *node, struct BGTK_CSS *css)
++{
++	if (!node || !css)
++		return;
++	for (xmlNode *c = node; c; c = c-&gt;next) {
++		if (c-&gt;type == XML_ELEMENT_NODE) {
++			const char *tag = (const char *)c-&gt;name;
++			if (strcmp(tag, "style") == 0) {
++				xmlChar *txt = xmlNodeGetContent(c);
++				if (txt) {
++					bgtk_css_add_sheet(css, (const char *)txt);
++					xmlFree(txt);
++				}
++				continue;
++			}
++			if (strcmp(tag, "script") == 0)
++				continue;
++			if (c-&gt;children)
++				html_collect_styles(c-&gt;children, css);
++		}
++	}
++}
++
+ /* ------------------------------------------------------------------ */
+ /* Inline text helpers                                                 */
+ /* ------------------------------------------------------------------ */
+@@ -762,6 +816,8 @@ static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
+ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
+ 					xmlNode *node, int avail_w)
+ {
++	struct BGTK_Widget *w = NULL;
++
+ 	if (!node)
+ 		return NULL;
+ 
+@@ -774,30 +830,50 @@ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
+ 
+ 	const char *tag = (const char *)node-&gt;name;
+ 
+-	if (strcmp(tag, "h1") == 0) return convert_heading(ctx, node, 1);
+-	if (strcmp(tag, "h2") == 0) return convert_heading(ctx, node, 2);
+-	if (strcmp(tag, "h3") == 0) return convert_heading(ctx, node, 3);
+-	if (strcmp(tag, "h4") == 0) return convert_heading(ctx, node, 3);
+-	if (strcmp(tag, "h5") == 0) return convert_heading(ctx, node, 3);
+-	if (strcmp(tag, "h6") == 0) return convert_heading(ctx, node, 3);
+-
+-	if (strcmp(tag, "p") == 0)      return convert_p(ctx, node);
+-	if (strcmp(tag, "b") == 0)      return convert_bold(ctx, node);
+-	if (strcmp(tag, "strong") == 0) return convert_bold(ctx, node);
+-	if (strcmp(tag, "i") == 0)      return convert_italic(ctx, node);
+-	if (strcmp(tag, "em") == 0)     return convert_italic(ctx, node);
+-	if (strcmp(tag, "a") == 0)      return convert_a(ctx, node);
+-	if (strcmp(tag, "span") == 0)   return convert_italic(ctx, node); // plain text
+-	if (strcmp(tag, "button") == 0) return convert_button(ctx, node);
+-	if (strcmp(tag, "input") == 0)  return convert_input(ctx, node);
+-	if (strcmp(tag, "select") == 0) return convert_select(ctx, node);
+-	if (strcmp(tag, "img") == 0)    return convert_img(ctx, node);
+-	if (strcmp(tag, "ul") == 0)     return convert_list(ctx, node, avail_w, 0);
+-	if (strcmp(tag, "ol") == 0)     return convert_list(ctx, node, avail_w, 1);
+-	if (strcmp(tag, "table") == 0)  return convert_table(ctx, node, avail_w);
+-
+-	// Generic containers: div, section, article, body, html, header, nav, footer, form, ...
+-	return convert_container(ctx, node, avail_w);
++	/* Non-rendered / non-widget tags */
++	if (strcmp(tag, "style") == 0 || strcmp(tag, "script") == 0 ||
++	    strcmp(tag, "head") == 0 || strcmp(tag, "meta") == 0 ||
++	    strcmp(tag, "link") == 0 || strcmp(tag, "title") == 0)
++		return NULL;
++
++	/* display:none before building (cheap check via empty widget). */
++	if (html_style_widget(node, NULL))
++		return NULL;
++
++	if (strcmp(tag, "h1") == 0) w = convert_heading(ctx, node, 1);
++	else if (strcmp(tag, "h2") == 0) w = convert_heading(ctx, node, 2);
++	else if (strcmp(tag, "h3") == 0) w = convert_heading(ctx, node, 3);
++	else if (strcmp(tag, "h4") == 0) w = convert_heading(ctx, node, 3);
++	else if (strcmp(tag, "h5") == 0) w = convert_heading(ctx, node, 3);
++	else if (strcmp(tag, "h6") == 0) w = convert_heading(ctx, node, 3);
++	else if (strcmp(tag, "p") == 0)      w = convert_p(ctx, node);
++	else if (strcmp(tag, "b") == 0)      w = convert_bold(ctx, node);
++	else if (strcmp(tag, "strong") == 0) w = convert_bold(ctx, node);
++	else if (strcmp(tag, "i") == 0)      w = convert_italic(ctx, node);
++	else if (strcmp(tag, "em") == 0)     w = convert_italic(ctx, node);
++	else if (strcmp(tag, "a") == 0)      w = convert_a(ctx, node);
++	else if (strcmp(tag, "span") == 0) {
++		/* Plain text span (not italic). */
++		char *txt = collect_text(node);
++		if (txt &amp;&amp; *txt)
++			w = bgtk_text(ctx, txt, (BGTK_Options){0});
++		free(txt);
++	} else if (strcmp(tag, "button") == 0) w = convert_button(ctx, node);
++	else if (strcmp(tag, "input") == 0)  w = convert_input(ctx, node);
++	else if (strcmp(tag, "select") == 0) w = convert_select(ctx, node);
++	else if (strcmp(tag, "img") == 0)    w = convert_img(ctx, node);
++	else if (strcmp(tag, "ul") == 0)     w = convert_list(ctx, node, avail_w, 0);
++	else if (strcmp(tag, "ol") == 0)     w = convert_list(ctx, node, avail_w, 1);
++	else if (strcmp(tag, "table") == 0)  w = convert_table(ctx, node, avail_w);
++	else
++		/* Generic containers: div, section, article, body, … */
++		w = convert_container(ctx, node, avail_w);
++
++	if (w &amp;&amp; html_style_widget(node, w)) {
++		/* display:none after build (should be rare — checked above). */
++		w = NULL;
++	}
++	return w;
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -807,15 +883,25 @@ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
+ static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
+ 				     int width, int height)
+ {
++	struct BGTK_CSS *css;
++	struct BGTK_Widget *content;
++	xmlNode *root, *body = NULL;
++
+ 	if (!doc)
+ 		return NULL;
+ 
+-	xmlNode *root = xmlDocGetRootElement(doc);
+-	if (!root)
++	root = xmlDocGetRootElement(doc);
++	if (!root) {
++		xmlFreeDoc(doc);
+ 		return NULL;
++	}
++
++	css = bgtk_css_create();
++	if (css)
++		html_collect_styles(root, css);
++	g_html_css = css;
+ 
+ 	// Find &lt;body&gt; if present, otherwise use the root element.
+-	xmlNode *body = NULL;
+ 	for (xmlNode *c = root-&gt;children; c; c = c-&gt;next) {
+ 		if (c-&gt;type == XML_ELEMENT_NODE &amp;&amp;
+ 		    strcmp((const char *)c-&gt;name, "body") == 0) {
+@@ -826,7 +912,14 @@ static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
+ 	if (!body)
+ 		body = root;
+ 
+-	struct BGTK_Widget *content = convert_container(ctx, body, width);
++	/* convert_node applies body CSS (background, etc.). */
++	content = convert_node(ctx, body, width);
++	if (!content)
++		content = convert_container(ctx, body, width);
++
++	g_html_css = NULL;
++	bgtk_css_destroy(css);
++
+ 	if (!content) {
+ 		xmlFreeDoc(doc);
+ 		return NULL;
+@@ -848,11 +941,18 @@ static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
+ 		}
+ 		scroll-&gt;w = width;
+ 		scroll-&gt;h = height;
++		/* Propagate body background to the page surface. */
++		if (content-&gt;color_bg) {
++			scroll-&gt;color_bg = content-&gt;color_bg;
++		}
+ 
+ 		struct BGTK_Widget *frame = bgtk_frame(ctx, scroll, width, height,
+ 			(BGTK_Options){.padding = 0, .margin = 0});
+-		if (frame)
++		if (frame) {
+ 			frame-&gt;data.frame.border_w = 0;
++			if (content-&gt;color_bg)
++				frame-&gt;color_bg = content-&gt;color_bg;
++		}
+ 		xmlFreeDoc(doc);
+ 		return frame ? frame : scroll;
+ 	}
+diff --git a/html.h b/html.h
+index 72fbaeb..41a637b 100644
+--- a/html.h
++++ b/html.h
+@@ -3,12 +3,12 @@
+ 
+ #include "bgtk.h"
+ 
+-// Parse an HTML file and return a frame widget containing the full widget tree.
+-// The frame is sized to (width x height). Caller sets ctx-&gt;root_widget to the result.
++/* Parse HTML → widget tree (libxml2). Applies CSS from &lt;style&gt; and style="".
++ * See css.h for supported selectors/properties. Frame is sized width×height;
++ * borderless; host UI supplies chrome. */
+ struct BGTK_Widget* bgtk_html_parse(struct BGTK_Context* ctx,
+ 				    const char* path, int width, int height);
+ 
+-// Parse an HTML string directly (for inline / embedded use).
+ struct BGTK_Widget* bgtk_html_parse_inline(struct BGTK_Context* ctx,
+ 					   const char* html, int width, int height);
+ 
+diff --git a/test/test_html.c b/test/test_html.c
+index e453141..85a6ec4 100644
+--- a/test/test_html.c
++++ b/test/test_html.c
+@@ -47,16 +47,36 @@ static const char *SAMPLE_HTML =
+ 	"&lt;/table&gt;"
+ 	"&lt;/body&gt;&lt;/html&gt;";
+ 
++/* CSS v1: style element + class/id + inline */
++static const char *CSS_SAMPLE =
++	"&lt;html&gt;&lt;head&gt;&lt;style&gt;"
++	"body { background-color: #1a1a2e; color: #eaeaea; }"
++	"h1 { color: #e94560; text-align: center; }"
++	".note { color: #0f0; font-weight: bold; }"
++	"#hideme { display: none; }"
++	"p.lead { color: #4fc3f7; }"
++	"&lt;/style&gt;&lt;/head&gt;&lt;body&gt;"
++	"&lt;h1&gt;CSS styled page&lt;/h1&gt;"
++	"&lt;p class=\"lead\"&gt;This paragraph uses class lead (sky blue).&lt;/p&gt;"
++	"&lt;p class=\"note\"&gt;Bold green note.&lt;/p&gt;"
++	"&lt;p id=\"hideme\"&gt;You should not see this (display:none).&lt;/p&gt;"
++	"&lt;p style=\"color:#ffcc00;text-align:right\"&gt;Inline gold, right-aligned.&lt;/p&gt;"
++	"&lt;/body&gt;&lt;/html&gt;";
++
+ int main(void)
+ {
+ 	struct BGTK_Context *ctx = bgtk_init_mock(480, 600);
++	struct BGTK_Widget *root;
++	uint32_t *fb;
++	int i, bright;
++
+ 	if (!ctx) {
+ 		fprintf(stderr, "test_html: init failed\n");
+ 		return 1;
+ 	}
+ 
+ 	/* Parse inline HTML string */
+-	struct BGTK_Widget *root = bgtk_html_parse_inline(ctx, SAMPLE_HTML, 480, 600);
++	root = bgtk_html_parse_inline(ctx, SAMPLE_HTML, 480, 600);
+ 	if (!root) {
+ 		fprintf(stderr, "test_html: parse failed\n");
+ 		bgtk_destroy_mock(ctx);
+@@ -67,6 +87,40 @@ int main(void)
+ 	bgtk_draw_widgets(ctx);
+ 	take_screenshot(ctx, "test_html_00_init.png");
+ 
++	/* CSS sample */
++	root = bgtk_html_parse_inline(ctx, CSS_SAMPLE, 480, 400);
++	if (!root) {
++		fprintf(stderr, "test_html: CSS parse failed\n");
++		bgtk_destroy_mock(ctx);
++		return 1;
++	}
++	/* Destroy previous tree */
++	bgtk_widget_destroy(ctx-&gt;root_widget);
++	ctx-&gt;root_widget = root;
++	bgtk_draw_widgets(ctx);
++	take_screenshot(ctx, "test_html_01_css.png");
++
++	fb = (uint32_t *)ctx-&gt;shm_buffer;
++	bright = 0;
++	for (i = 0; i &lt; 480 * 400; i++) {
++		unsigned r = (fb[i] &gt;&gt; 16) &amp; 0xFF;
++		unsigned g = (fb[i] &gt;&gt; 8) &amp; 0xFF;
++		unsigned b = fb[i] &amp; 0xFF;
++		/* red-ish header, green note, or gold inline */
++		if (r &gt; 180 &amp;&amp; g &lt; 120)
++			bright++;
++		else if (g &gt; 180 &amp;&amp; r &lt; 80)
++			bright++;
++		else if (r &gt; 180 &amp;&amp; g &gt; 150 &amp;&amp; b &lt; 80)
++			bright++;
++	}
++	if (bright &lt; 20) {
++		fprintf(stderr,
++			"test_html: CSS colors not visible (hits=%d)\n", bright);
++		bgtk_destroy_mock(ctx);
++		return 1;
++	}
++
+ 	printf("test_html complete. PNG frames written.\n");
+ 	bgtk_destroy_mock(ctx);
+ 	return 0;
+diff --git a/test/test_labyrinth.c b/test/test_labyrinth.c
+index 589cebb..f07df73 100644
+--- a/test/test_labyrinth.c
++++ b/test/test_labyrinth.c
+@@ -89,6 +89,110 @@ int main(void)
+ 	bgtk_draw_widgets(ctx);
+ 	take_screenshot(ctx, "labyrinth_04_home_again.png");
+ 
++	/*
++	 * 05: Shift+wheel horizontal scroll on a deliberately wide page.
++	 * Scrollable must report content_width &gt; view and scroll_x change.
++	 */
++	{
++		static const char *WIDE =
++			"&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;body&gt;"
++			"&lt;h1&gt;Wide&lt;/h1&gt;"
++			"&lt;p&gt;"
++			"XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
++			"XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
++			"XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
++			"XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
++			"XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
++			"XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
++			"&lt;/p&gt;"
++			"&lt;/body&gt;&lt;/html&gt;";
++		struct BGTK_Widget *root, *sc = NULL;
++		struct InputEvent sh = {0}, wh = {0};
++		int before_x, after_x, cw, vw;
++
++		labyrinth_test_load_html(WIDE);
++		bgtk_draw_widgets(ctx);
++		/* Find any scrollable under the shell (HTML page scroll). */
++		root = ctx-&gt;root_widget;
++		if (root &amp;&amp; root-&gt;type == BGTK_WIDGET_FRAME)
++			root = root-&gt;data.frame.child;
++		if (root &amp;&amp; root-&gt;type == BGTK_WIDGET_LIST &amp;&amp;
++		    root-&gt;data.list_widget.widget_count &gt; 0)
++			root = root-&gt;data.list_widget.items[0]; /* content_host */
++		if (root &amp;&amp; root-&gt;type == BGTK_WIDGET_FRAME)
++			root = root-&gt;data.frame.child; /* page */
++		if (root &amp;&amp; root-&gt;type == BGTK_WIDGET_FRAME)
++			root = root-&gt;data.frame.child; /* scroll */
++		if (root &amp;&amp; root-&gt;type == BGTK_WIDGET_SCROLLABLE)
++			sc = root;
++		if (!sc) {
++			fprintf(stderr,
++				"test_labyrinth: no content scrollable for "
++				"h-scroll test\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Force a wide child so content_width exceeds the view (HTML
++		 * word-wrap often keeps natural width ≤ viewport). */
++		if (sc-&gt;data.scrollable.widget_count &gt; 0 &amp;&amp;
++		    sc-&gt;data.scrollable.items[0]) {
++			struct BGTK_Widget *ch = sc-&gt;data.scrollable.items[0];
++
++			if (ch-&gt;w &lt; sc-&gt;w + 400)
++				ch-&gt;w = sc-&gt;w + 400;
++		}
++		if (sc-&gt;data.scrollable.tmp) {
++			free(sc-&gt;data.scrollable.tmp);
++			sc-&gt;data.scrollable.tmp = NULL;
++			sc-&gt;data.scrollable.widget_capacity = 0;
++			sc-&gt;data.scrollable.tmp_items = NULL;
++			sc-&gt;data.scrollable.tmp_item0 = NULL;
++			sc-&gt;data.scrollable.tmp_nitems = 0;
++		}
++		bgtk_draw_widgets(ctx);
++		cw = sc-&gt;data.scrollable.content_width;
++		vw = sc-&gt;w;
++		if (cw &lt;= vw) {
++			fprintf(stderr,
++				"test_labyrinth: content not wider than view "
++				"(content_w=%d view_w=%d)\n",
++				cw, vw);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		before_x = sc-&gt;data.scrollable.scroll_x;
++		/* Hold Shift and wheel down (positive value = up; use -3). */
++		sh.type = EV_KEY;
++		sh.code = KEY_LEFTSHIFT;
++		sh.value = 1;
++		bgtk_inject_event(ctx, sh);
++		wh.type = EV_REL;
++		wh.code = REL_WHEEL;
++		wh.value = -3;
++		wh.x = width / 2;
++		wh.y = height / 3;
++		if (!bgtk_inject_event(ctx, wh)) {
++			fprintf(stderr,
++				"test_labyrinth: Shift+wheel not handled "
++				"(content_w=%d view_w=%d)\n",
++				cw, vw);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		after_x = sc-&gt;data.scrollable.scroll_x;
++		sh.value = 0;
++		bgtk_inject_event(ctx, sh);
++		if (after_x &lt;= before_x) {
++			fprintf(stderr,
++				"test_labyrinth: scroll_x %d -&gt; %d "
++				"(want increase; content_w=%d view_w=%d)\n",
++				before_x, after_x, cw, vw);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		take_screenshot(ctx, "labyrinth_05_shift_wheel_hscroll.png");
++	}
++
+ 	printf("test_labyrinth complete. PNG frames written.\n");
+ 	bgtk_destroy_mock(ctx);
+ 	return 0;
+diff --git a/widgets.c b/widgets.c
+index 2aef99a..b914e23 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -185,21 +185,15 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 	int len = text ? (int)strlen(text) : 0;
+ 	int changed = 0;
+ 
++	/* Mutate only; callers (main loop / inject) present once. */
+ 	if (ev.code == KEY_TAB) {
+ 		if (widget-&gt;data.text_input.on_tab)
+ 			widget-&gt;data.text_input.on_tab();
+-		if (ctx)
+-			bgtk_draw_widgets(ctx);
+ 		return 1;
+ 	}
+ 	if (ev.code == KEY_ENTER || ev.code == KEY_KPENTER) {
+ 		if (widget-&gt;data.text_input.on_enter)
+ 			widget-&gt;data.text_input.on_enter();
+-		/* Skip redraw if the app already closed its BGCE connection
+-		 * (e.g. launcher after spawn) — draw would paint a black
+-		 * frame into a dying shm and race the compositor erase. */
+-		if (ctx &amp;&amp; ctx-&gt;conn_fd &gt;= 0)
+-			bgtk_draw_widgets(ctx);
+ 		return 1;
+ 	}
+ 
+@@ -234,8 +228,6 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 			text_input_ensure_cursor_visible(ctx, widget);
+ 			if (widget-&gt;data.text_input.on_change)
+ 				widget-&gt;data.text_input.on_change();
+-			if (ctx)
+-				bgtk_draw_widgets(ctx);
+ 		}
+ 		return 1;
+ 	}
+@@ -256,8 +248,6 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 		text_input_ensure_cursor_visible(ctx, widget);
+ 		if (widget-&gt;data.text_input.on_change)
+ 			widget-&gt;data.text_input.on_change();
+-		if (ctx)
+-			bgtk_draw_widgets(ctx);
+ 		return 1;
+ 	}
+ 
+@@ -267,8 +257,6 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 		text_input_ensure_cursor_visible(ctx, widget);
+ 		if (widget-&gt;data.text_input.on_change)
+ 			widget-&gt;data.text_input.on_change();
+-		if (ctx)
+-			bgtk_draw_widgets(ctx);
+ 		return 1;
+ 	}
+ 	if (ev.code == KEY_DELETE &amp;&amp; text &amp;&amp; cursor &lt; len) {
+@@ -276,36 +264,26 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 		text_input_ensure_cursor_visible(ctx, widget);
+ 		if (widget-&gt;data.text_input.on_change)
+ 			widget-&gt;data.text_input.on_change();
+-		if (ctx)
+-			bgtk_draw_widgets(ctx);
+ 		return 1;
+ 	}
+ 	if (ev.code == KEY_LEFT &amp;&amp; cursor &gt; 0) {
+ 		widget-&gt;data.text_input.cursor_pos--;
+ 		text_input_ensure_cursor_visible(ctx, widget);
+-		if (ctx)
+-			bgtk_draw_widgets(ctx);
+ 		return 1;
+ 	}
+ 	if (ev.code == KEY_RIGHT &amp;&amp; cursor &lt; len) {
+ 		widget-&gt;data.text_input.cursor_pos++;
+ 		text_input_ensure_cursor_visible(ctx, widget);
+-		if (ctx)
+-			bgtk_draw_widgets(ctx);
+ 		return 1;
+ 	}
+ 	if (ev.code == KEY_HOME) {
+ 		widget-&gt;data.text_input.cursor_pos = 0;
+ 		text_input_ensure_cursor_visible(ctx, widget);
+-		if (ctx)
+-			bgtk_draw_widgets(ctx);
+ 		return 1;
+ 	}
+ 	if (ev.code == KEY_END) {
+ 		widget-&gt;data.text_input.cursor_pos = (uint32_t)len;
+ 		text_input_ensure_cursor_visible(ctx, widget);
+-		if (ctx)
+-			bgtk_draw_widgets(ctx);
+ 		return 1;
+ 	}
+ 
+@@ -313,7 +291,7 @@ text_input_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ }
+ 
+ /* Clamp scroll_y into [0, max]; return 1 if value changed. */
+-static int scrollable_nudge(struct BGTK_Widget *widget, int delta)
++static int scrollable_nudge_y(struct BGTK_Widget *widget, int delta)
+ {
+ 	int old = widget-&gt;data.scrollable.scroll_y;
+ 	int max_y = widget-&gt;data.scrollable.content_height - widget-&gt;h;
+@@ -328,6 +306,22 @@ static int scrollable_nudge(struct BGTK_Widget *widget, int delta)
+ 	return widget-&gt;data.scrollable.scroll_y != old;
+ }
+ 
++/* Clamp scroll_x into [0, max]; return 1 if value changed. */
++static int scrollable_nudge_x(struct BGTK_Widget *widget, int delta)
++{
++	int old = widget-&gt;data.scrollable.scroll_x;
++	int max_x = widget-&gt;data.scrollable.content_width - widget-&gt;w;
++
++	if (max_x &lt; 0)
++		max_x = 0;
++	widget-&gt;data.scrollable.scroll_x = old + delta;
++	if (widget-&gt;data.scrollable.scroll_x &lt; 0)
++		widget-&gt;data.scrollable.scroll_x = 0;
++	if (widget-&gt;data.scrollable.scroll_x &gt; max_x)
++		widget-&gt;data.scrollable.scroll_x = max_x;
++	return widget-&gt;data.scrollable.scroll_x != old;
++}
++
+ // Scrollable event handler
+ static int scrollable_handle_event(struct BGTK_Widget *widget,
+ 				   struct InputEvent ev)
+@@ -343,24 +337,44 @@ static int scrollable_handle_event(struct BGTK_Widget *widget,
+ 		int step = 24;
+ 		int page = widget-&gt;h &gt; 40 ? widget-&gt;h - 24 : 40;
+ 		int max_y = widget-&gt;data.scrollable.content_height - widget-&gt;h;
++		int max_x = widget-&gt;data.scrollable.content_width - widget-&gt;w;
+ 		int handled = 0;
++		int shift = widget-&gt;ctx &amp;&amp;
++			    (bgtk_mods_from_ctx(widget-&gt;ctx) &amp; BGTK_MOD_SHIFT);
+ 
+ 		if (max_y &lt; 0)
+ 			max_y = 0;
++		if (max_x &lt; 0)
++			max_x = 0;
++		/* Shift+arrows / Shift+h/l: horizontal pan when content wider. */
++		if (shift &amp;&amp; (ev.code == KEY_LEFT || ev.code == KEY_RIGHT ||
++			      ev.code == KEY_H || ev.code == KEY_L)) {
++			if (ev.code == KEY_LEFT || ev.code == KEY_H)
++				handled = scrollable_nudge_x(widget, -step);
++			else
++				handled = scrollable_nudge_x(widget, step);
++			return handled ? 1 : 0;
++		}
+ 		if (ev.code == KEY_DOWN || ev.code == KEY_J)
+-			handled = scrollable_nudge(widget, step);
++			handled = scrollable_nudge_y(widget, step);
+ 		else if (ev.code == KEY_UP || ev.code == KEY_K)
+-			handled = scrollable_nudge(widget, -step);
++			handled = scrollable_nudge_y(widget, -step);
+ 		else if (ev.code == KEY_PAGEDOWN || ev.code == KEY_SPACE)
+-			handled = scrollable_nudge(widget, page);
++			handled = scrollable_nudge_y(widget, page);
+ 		else if (ev.code == KEY_PAGEUP)
+-			handled = scrollable_nudge(widget, -page);
++			handled = scrollable_nudge_y(widget, -page);
+ 		else if (ev.code == KEY_HOME) {
+-			handled = (widget-&gt;data.scrollable.scroll_y != 0);
++			handled = (widget-&gt;data.scrollable.scroll_y != 0) ||
++				  (widget-&gt;data.scrollable.scroll_x != 0);
+ 			widget-&gt;data.scrollable.scroll_y = 0;
++			widget-&gt;data.scrollable.scroll_x = 0;
+ 		} else if (ev.code == KEY_END) {
+ 			handled = (widget-&gt;data.scrollable.scroll_y != max_y);
+ 			widget-&gt;data.scrollable.scroll_y = max_y;
++		} else if (ev.code == KEY_LEFT) {
++			handled = scrollable_nudge_x(widget, -step);
++		} else if (ev.code == KEY_RIGHT) {
++			handled = scrollable_nudge_x(widget, step);
+ 		} else {
+ 			/* Forward other keys to children (e.g. link activation). */
+ 			for (int i = 0; i &lt; widget-&gt;data.scrollable.widget_count;
+@@ -377,13 +391,27 @@ static int scrollable_handle_event(struct BGTK_Widget *widget,
+ 		return handled ? 1 : 0;
+ 	}
+ 
+-	/* Wheel: allow if pointer is over us (BGCE attaches cursor x,y). */
+-	if (ev.type == EV_REL &amp;&amp; ev.code == REL_WHEEL) {
++	/*
++	 * Wheel: over us (BGCE attaches cursor x,y).
++	 * Plain REL_WHEEL → vertical; Shift+wheel or REL_HWHEEL → horizontal.
++	 */
++	if (ev.type == EV_REL &amp;&amp;
++	    (ev.code == REL_WHEEL || ev.code == REL_HWHEEL)) {
++		int shift = widget-&gt;ctx &amp;&amp;
++			    (bgtk_mods_from_ctx(widget-&gt;ctx) &amp; BGTK_MOD_SHIFT);
++		int horiz = (ev.code == REL_HWHEEL) ||
++			    (ev.code == REL_WHEEL &amp;&amp; shift);
++
+ 		if (!in_bounds)
+ 			return 0;
+-		/* value &gt; 0 = scroll up = content moves down (smaller scroll_y) */
+-		if (!scrollable_nudge(widget, -(ev.value * 32)))
+-			return 0;
++		/* value &gt; 0 = scroll up / left-ish → smaller offset */
++		if (horiz) {
++			if (!scrollable_nudge_x(widget, -(ev.value * 32)))
++				return 0;
++		} else {
++			if (!scrollable_nudge_y(widget, -(ev.value * 32)))
++				return 0;
++		}
+ 		return 1;
+ 	}
+ 
+@@ -393,7 +421,7 @@ static int scrollable_handle_event(struct BGTK_Widget *widget,
+ 	/* Pass pointer events to children in content coordinates. */
+ 	{
+ 		struct InputEvent cev = ev;
+-		cev.x = ev.x - sx;
++		cev.x = ev.x - sx + widget-&gt;data.scrollable.scroll_x;
+ 		cev.y = ev.y - sy + widget-&gt;data.scrollable.scroll_y;
+ 
+ 		for (int i = 0; i &lt; widget-&gt;data.scrollable.widget_count; i++) {
+@@ -734,12 +762,18 @@ struct BGTK_Widget *bgtk_scrollable(struct BGTK_Context *ctx,
+ 	// Copy the input widgets into the scrollable container
+ 	widget-&gt;data.scrollable.widget_count = widget_count;
+ 	widget-&gt;data.scrollable.scroll_y = 0;
++	widget-&gt;data.scrollable.scroll_x = 0;
+ 	widget-&gt;data.scrollable.content_height = 0;
++	widget-&gt;data.scrollable.content_width = 0;
+ 	for (int i = 0; i &lt; widget_count; i++) {
+ 		widget-&gt;data.scrollable.items[i] = items[i];
+ 		bgtk_widget_set_parent(items[i], widget);
+ 		widget-&gt;data.scrollable.content_height += items[i]-&gt;h + 5 + 2 * widget-&gt;margin;	// 5px spacing + margin
++		if (items[i]-&gt;w &gt; widget-&gt;data.scrollable.content_width)
++			widget-&gt;data.scrollable.content_width = items[i]-&gt;w;
+ 	}
++	if (widget-&gt;data.scrollable.content_width &lt; 1)
++		widget-&gt;data.scrollable.content_width = 1;
+ 
+ 	/* Offscreen cache (filled on first draw; busted when items change). */
+ 	widget-&gt;data.scrollable.tmp = NULL;
+diff --git a/www/bgtk.tar.gz b/www/bgtk.tar.gz
+index 21b8fa3..3534eb9 100644
+Binary files a/www/bgtk.tar.gz and b/www/bgtk.tar.gz differ
+</pre>

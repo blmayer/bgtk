@@ -1,0 +1,2958 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk f749530</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit f749530
+parent <a href=commit-81d5ffc.html>81d5ffc</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-07T16:57:08-03:00
+
+    fix: sticky mod keys, settings UI, fonts, gemini TLS, terminal scroll.
+
+    Clear L/R mod state on focus/Esc so terminal j/k are not sent as Ctrl+J/K
+    (LF/VT) after app switches. Add sans/mono/serif font config and faces.
+    Fix settings Apply hit-testing after preview insert, theme field focus
+    routing, and shortcuts page layout. Retry libtls WANT_POLLIN/POLLOUT in
+    gemini_browser with better logging. Clip terminal glyphs to cells and
+    harden vim-style scroll-region handling.
+
+<a href=tree-f749530.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/README.md b/README.md
+index d06e3a8..b4b840b 100644
+--- a/README.md
++++ b/README.md
+@@ -102,12 +102,16 @@ input_border_size = 2
+ frame_border_size = 4
+ frame_border_color = #333333
+ 
+-# Font settings
++# Font settings (sans = UI; mono = terminal; serif = documents)
+ [font]
+-path = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
++sans = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
++mono = /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf
++serif = /usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf
+ size = 14
+ ```
+ 
++`sans` is the UI face. `mono` is used by the terminal; `serif` is available via `bgtk_font_face(ctx, BGTK_FONT_SERIF)`. If mono/serif are omitted, platform defaults are chosen (falling back to the UI/sans font).
++
+ Colors use `#RRGGBB` or `#RRGGBBAA` format. Lines starting with `#` or `;` are comments.
+ 
+ ### Logging
+diff --git a/apps/gemini_browser.c b/apps/gemini_browser.c
+index 42b2e25..d71fa8c 100644
+--- a/apps/gemini_browser.c
++++ b/apps/gemini_browser.c
+@@ -3,6 +3,7 @@
+ #include &lt;ctype.h&gt;
+ #include &lt;errno.h&gt;
+ #include &lt;linux/input.h&gt;
++#include &lt;signal.h&gt;
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
+@@ -19,8 +20,69 @@ static struct BGTK_Widget *link_target_widgets[128];
+ static char link_targets[128][512];
+ static int num_page_links = 0;
+ 
++/* libtls returns these when the underlying socket would block; they are
++ * negative, so a naive `n &lt;= 0` treats them as EOF and aborts the transfer. */
++#ifndef TLS_WANT_POLLIN
++#define TLS_WANT_POLLIN (-2)
++#endif
++#ifndef TLS_WANT_POLLOUT
++#define TLS_WANT_POLLOUT (-3)
++#endif
++
++#define GEMINI_IO_TIMEOUT_MS 15000
++
+ static void load_url(const char *url);
+ 
++/* Retry tls_read/write through WANT_POLLIN/WANT_POLLOUT with a deadline. */
++static ssize_t gemini_tls_read(struct tls *t, void *buf, size_t len)
++{
++	int waited = 0;
++
++	for (;;) {
++		ssize_t n = tls_read(t, buf, len);
++		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
++			if (waited &gt;= GEMINI_IO_TIMEOUT_MS) {
++				bgtk_log("tls_read timed out after %dms (want=%zd)",
++					 waited, n);
++				return -1;
++			}
++			usleep(5000);
++			waited += 5;
++			continue;
++		}
++		return n;
++	}
++}
++
++static ssize_t gemini_tls_write(struct tls *t, const void *buf, size_t len)
++{
++	int waited = 0;
++	const char *p = buf;
++	size_t left = len;
++
++	while (left &gt; 0) {
++		ssize_t n = tls_write(t, p, left);
++		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
++			if (waited &gt;= GEMINI_IO_TIMEOUT_MS) {
++				bgtk_log("tls_write timed out after %dms (want=%zd)",
++					 waited, n);
++				return -1;
++			}
++			usleep(5000);
++			waited += 5;
++			continue;
++		}
++		if (n &lt; 0)
++			return n;
++		if (n == 0)
++			return (ssize_t)(len - left);
++		p += n;
++		left -= (size_t)n;
++		waited = 0;
++	}
++	return (ssize_t)len;
++}
++
+ /* --- URL resolution (relative links, ../ etc) --- */
+ static void resolve_url(const char *base, const char *rel, char *out, size_t outlen)
+ {
+@@ -118,131 +180,176 @@ static void resolve_url(const char *base, const char *rel, char *out, size_t out
+ }
+ 
+ /* --- Gemini fetch over TLS --- */
+-static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, char **out_body)
++static int fetch_gemini(const char *req_url, int *out_status, char **out_meta,
++			char **out_body)
+ {
++	char host[256] = {0};
++	char path[768] = "/";
++	int port = 1965;
++	char selector[1024];
++	char portstr[16];
++	char req[1200];
++	int rlen;
++	struct tls_config *cfg;
++	struct tls *ctx_tls;
++	char hbuf[1024];
++	int hlen = 0;
++	int status = 0;
++	char meta[512] = {0};
++	size_t cap = 8192;
++	size_t blen = 0;
++	char *body;
++	const char *p;
++	const char *he;
++	const char *pe;
++
+ 	*out_status = 0;
+ 	*out_meta = NULL;
+ 	*out_body = NULL;
+ 
+-	char host[256] = {0};
+-	char path[768] = "/";
+-	int port = 1965;
++	if (!req_url || !*req_url) {
++		bgtk_log("fetch: empty url");
++		return -1;
++	}
+ 
+-	const char *p = req_url;
++	p = req_url;
+ 	if (!strncmp(p, "gemini://", 9))
+ 		p += 9;
+-	const char *he = strchr(p, '/');
+-	const char *pe = strchr(p, ':');
++	he = strchr(p, '/');
++	pe = strchr(p, ':');
+ 	if (pe &amp;&amp; (!he || pe &lt; he)) {
+ 		int hl = (int)(pe - p);
+ 		if (hl &gt; 255)
+ 			hl = 255;
+-		memcpy(host, p, hl);
++		memcpy(host, p, (size_t)hl);
+ 		host[hl] = 0;
+ 		port = atoi(pe + 1);
+ 		if (he)
+ 			strncpy(path, he, sizeof(path) - 1);
+ 	} else if (he) {
+ 		int hl = (int)(he - p);
+-		memcpy(host, p, hl);
++		memcpy(host, p, (size_t)hl);
+ 		host[hl] = 0;
+ 		strncpy(path, he, sizeof(path) - 1);
+ 	} else {
+ 		strncpy(host, p, sizeof(host) - 1);
+ 	}
+-	if (!host[0])
++	if (!host[0]) {
++		bgtk_log("fetch: no host in '%s'", req_url);
+ 		return -1;
++	}
+ 	if (port &lt; 1)
+ 		port = 1965;
+ 	if (!path[0])
+ 		strcpy(path, "/");
+ 
+ 	/* full selector is the original req_url (spec) */
+-	char selector[1024];
+ 	strncpy(selector, req_url, sizeof(selector) - 1);
+ 	selector[sizeof(selector) - 1] = '\0';
+ 
+-	/* Gemini commonly uses TOFU; match prior OpenSSL VERIFY_NONE behaviour. */
+-	if (tls_init() == -1)
++	bgtk_log("fetch: begin host=%s port=%d path=%s", host, port, path);
++
++	/* Gemini commonly uses TOFU; verify-none matches prior behaviour. */
++	if (tls_init() == -1) {
++		bgtk_log("fetch: tls_init failed");
+ 		return -2;
++	}
+ 
+-	struct tls_config *cfg = tls_config_new();
+-	if (!cfg)
++	cfg = tls_config_new();
++	if (!cfg) {
++		bgtk_log("fetch: tls_config_new failed");
+ 		return -2;
++	}
+ 	tls_config_insecure_noverifycert(cfg);
+ 	tls_config_insecure_noverifyname(cfg);
+ 
+-	struct tls *ctx_tls = tls_client();
++	ctx_tls = tls_client();
+ 	if (!ctx_tls) {
++		bgtk_log("fetch: tls_client failed");
+ 		tls_config_free(cfg);
+ 		return -2;
+ 	}
+ 	if (tls_configure(ctx_tls, cfg) == -1) {
+-		bgtk_log("tls_configure: %s", tls_error(ctx_tls));
++		bgtk_log("fetch: tls_configure: %s", tls_error(ctx_tls));
+ 		tls_free(ctx_tls);
+ 		tls_config_free(cfg);
+ 		return -2;
+ 	}
+ 
+-	char portstr[16];
+ 	snprintf(portstr, sizeof(portstr), "%d", port);
+ 	if (tls_connect(ctx_tls, host, portstr) == -1) {
+-		bgtk_log("tls_connect %s:%s: %s", host, portstr, tls_error(ctx_tls));
++		bgtk_log("fetch: tls_connect %s:%s: %s", host, portstr,
++			 tls_error(ctx_tls));
+ 		tls_free(ctx_tls);
+ 		tls_config_free(cfg);
+ 		return -6;
+ 	}
++	bgtk_log("fetch: connected to %s:%s", host, portstr);
+ 
+-	char req[1200];
+-	int rlen = snprintf(req, sizeof(req), "%s\r\n", selector);
+-	if (tls_write(ctx_tls, req, (size_t)rlen) &lt; 0) {
+-		bgtk_log("tls_write: %s", tls_error(ctx_tls));
++	rlen = snprintf(req, sizeof(req), "%s\r\n", selector);
++	if (gemini_tls_write(ctx_tls, req, (size_t)rlen) &lt; 0) {
++		bgtk_log("fetch: tls_write: %s", tls_error(ctx_tls));
+ 		tls_close(ctx_tls);
+ 		tls_free(ctx_tls);
+ 		tls_config_free(cfg);
+ 		return -7;
+ 	}
+ 
+-	/* read header up to first \r\n */
+-	char hbuf[1024] = {0};
+-	int hlen = 0;
++	/* Read header up to first \r\n (must retry TLS_WANT_*). */
++	memset(hbuf, 0, sizeof(hbuf));
+ 	while (hlen &lt; (int)sizeof(hbuf) - 1) {
+-		ssize_t n = tls_read(ctx_tls, hbuf + hlen, 1);
+-		if (n &lt;= 0)
++		ssize_t n = gemini_tls_read(ctx_tls, hbuf + hlen, 1);
++		if (n &lt; 0) {
++			bgtk_log("fetch: header read error n=%zd err=%s", n,
++				 tls_error(ctx_tls) ? tls_error(ctx_tls) : "?");
+ 			break;
++		}
++		if (n == 0) {
++			bgtk_log("fetch: header EOF at hlen=%d", hlen);
++			break;
++		}
+ 		hlen += (int)n;
+-		if (hlen &gt;= 2 &amp;&amp; hbuf[hlen - 2] == '\r' &amp;&amp; hbuf[hlen - 1] == '\n')
++		if (hlen &gt;= 2 &amp;&amp; hbuf[hlen - 2] == '\r' &amp;&amp;
++		    hbuf[hlen - 1] == '\n')
+ 			break;
+ 	}
+ 	hbuf[hlen] = 0;
++	bgtk_log("fetch: header (%d bytes): %.80s", hlen, hbuf);
+ 
+-	int status = 0;
+-	char meta[512] = {0};
+-	if (sscanf(hbuf, "%d %511[^\r\n]", &amp;status, meta) &lt; 1)
++	if (sscanf(hbuf, "%d %511[^\r\n]", &amp;status, meta) &lt; 1) {
++		bgtk_log("fetch: bad header, treating as 59");
+ 		status = 59;
++		snprintf(meta, sizeof(meta), "bad response header");
++	}
+ 	*out_status = status;
+ 	if (out_meta)
+ 		*out_meta = strdup(meta);
+ 
+-	/* read body */
+-	size_t cap = 8192;
+-	size_t blen = 0;
+-	char *body = malloc(cap);
++	body = malloc(cap);
+ 	if (!body) {
++		bgtk_log("fetch: OOM body buffer");
+ 		tls_close(ctx_tls);
+ 		tls_free(ctx_tls);
+ 		tls_config_free(cfg);
+ 		return -8;
+ 	}
+ 	for (;;) {
+-		char rbuf[1024];
+-		ssize_t n = tls_read(ctx_tls, rbuf, sizeof(rbuf));
+-		if (n &lt;= 0)
++		char rbuf[2048];
++		ssize_t n = gemini_tls_read(ctx_tls, rbuf, sizeof(rbuf));
++		if (n &lt; 0) {
++			bgtk_log("fetch: body read error n=%zd err=%s (have %zu)",
++				 n,
++				 tls_error(ctx_tls) ? tls_error(ctx_tls) : "?",
++				 blen);
++			break;
++		}
++		if (n == 0)
+ 			break;
+ 		if (blen + (size_t)n + 1 &gt; cap) {
+ 			cap = cap * 2 + (size_t)n;
+ 			char *nb = realloc(body, cap);
+ 			if (!nb) {
++				bgtk_log("fetch: OOM growing body to %zu", cap);
+ 				free(body);
+ 				tls_close(ctx_tls);
+ 				tls_free(ctx_tls);
+@@ -260,6 +367,8 @@ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, c
+ 	tls_close(ctx_tls);
+ 	tls_free(ctx_tls);
+ 	tls_config_free(cfg);
++	bgtk_log("fetch: done status=%d meta='%.60s' body_len=%zu", status,
++		 meta, blen);
+ 	return 0;
+ }
+ 
+@@ -424,12 +533,59 @@ static void rebuild_content_from_gemtext(const char *body)
+ 			new_items[cnt-1]-&gt;h += 5;  /* increase the top spacing a little before headings */
+ 		}
+ 
+-		if (header_level &gt; 0) {
+-			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size + 4 - header_level);
++		if (header_level &gt; 0 &amp;&amp; ctx-&gt;ft_face) {
++			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0,
++					   ctx-&gt;font_size + 4 - header_level);
+ 		}
+ 		if (!in_pre) {
+ 			int nsubs = 0;
+-			char **subs = wrap_text(ctx-&gt;ft_face, vis, max_text_w, &amp;nsubs);
++			char **subs = wrap_text(ctx-&gt;ft_face, vis, max_text_w,
++						&amp;nsubs);
++			/* No wrap (null face / empty): still show one line. */
++			if (!subs || nsubs &lt; 1) {
++				struct BGTK_Widget *tw =
++					bgtk_text(ctx, vis,
++						  (BGTK_Options){.padding = 1,
++								 .margin = 1});
++				if (tw) {
++					if (header_level &gt; 0)
++						tw-&gt;data.text.header_level =
++							header_level;
++					if (item_color)
++						tw-&gt;data.text.header_level =
++							item_color;
++					if (is_link &amp;&amp; num_page_links &lt; 128) {
++						link_target_widgets[num_page_links] =
++							tw;
++						strncpy(link_targets[num_page_links],
++							resolved,
++							sizeof(link_targets[0]) -
++								1);
++						num_page_links++;
++						tw-&gt;handle_event =
++							gemini_link_handler;
++					}
++					if (cnt &gt;= cap) {
++						cap = cap ? cap * 2 : 32;
++						new_items = realloc(
++							new_items,
++							(size_t)cap *
++								sizeof(*new_items));
++					}
++					if (new_items)
++						new_items[cnt++] = tw;
++				}
++				if (subs) {
++					for (int s = 0; s &lt; nsubs; s++)
++						free(subs[s]);
++					free(subs);
++				}
++				if (header_level &gt; 0 &amp;&amp; ctx-&gt;ft_face)
++					FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0,
++							   ctx-&gt;font_size);
++				line = strtok_r(NULL, "\n", &amp;save);
++				continue;
++			}
+ 			for (int s = 0; s &lt; nsubs; s++) {
+ 				struct BGTK_Widget *tw = bgtk_text(ctx, subs[s], (BGTK_Options){.padding = 1, .margin = 1});
+ 				if (!tw) continue;
+@@ -484,7 +640,7 @@ static void rebuild_content_from_gemtext(const char *body)
+ 				}
+ 			}
+ 		}
+-		if (header_level &gt; 0) {
++		if (header_level &gt; 0 &amp;&amp; ctx-&gt;ft_face) {
+ 			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
+ 		}
+ 
+@@ -495,25 +651,36 @@ static void rebuild_content_from_gemtext(const char *body)
+ 	content_scroll-&gt;data.scrollable.items = new_items;
+ 	content_scroll-&gt;data.scrollable.widget_count = cnt;
+ 	content_scroll-&gt;data.scrollable.scroll_y = 0;
++	bgtk_log("rebuild: %d line widgets, %d links", cnt, num_page_links);
+ }
+ 
+ /* main navigation entry */
+ static void load_url(const char *url)
+ {
+-	if (!url || !*url)
++	char tourl[512];
++	int redirects = 0;
++	int status = 0;
++	char *meta = NULL;
++	char *body = NULL;
++	int feres = -1;
++
++	if (!url || !*url) {
++		bgtk_log("load_url: empty url");
+ 		return;
++	}
++	if (!ctx || !content_scroll || !addr_input) {
++		bgtk_log("load_url: UI not ready (ctx=%p scroll=%p addr=%p)",
++			 (void *)ctx, (void *)content_scroll, (void *)addr_input);
++		return;
++	}
+ 
++	bgtk_log("load_url: %s", url);
+ 	strncpy(current_url, url, sizeof(current_url) - 1);
+ 	current_url[sizeof(current_url) - 1] = 0;
+ 
+ 	/* follow redirects a few times */
+-	char tourl[512];
+ 	strncpy(tourl, url, sizeof(tourl) - 1);
+-	int redirects = 0;
+-	int status = 0;
+-	char *meta = NULL;
+-	char *body = NULL;
+-	int feres = -1;
++	tourl[sizeof(tourl) - 1] = 0;
+ 
+ 	for (;;) {
+ 		if (meta) {
+@@ -525,48 +692,71 @@ static void load_url(const char *url)
+ 			body = NULL;
+ 		}
+ 		feres = fetch_gemini(tourl, &amp;status, &amp;meta, &amp;body);
+-		if (feres == 0 &amp;&amp; (status == 30 || status == 31) &amp;&amp; meta &amp;&amp; *meta &amp;&amp; redirects &lt; 5) {
++		bgtk_log("load_url: fetch res=%d status=%d redirect=%d", feres,
++			 status, redirects);
++		if (feres == 0 &amp;&amp; (status == 30 || status == 31) &amp;&amp; meta &amp;&amp;
++		    *meta &amp;&amp; redirects &lt; 5) {
+ 			char next[512];
+ 			resolve_url(tourl, meta, next, sizeof(next));
++			bgtk_log("load_url: redirect %d -&gt; %s", status, next);
+ 			strncpy(tourl, next, sizeof(tourl) - 1);
++			tourl[sizeof(tourl) - 1] = 0;
+ 			redirects++;
+ 			continue;
+ 		}
+ 		break;
+ 	}
+ 
+-	/* update current to final */
+ 	strncpy(current_url, tourl, sizeof(current_url) - 1);
++	current_url[sizeof(current_url) - 1] = 0;
++
++	/* free previous page lines */
++	if (content_scroll-&gt;data.scrollable.items) {
++		for (int i = 0;
++		     i &lt; content_scroll-&gt;data.scrollable.widget_count; i++) {
++			struct BGTK_Widget *tw =
++				content_scroll-&gt;data.scrollable.items[i];
++			if (!tw)
++				continue;
++			if (tw-&gt;type == BGTK_WIDGET_TEXT &amp;&amp; tw-&gt;data.text.text)
++				free(tw-&gt;data.text.text);
++			free(tw);
++		}
++		free(content_scroll-&gt;data.scrollable.items);
++		content_scroll-&gt;data.scrollable.items = NULL;
++		content_scroll-&gt;data.scrollable.widget_count = 0;
++	}
++	num_page_links = 0;
+ 
+-	/* build UI lines */
+ 	if (feres != 0 || status / 10 != 2) {
+ 		char errline[256];
+-		snprintf(errline, sizeof(errline), "Error %d %s", status, meta ? meta : "");
+-		struct BGTK_Widget *et = bgtk_text(ctx, errline, (BGTK_Options){.padding = 2, .margin = 1});
++		snprintf(errline, sizeof(errline), "Error %d (%d) %s", status,
++			 feres, meta ? meta : "");
++		bgtk_log("load_url: showing error page: %s", errline);
++		struct BGTK_Widget *et =
++			bgtk_text(ctx, errline,
++				  (BGTK_Options){.padding = 2, .margin = 1});
+ 		struct BGTK_Widget **errs = calloc(1, sizeof(*errs));
+ 		if (errs)
+ 			errs[0] = et;
+-		/* free previous via rebuild but force single */
+-		if (content_scroll-&gt;data.scrollable.items) {
+-			for (int i = 0; i &lt; content_scroll-&gt;data.scrollable.widget_count; i++) {
+-				struct BGTK_Widget *tw = content_scroll-&gt;data.scrollable.items[i];
+-				free(tw-&gt;data.text.text);
+-				free(tw);
+-			}
+-			free(content_scroll-&gt;data.scrollable.items);
+-		}
+ 		content_scroll-&gt;data.scrollable.items = errs;
+ 		content_scroll-&gt;data.scrollable.widget_count = errs ? 1 : 0;
+ 		content_scroll-&gt;data.scrollable.scroll_y = 0;
+-		num_page_links = 0;
+ 	} else {
++		bgtk_log("load_url: rendering success body (%zu bytes)",
++			 body ? strlen(body) : 0);
+ 		rebuild_content_from_gemtext(body);
+ 	}
+ 
+ 	/* sync address bar (it serves as the URL display) */
+ 	free(addr_input-&gt;data.text_input.text);
+ 	addr_input-&gt;data.text_input.text = strdup(current_url);
+-	addr_input-&gt;data.text_input.cursor_pos = (uint32_t)strlen(current_url);
++	if (!addr_input-&gt;data.text_input.text)
++		addr_input-&gt;data.text_input.text = strdup("");
++	addr_input-&gt;data.text_input.cursor_pos =
++		(uint32_t)strlen(addr_input-&gt;data.text_input.text
++					 ? addr_input-&gt;data.text_input.text
++					 : "");
+ 	addr_input-&gt;data.text_input.scroll_x = 0;
+ 
+ 	if (meta)
+@@ -575,6 +765,7 @@ static void load_url(const char *url)
+ 		free(body);
+ 
+ 	bgtk_draw_widgets(ctx);
++	bgtk_log("load_url: draw complete for %s", current_url);
+ }
+ 
+ static void go_button_cb(void *userdata)
+@@ -592,90 +783,148 @@ static void addr_on_enter(void)
+ 
+ int main(void)
+ {
++	int width = 640;
++	int height = 480;
++	int conn_fd;
++	struct BufferRequest req;
++	void *buffer;
++	int usable_w;
++	struct BGTK_Widget *go_label;
++	struct BGTK_Widget *go_btn;
++	int input_w;
++	struct BGTK_Widget *addr_items[2];
++	struct BGTK_Widget *addr_row;
++	int v_margins;
++	int reserved;
++	int scroll_h;
++	struct BGTK_Widget *main_items[2];
++	struct BGTK_Widget *main_list;
++	struct BGTK_Widget *frame;
++	struct BGTK_Widget *loading;
++	struct BGTK_Widget **loading_items;
++	struct BGCEMessage msg;
++	ssize_t bytes;
++	const char *quit_reason = "unknown";
++
++	/* File log under ~/.cache/bgtk/gemini_browser.log (not stderr — launcher
++	 * often redirects stdio to /dev/null). */
+ 	bgtk_log_open("gemini_browser");
+ 	setvbuf(stdout, NULL, _IONBF, 0);
+ 	setvbuf(stderr, NULL, _IONBF, 0);
++	signal(SIGPIPE, SIG_IGN);
++
++	bgtk_log("gemini_browser starting pid=%ld", (long)getpid());
+ 
+ 	if (tls_init() == -1) {
+-		bgtk_log("tls_init failed");
++		bgtk_log("tls_init failed — abort");
+ 		return 1;
+ 	}
++	bgtk_log("tls_init ok");
+ 
+-	int conn_fd = bgce_connect();
++	conn_fd = bgce_connect();
+ 	if (conn_fd &lt; 0) {
+-		bgtk_log_errno("bgce_connect");
++		bgtk_log_errno("bgce_connect failed");
+ 		return -1;
+ 	}
++	bgtk_log("bgce_connect ok fd=%d", conn_fd);
+ 
+-	int width = 640;
+-	int height = 480;
+-	struct BufferRequest req = {.width = width, .height = height};
+-	void *buffer = bgce_get_buffer(conn_fd, req);
++	req.width = width;
++	req.height = height;
++	buffer = bgce_get_buffer(conn_fd, req);
+ 	if (!buffer) {
+ 		bgtk_log("bgce_get_buffer %dx%d failed", width, height);
+ 		bgce_disconnect(conn_fd);
+ 		return -3;
+ 	}
++	bgtk_log("got buffer %dx%d", width, height);
+ 
+ 	ctx = bgtk_init(conn_fd, buffer, width, height);
+ 	if (!ctx) {
+ 		bgtk_log("bgtk_init failed");
++		bgce_disconnect(conn_fd);
+ 		return 1;
+ 	}
+-
+-	int usable_w = width - 20;
+-
+-	/* create button first to know its size, then size the input to make the row (address bar + button) full width */
+-	struct BGTK_Widget *go_label = bgtk_text(ctx, "Go", (BGTK_Options){.padding = 2, .margin = 0});
+-	struct BGTK_Widget *go_btn = bgtk_button(ctx, go_label, go_button_cb, NULL,
+-						 (BGTK_Options){.padding = 4, .margin = 2});
+-	int input_w = usable_w - go_btn-&gt;w - 16;  /* leave room for row padding/margins */
+-	addr_input = bgtk_text_input(ctx, "gemini://geminiprotocol.net/", input_w &gt; 100 ? input_w : 400, 0,
++	bgtk_log("bgtk_init ok face=%p mono=%p serif=%p",
++		 (void *)ctx-&gt;ft_face, (void *)ctx-&gt;ft_face_mono,
++		 (void *)ctx-&gt;ft_face_serif);
++
++	usable_w = width - 20;
++
++	/* button first so we can size the address field to fill the row */
++	go_label = bgtk_text(ctx, "Go",
++			     (BGTK_Options){.padding = 2, .margin = 0});
++	go_btn = bgtk_button(ctx, go_label, go_button_cb, NULL,
++			     (BGTK_Options){.padding = 4, .margin = 2});
++	input_w = usable_w - go_btn-&gt;w - 16;
++	addr_input = bgtk_text_input(ctx, current_url,
++				     input_w &gt; 100 ? input_w : 400, 0,
+ 				     (BGTK_Options){.padding = 4, .margin = 2});
+ 	addr_input-&gt;data.text_input.on_enter = addr_on_enter;
+ 
+-	struct BGTK_Widget *addr_items[2] = {addr_input, go_btn};
+-	struct BGTK_Widget *addr_row = bgtk_list(ctx, addr_items, 2,
+-						 (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .padding = 2, .margin = 1});
++	addr_items[0] = addr_input;
++	addr_items[1] = go_btn;
++	addr_row = bgtk_list(ctx, addr_items, 2,
++			     (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
++					    .padding = 2,
++					    .margin = 1});
+ 
+-	/* content: scrollable holding the list of text items (gemtext lines) */
+-	content_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 2, .margin = 3});
++	content_scroll =
++		bgtk_scrollable(ctx, NULL, 0,
++				(BGTK_Options){.padding = 2, .margin = 3});
+ 
+-	/* leave room inside the frame for addr_row + list spacing */
+-	int v_margins = 16;
+-	int reserved = (addr_row ? addr_row-&gt;h : 24) + v_margins;
+-	int scroll_h = height - reserved - 24;
++	v_margins = 16;
++	reserved = (addr_row ? addr_row-&gt;h : 24) + v_margins;
++	scroll_h = height - reserved - 24;
+ 	if (scroll_h &lt; 100)
+ 		scroll_h = 180;
+ 	content_scroll-&gt;w = usable_w;
+ 	content_scroll-&gt;h = scroll_h;
+ 
+-	/* vertical list inside the frame: [content scroll of texts, address bar at bottom] */
+-	struct BGTK_Widget *main_items[2] = {content_scroll, addr_row};
+-	struct BGTK_Widget *main_list = bgtk_list(ctx, main_items, 2,
+-						  (BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .padding = 2, .margin = 2});
++	/* Placeholder so the window is visible before the network fetch. */
++	loading = bgtk_text(ctx, "Loading…",
++			    (BGTK_Options){.padding = 4, .margin = 2});
++	loading_items = calloc(1, sizeof(*loading_items));
++	if (loading_items) {
++		loading_items[0] = loading;
++		content_scroll-&gt;data.scrollable.items = loading_items;
++		content_scroll-&gt;data.scrollable.widget_count = 1;
++	}
+ 
+-	/* single frame around everything (content + address bar at bottom) */
+-	struct BGTK_Widget *frame = bgtk_frame(ctx, main_list, width, height,
+-					       (BGTK_Options){.padding = 4, .margin = 0});
++	main_items[0] = content_scroll;
++	main_items[1] = addr_row;
++	main_list = bgtk_list(ctx, main_items, 2,
++			      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++					     .padding = 2,
++					     .margin = 2});
++
++	frame = bgtk_frame(ctx, main_list, width, height,
++			   (BGTK_Options){.padding = 4, .margin = 0});
+ 
+ 	ctx-&gt;root_widget = frame;
+ 	bgtk_set_focus(ctx, addr_input);
++	bgtk_draw_widgets(ctx);
++	bgtk_log("shell drawn; loading initial url %s", current_url);
+ 
+-	/* initial page */
++	/* Network fetch (may take a few seconds). */
+ 	load_url(current_url);
+ 
+-	printf("gemini_browser starting (%dx%d) on %s\n", width, height, current_url);
++	bgtk_log("entering main loop (%dx%d) url=%s", width, height,
++		 current_url);
+ 
+-	struct BGCEMessage msg;
+-	ssize_t bytes;
+ 	while (1) {
+ 		bytes = bgce_recv_msg(ctx-&gt;conn_fd, &amp;msg);
+ 		if (bytes &lt;= 0) {
+-			if (bytes == 0)
+-				bgtk_log("server closed connection");
+-			else if (errno != EINTR)
+-				bgtk_log_errno("bgce_recv_msg");
++			if (bytes == 0) {
++				quit_reason = "server closed connection (recv=0)";
++				bgtk_log("%s", quit_reason);
++			} else if (errno == EINTR) {
++				bgtk_log("bgce_recv_msg interrupted, retrying");
++				continue;
++			} else {
++				bgtk_log_errno("bgce_recv_msg failed (recv=%zd)",
++					       bytes);
++				quit_reason = "bgce_recv_msg error";
++			}
+ 			break;
+ 		}
+ 
+@@ -686,15 +935,32 @@ int main(void)
+ 			    msg.data.input_event.type == EV_ABS)
+ 				break;
+ 			bgtk_update_modifiers(ctx, msg.data.input_event);
+-			if (bgtk_is_app_quit_event(ctx, msg.data.input_event))
++			if (bgtk_is_app_quit_event(ctx,
++						   msg.data.input_event)) {
++				bgtk_log("quit key type=%d code=%d value=%d "
++					 "mods shift=%d ctrl=%d alt=%d",
++					 msg.data.input_event.type,
++					 msg.data.input_event.code,
++					 msg.data.input_event.value,
++					 ctx-&gt;shift_held, ctx-&gt;ctrl_held,
++					 ctx-&gt;alt_held);
++				quit_reason = "app quit key (Esc or Ctrl+C)";
+ 				goto done;
+-			res = bgtk_handle_input_event(ctx, msg.data.input_event);
++			}
++			res = bgtk_handle_input_event(ctx,
++						      msg.data.input_event);
+ 			break;
+ 		case MSG_FOCUS_CHANGE:
++			bgtk_log("focus change state=%d",
++				 msg.data.focus_event.state);
+ 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
+ 			break;
+ 		case MSG_BUFFER_CHANGE:
+-			if (bgtk_handle_buffer_change(ctx, &amp;msg.data.buffer_reply) == 0) {
++			bgtk_log("buffer change %ux%u",
++				 msg.data.buffer_reply.width,
++				 msg.data.buffer_reply.height);
++			if (bgtk_handle_buffer_change(
++				    ctx, &amp;msg.data.buffer_reply) == 0) {
+ 				if (ctx-&gt;root_widget) {
+ 					ctx-&gt;root_widget-&gt;w = ctx-&gt;width;
+ 					ctx-&gt;root_widget-&gt;h = ctx-&gt;height;
+@@ -703,12 +969,17 @@ int main(void)
+ 			}
+ 			break;
+ 		default:
++			bgtk_log("unhandled msg type=%d bytes=%zd", msg.type,
++				 bytes);
+ 			break;
+ 		}
+ 		if (res)
+ 			bgtk_draw_widgets(ctx);
+ 	}
+ done:
++	bgtk_log("shutting down reason='%s' url='%s'", quit_reason,
++		 current_url);
+ 	bgtk_destroy(ctx);
++	bgtk_log("exit 0");
+ 	return 0;
+ }
+diff --git a/apps/settings.c b/apps/settings.c
+index b599e05..99128de 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -69,16 +69,56 @@ static struct BGTK_Widget *theme_btn_border_input;
+ static struct BGTK_Widget *theme_input_border_input;
+ static struct BGTK_Widget *theme_frame_color_input;
+ 
+-/* Font dropdown state: 0=closed, 1=open */
++/* Font dropdown: open for one role (sans/mono/serif) at a time. */
+ static int font_dropdown_open;
++static int font_pick_role; /* BGTK_FONT_SANS / MONO / SERIF */
+ static char **font_list_cache;
+ static int font_list_count;
+ 
+ /* Shortcuts shown in UI (loaded from ~/.config/bgce.conf when present). */
++static char shortcut_labels[MAX_SHORTCUT_ROWS][96];
+ static char shortcut_actions[MAX_SHORTCUT_ROWS][96];
+ static char shortcut_keys[MAX_SHORTCUT_ROWS][64];
+ static int shortcuts_loaded;
+ 
++/* Human label for the Action column (config still stores type:value). */
++static void shortcut_label_from_action(const char *action, char *out, size_t n)
++{
++	if (!action || !out || n == 0)
++		return;
++	if (strcmp(action, "builtin:exit") == 0)
++		snprintf(out, n, "Exit");
++	else if (strcmp(action, "builtin:screenshot") == 0)
++		snprintf(out, n, "Screenshot");
++	else if (strncmp(action, "command:", 8) == 0)
++		snprintf(out, n, "%s", action + 8);
++	else
++		snprintf(out, n, "%s", action);
++}
++
++static void shortcut_set_row(int i, const char *label, const char *key,
++			     const char *action)
++{
++	if (i &lt; 0 || i &gt;= MAX_SHORTCUT_ROWS)
++		return;
++	snprintf(shortcut_labels[i], sizeof(shortcut_labels[0]), "%s",
++		 label ? label : "");
++	snprintf(shortcut_keys[i], sizeof(shortcut_keys[0]), "%s",
++		 key ? key : "");
++	snprintf(shortcut_actions[i], sizeof(shortcut_actions[0]), "%s",
++		 action ? action : "");
++}
++
++static void load_shortcuts_defaults(void)
++{
++	/* BGCE builtins + common command examples (see bgce README). */
++	shortcut_set_row(0, "Exit", "ctrl+alt+q", "builtin:exit");
++	shortcut_set_row(1, "Screenshot", "sysrq", "builtin:screenshot");
++	shortcut_set_row(2, "Terminal", "ctrl+alt+t", "command:terminal");
++	shortcut_set_row(3, "Launcher", "ctrl+alt+l", "command:launcher");
++	shortcut_row_count = 4;
++}
++
+ static void load_shortcuts_table(void)
+ {
+ 	const char *home;
+@@ -87,14 +127,8 @@ static void load_shortcuts_table(void)
+ 	char line[512];
+ 	char section[64] = "";
+ 
+-	shortcut_row_count = 0;
+-	/* Defaults matching BGCE (rhs = type:value, key = combo). */
+-	snprintf(shortcut_actions[0], sizeof(shortcut_actions[0]), "builtin:exit");
+-	snprintf(shortcut_keys[0], sizeof(shortcut_keys[0]), "ctrl+alt+q");
+-	snprintf(shortcut_actions[1], sizeof(shortcut_actions[1]),
+-		 "builtin:screenshot");
+-	snprintf(shortcut_keys[1], sizeof(shortcut_keys[1]), "sysrq");
+-	shortcut_row_count = 2;
++	load_shortcuts_defaults();
++	shortcuts_loaded = 0;
+ 
+ 	home = getenv("HOME");
+ 	if (!home || !home[0])
+@@ -109,6 +143,8 @@ static void load_shortcuts_table(void)
+ 		char *p = line;
+ 		char *eq;
+ 		char key[128], val[256];
++		char label[96];
++
+ 		while (*p == ' ' || *p == '\t')
+ 			p++;
+ 		if (*p == '#' || *p == ';' || *p == '\n' || *p == '\0')
+@@ -120,10 +156,6 @@ static void load_shortcuts_table(void)
+ 				memcpy(section, p + 1, (size_t)(end - p - 1));
+ 				section[end - p - 1] = '\0';
+ 			}
+-			if (strcmp(section, "shortcuts") == 0 &amp;&amp;
+-			    !shortcuts_loaded) {
+-				/* First time we enter section with real lines below. */
+-			}
+ 			continue;
+ 		}
+ 		if (strcmp(section, "shortcuts") != 0)
+@@ -132,7 +164,7 @@ static void load_shortcuts_table(void)
+ 		if (!eq)
+ 			continue;
+ 		*eq = '\0';
+-		/* trim key */
++		/* trim key (combo) */
+ 		{
+ 			char *k = p;
+ 			char *e = eq - 1;
+@@ -163,17 +195,14 @@ static void load_shortcuts_table(void)
+ 		}
+ 		if (shortcut_row_count &gt;= MAX_SHORTCUT_ROWS)
+ 			break;
+-		/* Action column = rhs (builtin:… / command:…); key = combo */
+-		snprintf(shortcut_actions[shortcut_row_count],
+-			 sizeof(shortcut_actions[0]), "%s", val);
+-		snprintf(shortcut_keys[shortcut_row_count],
+-			 sizeof(shortcut_keys[0]), "%s", key);
++		shortcut_label_from_action(val, label, sizeof(label));
++		shortcut_set_row(shortcut_row_count, label, key, val);
+ 		shortcut_row_count++;
+ 	}
+ 	fclose(f);
+-	/* If file had empty [shortcuts], keep defaults (row_count already 2). */
+-	if (!shortcuts_loaded &amp;&amp; shortcut_row_count &lt; 2)
+-		shortcut_row_count = 2;
++	/* Empty [shortcuts] section: keep the built-in defaults. */
++	if (!shortcuts_loaded)
++		load_shortcuts_defaults();
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -402,13 +431,132 @@ static uint32_t parse_color_input(const char *text)
+ 	return 0xFF000000 | (r &lt;&lt; 16) | (g &lt;&lt; 8) | b;
+ }
+ 
++/* Merge [background] into ~/.config/bgce.conf (compositor owns the desktop). */
++static void write_bgce_background(void)
++{
++	const char *home = getenv("HOME");
++	char path[512], tmp[512], dir[512];
++	FILE *in, *out;
++	char line[512];
++	char section[64] = "";
++	int wrote = 0;
++
++	if (!home || !home[0])
++		return;
++	snprintf(dir, sizeof(dir), "%s/.config", home);
++	(void)mkdir(dir, 0755);
++	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
++	snprintf(tmp, sizeof(tmp), "%s/.config/bgce.conf.bgtk-tmp", home);
++	in = fopen(path, "r");
++	out = fopen(tmp, "w");
++	if (!out) {
++		if (in)
++			fclose(in);
++		bgtk_log("write_bgce_background: cannot open %s", tmp);
++		return;
++	}
++
++	if (in) {
++		int skip = 0;
++		while (fgets(line, sizeof(line), in)) {
++			char *p = line;
++			while (*p == ' ' || *p == '\t')
++				p++;
++			if (*p == '[') {
++				char *end = strchr(p, ']');
++				section[0] = '\0';
++				if (end &amp;&amp;
++				    (size_t)(end - p - 1) &lt; sizeof(section)) {
++					memcpy(section, p + 1,
++					       (size_t)(end - p - 1));
++					section[end - p - 1] = '\0';
++				}
++				if (strcmp(section, "background") == 0) {
++					skip = 1;
++					continue;
++				}
++				if (skip) {
++					/* leaving [background]: emit new one */
++					char c[16];
++					fprintf(out, "[background]\n");
++					if (cfg.type == BG_IMAGE) {
++						fprintf(out, "type = image\n");
++						fprintf(out, "path = %s\n",
++							cfg.path);
++						fprintf(out, "mode = %s\n",
++							cfg.mode == IMAGE_SCALED
++								? "scaled"
++								: "tiled");
++					} else {
++						fprintf(out, "type = color\n");
++						format_hex_color(cfg.color, c,
++								 sizeof(c));
++						fprintf(out, "color = %s\n", c);
++					}
++					fprintf(out, "\n");
++					wrote = 1;
++					skip = 0;
++				}
++				fputs(line, out);
++				continue;
++			}
++			if (skip)
++				continue;
++			fputs(line, out);
++		}
++		if (skip) {
++			char c[16];
++			fprintf(out, "[background]\n");
++			if (cfg.type == BG_IMAGE) {
++				fprintf(out, "type = image\n");
++				fprintf(out, "path = %s\n", cfg.path);
++				fprintf(out, "mode = %s\n",
++					cfg.mode == IMAGE_SCALED ? "scaled"
++								 : "tiled");
++			} else {
++				fprintf(out, "type = color\n");
++				format_hex_color(cfg.color, c, sizeof(c));
++				fprintf(out, "color = %s\n", c);
++			}
++			wrote = 1;
++		}
++		fclose(in);
++	}
++	if (!wrote) {
++		char c[16];
++		fprintf(out, "[background]\n");
++		if (cfg.type == BG_IMAGE) {
++			fprintf(out, "type = image\n");
++			fprintf(out, "path = %s\n", cfg.path);
++			fprintf(out, "mode = %s\n",
++				cfg.mode == IMAGE_SCALED ? "scaled" : "tiled");
++		} else {
++			fprintf(out, "type = color\n");
++			format_hex_color(cfg.color, c, sizeof(c));
++			fprintf(out, "color = %s\n", c);
++		}
++	}
++	fclose(out);
++	if (rename(tmp, path) != 0)
++		bgtk_log_errno("write_bgce_background rename");
++	else
++		bgtk_log("wrote background to %s", path);
++}
++
+ static void apply_background(void *userdata)
+ {
+ 	(void)userdata;
+-	if (bg_color_input)
+-		cfg.color = parse_color_input(bg_color_input-&gt;data.text_input.text);
+-	if (bg_path_input &amp;&amp; bg_path_input-&gt;data.text_input.text[0])
+-		strncpy(cfg.path, bg_path_input-&gt;data.text_input.text, MAX_PATH_LEN - 1);
++	if (bg_color_input &amp;&amp; bg_color_input-&gt;data.text_input.text)
++		cfg.color = parse_color_input(
++			bg_color_input-&gt;data.text_input.text);
++	if (bg_path_input &amp;&amp; bg_path_input-&gt;data.text_input.text &amp;&amp;
++	    bg_path_input-&gt;data.text_input.text[0]) {
++		strncpy(cfg.path, bg_path_input-&gt;data.text_input.text,
++			MAX_PATH_LEN - 1);
++		cfg.path[MAX_PATH_LEN - 1] = '\0';
++	}
++	/* Desktop background lives in bgce.conf; also mirror into bgtk.conf. */
++	write_bgce_background();
+ 	write_config(&amp;cfg);
+ 	rebuild_content();
+ }
+@@ -540,6 +688,24 @@ static void apply_font(void *userdata)
+ 	rebuild_content();
+ }
+ 
++static const char *font_basename(const char *path)
++{
++	const char *slash;
++	if (!path || !path[0])
++		return "(default)";
++	slash = strrchr(path, '/');
++	return slash ? slash + 1 : path;
++}
++
++static char *font_path_for_role(int role)
++{
++	if (role == BGTK_FONT_MONO)
++		return cfg.font_mono_path;
++	if (role == BGTK_FONT_SERIF)
++		return cfg.font_serif_path;
++	return cfg.font_sans_path;
++}
++
+ static void apply_theme(void *userdata)
+ {
+ 	(void)userdata;
+@@ -568,9 +734,11 @@ static void apply_theme(void *userdata)
+ static void font_select_cb(void *userdata)
+ {
+ 	int idx = (int)(intptr_t)userdata;
+-	if (idx &gt;= 0 &amp;&amp; idx &lt; font_list_count) {
+-		strncpy(cfg.font_path, font_list_cache[idx], MAX_PATH_LEN - 1);
+-		cfg.font_path[MAX_PATH_LEN - 1] = '\0';
++	char *dst = font_path_for_role(font_pick_role);
++
++	if (idx &gt;= 0 &amp;&amp; idx &lt; font_list_count &amp;&amp; dst) {
++		strncpy(dst, font_list_cache[idx], MAX_PATH_LEN - 1);
++		dst[MAX_PATH_LEN - 1] = '\0';
+ 	}
+ 	font_dropdown_open = 0;
+ 	rebuild_content();
+@@ -578,8 +746,14 @@ static void font_select_cb(void *userdata)
+ 
+ static void toggle_font_dropdown(void *userdata)
+ {
+-	(void)userdata;
+-	font_dropdown_open = !font_dropdown_open;
++	int role = (int)(intptr_t)userdata;
++
++	if (font_dropdown_open &amp;&amp; font_pick_role == role)
++		font_dropdown_open = 0;
++	else {
++		font_dropdown_open = 1;
++		font_pick_role = role;
++	}
+ 	rebuild_content();
+ }
+ 
+@@ -670,18 +844,21 @@ static char *build_shortcuts_html(void)
+ 	buf = malloc((size_t)buflen);
+ 	if (!buf)
+ 		return NULL;
++	/* Keep the intro short — long single-line &lt;p&gt; text is not wrapped and
++	 * draws as a garbled overflow across the content panel. */
+ 	pos += snprintf(buf + pos, (size_t)(buflen - pos),
+ 		"&lt;html&gt;&lt;body&gt;"
+-		"&lt;p&gt;Compositor shortcuts (~/.config/bgce.conf). "
+-		"Left: builtin:exit, builtin:screenshot, or command:prog. "
+-		"Right: combo (ctrl+alt+q, sysrq, …).&lt;/p&gt;"
++		"&lt;p&gt;Key bindings (~/.config/bgce.conf)&lt;/p&gt;"
+ 		"&lt;table&gt;"
+-		"&lt;tr&gt;&lt;th&gt;Action (type:value)&lt;/th&gt;&lt;th&gt;Key binding&lt;/th&gt;&lt;/tr&gt;");
++		"&lt;tr&gt;&lt;th&gt;Action&lt;/th&gt;&lt;th&gt;Key binding&lt;/th&gt;&lt;/tr&gt;");
+ 	for (i = 0; i &lt; shortcut_row_count; i++) {
++		const char *label = shortcut_labels[i][0]
++					    ? shortcut_labels[i]
++					    : shortcut_actions[i];
+ 		pos += snprintf(buf + pos, (size_t)(buflen - pos),
+ 			"&lt;tr&gt;&lt;td&gt;%s&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" "
+ 			"width=\"160\" /&gt;&lt;/td&gt;&lt;/tr&gt;",
+-			shortcut_actions[i], shortcut_keys[i]);
++			label, shortcut_keys[i]);
+ 	}
+ 	pos += snprintf(buf + pos, (size_t)(buflen - pos),
+ 		"&lt;/table&gt;"
+@@ -693,27 +870,39 @@ static char *build_shortcuts_html(void)
+ 
+ static char *build_font_html(void)
+ {
+-	/* Extract display name from current font path */
+-	const char *cur_name = cfg.font_path;
+-	const char *slash = strrchr(cfg.font_path, '/');
+-	if (slash) cur_name = slash + 1;
+-	if (!cfg.font_path[0]) cur_name = "(default)";
+-
++	const char *sans_name = font_basename(cfg.font_sans_path);
++	const char *mono_name = font_basename(cfg.font_mono_path);
++	const char *serif_name = font_basename(cfg.font_serif_path);
++	const char *open_label = "";
+ 	int buflen = 8192 + font_list_count * 256;
+ 	char *buf = malloc(buflen);
+ 	int pos = 0;
+ 
++	if (!buf)
++		return NULL;
++	if (font_dropdown_open) {
++		if (font_pick_role == BGTK_FONT_MONO)
++			open_label = " (picking mono)";
++		else if (font_pick_role == BGTK_FONT_SERIF)
++			open_label = " (picking serif)";
++		else
++			open_label = " (picking sans)";
++	}
++
+ 	pos += snprintf(buf + pos, buflen - pos,
+ 		"&lt;html&gt;&lt;body&gt;"
+ 		"&lt;table&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Font&lt;/td&gt;&lt;td&gt;&lt;button&gt;%s&lt;/button&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;td&gt;Sans (UI)&lt;/td&gt;&lt;td&gt;&lt;button&gt;%s&lt;/button&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;td&gt;Mono&lt;/td&gt;&lt;td&gt;&lt;button&gt;%s&lt;/button&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;td&gt;Serif&lt;/td&gt;&lt;td&gt;&lt;button&gt;%s&lt;/button&gt;&lt;/td&gt;&lt;/tr&gt;"
+ 		"&lt;tr&gt;&lt;td&gt;Size&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%d\" width=\"60\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+ 		"&lt;/table&gt;",
+-		cur_name, cfg.font_size);
++		sans_name, mono_name, serif_name, cfg.font_size);
+ 
+-	/* Dropdown list (only when open) */
++	/* Dropdown list for the active role (only when open). */
+ 	if (font_dropdown_open) {
+-		pos += snprintf(buf + pos, buflen - pos, "&lt;ul&gt;");
++		pos += snprintf(buf + pos, buflen - pos, "&lt;p&gt;Fonts%s:&lt;/p&gt;&lt;ul&gt;",
++				open_label);
+ 		int show = font_list_count &gt; 50 ? 50 : font_list_count;
+ 		for (int i = 0; i &lt; show; i++) {
+ 			const char *name = strrchr(font_list_cache[i], '/');
+@@ -724,7 +913,7 @@ static char *build_font_html(void)
+ 		pos += snprintf(buf + pos, buflen - pos, "&lt;/ul&gt;");
+ 	}
+ 
+-	/* Preview */
++	/* Preview (rendered with the active UI/sans face). */
+ 	pos += snprintf(buf + pos, buflen - pos,
+ 		"&lt;p&gt;Preview:&lt;/p&gt;"
+ 		"&lt;p&gt;The quick brown fox jumps over the lazy dog&lt;/p&gt;"
+@@ -809,16 +998,41 @@ static void add_bg_preview(struct BGTK_Widget *page, int panel_w)
+ 	struct BGTK_Widget *list = scroll-&gt;data.scrollable.items[0];
+ 	if (!list || list-&gt;type != BGTK_WIDGET_LIST) return;
+ 
+-	/* Insert preview before the last item (Apply button) */
++	/* Insert preview before the last item (Apply button). */
+ 	int n = list-&gt;data.list_widget.widget_count;
+-	struct BGTK_Widget **new_items = malloc((n + 1) * sizeof(struct BGTK_Widget *));
+-	for (int i = 0; i &lt; n - 1; i++)
++	struct BGTK_Widget **new_items =
++		malloc((n + 1) * sizeof(struct BGTK_Widget *));
++	int total_h = 0;
++	int max_w = 0;
++	int i;
++
++	if (!new_items)
++		return;
++	for (i = 0; i &lt; n - 1; i++)
+ 		new_items[i] = list-&gt;data.list_widget.items[i];
+ 	new_items[n - 1] = preview;
+ 	new_items[n] = list-&gt;data.list_widget.items[n - 1]; /* Apply button */
+ 	free(list-&gt;data.list_widget.items);
+ 	list-&gt;data.list_widget.items = new_items;
+ 	list-&gt;data.list_widget.widget_count = n + 1;
++
++	/* Grow the list to fit the inserted preview. Without this, Apply is
++	 * drawn below list-&gt;h and hit-testing rejects clicks on it. */
++	for (i = 0; i &lt; list-&gt;data.list_widget.widget_count; i++) {
++		struct BGTK_Widget *ch = list-&gt;data.list_widget.items[i];
++		if (!ch)
++			continue;
++		if (ch-&gt;w &gt; max_w)
++			max_w = ch-&gt;w;
++		total_h += ch-&gt;h + 2 * list-&gt;margin;
++	}
++	if (list-&gt;data.list_widget.widget_count &gt; 0)
++		total_h -= 2 * list-&gt;margin;
++	list-&gt;data.list_widget.content_height = total_h;
++	list-&gt;data.list_widget.content_width = max_w;
++	list-&gt;h = total_h + 2 * (list-&gt;margin + list-&gt;padding);
++	if (list-&gt;w &lt; max_w + 2 * (list-&gt;margin + list-&gt;padding))
++		list-&gt;w = max_w + 2 * (list-&gt;margin + list-&gt;padding);
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -912,26 +1126,43 @@ static void rebuild_content(void)
+ 		}
+ 		break;
+ 	}
+-	case 3: { /* Font: button(0)=dropdown toggle, then dropdown items, then Apply */
+-		struct BGTK_Widget *b = get_button(page, 0);
+-		if (b) b-&gt;data.button.callback = toggle_font_dropdown;
++	case 3: { /* Font: sans/mono/serif toggles, optional list, Apply */
++		struct BGTK_Widget *b;
++		int bi;
++
++		b = get_button(page, 0);
++		if (b) {
++			b-&gt;data.button.callback = toggle_font_dropdown;
++			b-&gt;data.button.cb_data = (void *)(intptr_t)BGTK_FONT_SANS;
++		}
++		b = get_button(page, 1);
++		if (b) {
++			b-&gt;data.button.callback = toggle_font_dropdown;
++			b-&gt;data.button.cb_data = (void *)(intptr_t)BGTK_FONT_MONO;
++		}
++		b = get_button(page, 2);
++		if (b) {
++			b-&gt;data.button.callback = toggle_font_dropdown;
++			b-&gt;data.button.cb_data = (void *)(intptr_t)BGTK_FONT_SERIF;
++		}
+ 		font_size_input = get_input(page, 0);
+ 
++		bi = 3; /* first button after the three role toggles */
+ 		if (font_dropdown_open) {
+ 			int show = font_list_count &gt; 50 ? 50 : font_list_count;
+ 			for (int i = 0; i &lt; show; i++) {
+-				struct BGTK_Widget *fb = get_button(page, 1 + i);
++				struct BGTK_Widget *fb = get_button(page, bi + i);
+ 				if (fb) {
+ 					fb-&gt;data.button.callback = font_select_cb;
+-					fb-&gt;data.button.cb_data = (void *)(intptr_t)i;
++					fb-&gt;data.button.cb_data =
++						(void *)(intptr_t)i;
+ 				}
+ 			}
+-			struct BGTK_Widget *ab = get_button(page, 1 + show);
+-			if (ab) ab-&gt;data.button.callback = apply_font;
+-		} else {
+-			struct BGTK_Widget *ab = get_button(page, 1);
+-			if (ab) ab-&gt;data.button.callback = apply_font;
++			bi += show;
+ 		}
++		b = get_button(page, bi);
++		if (b)
++			b-&gt;data.button.callback = apply_font;
+ 		break;
+ 	}
+ 	case 4: { /* Theme */
+diff --git a/apps/term_core.c b/apps/term_core.c
+index c6131d9..0a7d164 100644
+--- a/apps/term_core.c
++++ b/apps/term_core.c
+@@ -115,8 +115,18 @@ static struct Term_Cell *cell_at(struct Term_State *t, int col, int row)
+ static void scroll_up(struct Term_State *t)
+ {
+ 	int top = t-&gt;scroll_top, bot = t-&gt;scroll_bot;
++	size_t row_bytes;
++
++	if (top &lt; 0)
++		top = 0;
++	if (bot &gt;= t-&gt;rows)
++		bot = t-&gt;rows - 1;
++	if (top &gt;= bot)
++		return;
++	/* Move rows top+1..bot → top..bot-1; clear bot. Overlap-safe. */
++	row_bytes = (size_t)(bot - top) * (size_t)t-&gt;cols * sizeof(struct Term_Cell);
+ 	memmove(&amp;t-&gt;cells[top * t-&gt;cols], &amp;t-&gt;cells[(top + 1) * t-&gt;cols],
+-		(size_t)(bot - top) * t-&gt;cols * sizeof(struct Term_Cell));
++		row_bytes);
+ 	for (int c = 0; c &lt; t-&gt;cols; c++)
+ 		t-&gt;cells[bot * t-&gt;cols + c] = default_cell();
+ }
+@@ -257,11 +267,20 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 		if (t-&gt;cur_col &lt; 0) t-&gt;cur_col = 0;
+ 		break;
+ 	case 'r':
++		/* DECSTBM — vim uses e.g. ESC[1;9r then LF to scroll the
++		 * text region while the status line stays put. */
+ 		t-&gt;scroll_top = (p0 ? p0 : 1) - 1;
+ 		t-&gt;scroll_bot = (p1 ? p1 : t-&gt;rows) - 1;
+-		if (t-&gt;scroll_top &lt; 0) t-&gt;scroll_top = 0;
+-		if (t-&gt;scroll_bot &gt;= t-&gt;rows) t-&gt;scroll_bot = t-&gt;rows - 1;
+-		t-&gt;cur_row = 0;
++		if (t-&gt;scroll_top &lt; 0)
++			t-&gt;scroll_top = 0;
++		if (t-&gt;scroll_bot &gt;= t-&gt;rows)
++			t-&gt;scroll_bot = t-&gt;rows - 1;
++		if (t-&gt;scroll_top &gt; t-&gt;scroll_bot) {
++			/* Invalid region — reset to full screen. */
++			t-&gt;scroll_top = 0;
++			t-&gt;scroll_bot = t-&gt;rows - 1;
++		}
++		t-&gt;cur_row = t-&gt;scroll_top;
+ 		t-&gt;cur_col = 0;
+ 		break;
+ 	case 'm':
+@@ -429,30 +448,41 @@ void term_feed(struct Term_State *t, const char *data, int len)
+ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
+ 		 uint32_t *pixels, int px_w, int px_h)
+ {
+-	if (!ctx-&gt;ft_face) return;
+-	FT_Face face = ctx-&gt;ft_face;
+-	FT_Set_Pixel_Sizes(face, 0, ctx-&gt;font_size);
++	FT_Face face = bgtk_font_face(ctx, BGTK_FONT_MONO);
++	int cw, ch, asc;
++	int used_w, used_h;
++
++	if (!face || !pixels)
++		return;
++	FT_Set_Pixel_Sizes(face, 0, ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14);
+ 
+-	int cw = t-&gt;cell_w, ch = t-&gt;cell_h;
+-	if (cw &lt; 1 || ch &lt; 1) return;
+-	int asc = face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
++	cw = t-&gt;cell_w;
++	ch = t-&gt;cell_h;
++	if (cw &lt; 1 || ch &lt; 1)
++		return;
++	asc = face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
+ 
+-	/* background */
++	/* background (full cell rects — also clears any prior glyph bleed) */
+ 	for (int r = 0; r &lt; t-&gt;rows; r++) {
+ 		for (int c = 0; c &lt; t-&gt;cols; c++) {
+ 			struct Term_Cell *cl = cell_at(t, c, r);
+ 			int bi = cl-&gt;bg;
+-			if (bi &lt; 0 || bi &gt; 15) bi = 0;
+-			uint32_t bg = t-&gt;palette[bi];
+-			int x0 = c * cw, y0 = r * ch;
++			uint32_t bg;
++			int x0, y0;
++
++			if (bi &lt; 0 || bi &gt; 15)
++				bi = 0;
++			bg = t-&gt;palette[bi];
++			x0 = c * cw;
++			y0 = r * ch;
+ 			for (int dy = 0; dy &lt; ch &amp;&amp; y0 + dy &lt; px_h; dy++)
+ 				for (int dx = 0; dx &lt; cw &amp;&amp; x0 + dx &lt; px_w; dx++)
+ 					pixels[(y0 + dy) * px_w + (x0 + dx)] = bg;
+ 		}
+ 	}
+ 	/* fill remainder with black */
+-	int used_w = t-&gt;cols * cw;
+-	int used_h = t-&gt;rows * ch;
++	used_w = t-&gt;cols * cw;
++	used_h = t-&gt;rows * ch;
+ 	if (used_w &lt; px_w) {
+ 		for (int y = 0; y &lt; px_h; y++)
+ 			for (int x = used_w; x &lt; px_w; x++)
+@@ -464,55 +494,92 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
+ 				pixels[y * px_w + x] = t-&gt;palette[0];
+ 	}
+ 
+-	/* glyphs */
++	/* glyphs — clip strictly to the cell so wide/offset glyphs cannot
++	 * overwrite neighbours (looks like "mumbled" text under vi j/k). */
+ 	for (int r = 0; r &lt; t-&gt;rows; r++) {
+ 		for (int c = 0; c &lt; t-&gt;cols; c++) {
+ 			struct Term_Cell *cl = cell_at(t, c, r);
+-			if (cl-&gt;ch &lt;= ' ') continue;
+-			int fi = cl-&gt;fg;
+-			if (cl-&gt;bold &amp;&amp; fi &lt; 8) fi += 8;
+-			if (fi &lt; 0 || fi &gt; 15) fi = 7;
+-			uint32_t fg = t-&gt;palette[fi];
+-
+-			FT_UInt idx = FT_Get_Char_Index(face, cl-&gt;ch);
+-			if (FT_Load_Glyph(face, idx,
++			int fi;
++			uint32_t fg;
++			FT_UInt gidx;
++			FT_Bitmap *bmp;
++			int gx, gy;
++			int cell_x0, cell_y0, cell_x1, cell_y1;
++			unsigned char uch;
++
++			uch = (unsigned char)cl-&gt;ch;
++			if (uch &lt;= (unsigned char)' ')
++				continue;
++			fi = cl-&gt;fg;
++			if (cl-&gt;bold &amp;&amp; fi &lt; 8)
++				fi += 8;
++			if (fi &lt; 0 || fi &gt; 15)
++				fi = 7;
++			fg = t-&gt;palette[fi];
++
++			gidx = FT_Get_Char_Index(face, (FT_ULong)uch);
++			if (FT_Load_Glyph(face, gidx,
+ 					  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT))
+ 				continue;
+-			FT_Render_Glyph(face-&gt;glyph, FT_RENDER_MODE_NORMAL);
+-			FT_Bitmap *bmp = &amp;face-&gt;glyph-&gt;bitmap;
+-			int gx = c * cw + face-&gt;glyph-&gt;bitmap_left;
+-			int gy = r * ch + asc - face-&gt;glyph-&gt;bitmap_top;
++			if (FT_Render_Glyph(face-&gt;glyph, FT_RENDER_MODE_NORMAL))
++				continue;
++			bmp = &amp;face-&gt;glyph-&gt;bitmap;
++			gx = c * cw + face-&gt;glyph-&gt;bitmap_left;
++			gy = r * ch + asc - face-&gt;glyph-&gt;bitmap_top;
++			cell_x0 = c * cw;
++			cell_y0 = r * ch;
++			cell_x1 = cell_x0 + cw;
++			cell_y1 = cell_y0 + ch;
+ 
+ 			for (unsigned int br = 0; br &lt; bmp-&gt;rows; br++) {
+ 				int py = gy + (int)br;
+-				if (py &lt; 0 || py &gt;= px_h) continue;
+-				for (unsigned int bc = 0; bc &lt; bmp-&gt;width; bc++) {
++				if (py &lt; cell_y0 || py &gt;= cell_y1 ||
++				    py &lt; 0 || py &gt;= px_h)
++					continue;
++				for (unsigned int bc = 0; bc &lt; bmp-&gt;width;
++				     bc++) {
+ 					int px = gx + (int)bc;
+-					if (px &lt; 0 || px &gt;= px_w) continue;
+-					uint8_t a = bmp-&gt;buffer[br * bmp-&gt;pitch + bc];
+-					if (!a) continue;
+-					uint8_t inv = 255 - a;
+-					uint32_t dst = pixels[py * px_w + px];
+-					uint8_t ro = (uint8_t)((((fg &gt;&gt; 16) &amp; 0xFF) * a +
+-						     ((dst &gt;&gt; 16) &amp; 0xFF) * inv) / 255);
+-					uint8_t go = (uint8_t)((((fg &gt;&gt; 8) &amp; 0xFF) * a +
+-						     ((dst &gt;&gt; 8) &amp; 0xFF) * inv) / 255);
+-					uint8_t bo = (uint8_t)((((fg) &amp; 0xFF) * a +
+-						     ((dst) &amp; 0xFF) * inv) / 255);
++					uint8_t a, inv;
++					uint32_t dst;
++					uint8_t ro, go, bo;
++
++					if (px &lt; cell_x0 || px &gt;= cell_x1 ||
++					    px &lt; 0 || px &gt;= px_w)
++						continue;
++					a = bmp-&gt;buffer[br * (unsigned)bmp-&gt;pitch +
++							bc];
++					if (!a)
++						continue;
++					inv = (uint8_t)(255 - a);
++					dst = pixels[py * px_w + px];
++					ro = (uint8_t)((((fg &gt;&gt; 16) &amp; 0xFF) * a +
++							((dst &gt;&gt; 16) &amp; 0xFF) *
++								inv) /
++						       255);
++					go = (uint8_t)((((fg &gt;&gt; 8) &amp; 0xFF) * a +
++							((dst &gt;&gt; 8) &amp; 0xFF) *
++								inv) /
++						       255);
++					bo = (uint8_t)((((fg) &amp; 0xFF) * a +
++							((dst) &amp; 0xFF) * inv) /
++						       255);
+ 					pixels[py * px_w + px] =
+-						(ro &lt;&lt; 16) | (go &lt;&lt; 8) | bo;
++						(ro &lt;&lt; 16) | (go &lt;&lt; 8) | bo |
++						0xFF000000;
+ 				}
+ 			}
+ 		}
+ 	}
+ 
+-	/* cursor (thin bar) */
++	/* cursor (thin bar, clipped to cell) */
+ 	if (t-&gt;cur_row &gt;= 0 &amp;&amp; t-&gt;cur_row &lt; t-&gt;rows &amp;&amp;
+ 	    t-&gt;cur_col &gt;= 0 &amp;&amp; t-&gt;cur_col &lt; t-&gt;cols) {
+ 		int cx = t-&gt;cur_col * cw, cy = t-&gt;cur_row * ch;
++		int bar = cw &gt; 2 ? 2 : 1;
+ 		for (int dy = 0; dy &lt; ch &amp;&amp; cy + dy &lt; px_h; dy++)
+-			for (int dx = 0; dx &lt; 2 &amp;&amp; cx + dx &lt; px_w; dx++)
+-				pixels[(cy + dy) * px_w + (cx + dx)] = 0xFF00FF00;
++			for (int dx = 0; dx &lt; bar &amp;&amp; cx + dx &lt; px_w; dx++)
++				pixels[(cy + dy) * px_w + (cx + dx)] =
++					0xFF00FF00;
+ 	}
+ }
+ 
+@@ -522,20 +589,44 @@ void term_render(struct Term_State *t, struct BGTK_Context *ctx,
+ 
+ void term_measure_cell(struct Term_State *t, struct BGTK_Context *ctx)
+ {
+-	if (!ctx-&gt;ft_face) {
+-		t-&gt;cell_w = 7; t-&gt;cell_h = 14;
++	FT_Face face = bgtk_font_face(ctx, BGTK_FONT_MONO);
++	int asc, desc;
++	int max_adv = 0;
++	int max_extent = 0;
++	int c;
++
++	if (!face) {
++		t-&gt;cell_w = 8;
++		t-&gt;cell_h = 14;
+ 		return;
+ 	}
+-	FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
+-	int asc = ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
+-	int desc = -(ctx-&gt;ft_face-&gt;size-&gt;metrics.descender &gt;&gt; 6);
++	FT_Set_Pixel_Sizes(face, 0, ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14);
++	asc = face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
++	desc = -(face-&gt;size-&gt;metrics.descender &gt;&gt; 6);
+ 	t-&gt;cell_h = asc + desc;
+-	if (FT_Load_Char(ctx-&gt;ft_face, 'M', FT_LOAD_DEFAULT) == 0)
+-		t-&gt;cell_w = ctx-&gt;ft_face-&gt;glyph-&gt;advance.x &gt;&gt; 6;
+-	else
+-		t-&gt;cell_w = t-&gt;cell_h / 2;
+-	if (t-&gt;cell_w &lt; 1) t-&gt;cell_w = 1;
+-	if (t-&gt;cell_h &lt; 1) t-&gt;cell_h = 1;
++	if (t-&gt;cell_h &lt; 8)
++		t-&gt;cell_h = 8;
++
++	/* Use the max advance (and ink extent) over printable ASCII so a
++	 * non-mono fallback face cannot size cells from a skinny 'M' while
++	 * wider glyphs paint into the next column. */
++	for (c = 32; c &lt; 127; c++) {
++		int adv, extent;
++
++		if (FT_Load_Char(face, (FT_ULong)c,
++				 FT_LOAD_DEFAULT | FT_LOAD_RENDER) != 0)
++			continue;
++		adv = (int)(face-&gt;glyph-&gt;advance.x &gt;&gt; 6);
++		extent = face-&gt;glyph-&gt;bitmap_left +
++			 (int)face-&gt;glyph-&gt;bitmap.width;
++		if (adv &gt; max_adv)
++			max_adv = adv;
++		if (extent &gt; max_extent)
++			max_extent = extent;
++	}
++	t-&gt;cell_w = max_adv &gt; max_extent ? max_adv : max_extent;
++	if (t-&gt;cell_w &lt; 6)
++		t-&gt;cell_w = 6;
+ }
+ 
+ /* ------------------------------------------------------------------ */
+diff --git a/apps/terminal.c b/apps/terminal.c
+index 309eb78..20fe3d2 100644
+--- a/apps/terminal.c
++++ b/apps/terminal.c
+@@ -237,7 +237,7 @@ int main(void)
+ 		rows = 1;
+ 	bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d font='%s'",
+ 		 tmp_ts.cell_w, tmp_ts.cell_h, cols, rows, inner_w, inner_h,
+-		 ctx-&gt;font_path[0] ? ctx-&gt;font_path : "(none)");
++		 ctx-&gt;font_sans_path[0] ? ctx-&gt;font_sans_path : "(none)");
+ 
+ 	struct Term_State *ts = term_create(cols, rows);
+ 	if (!ts) {
+@@ -329,8 +329,22 @@ int main(void)
+ 			switch (msg.type) {
+ 			case MSG_INPUT_EVENT: {
+ 				struct InputEvent *ev = &amp;msg.data.input_event;
++				int mods;
++				char out[8];
++				int n;
++
+ 				if (ev-&gt;type != EV_KEY)
+ 					break;
++				/* Ignore input while unfocused (stale mod
++				 * edges and key repeats from other clients). */
++				if (!ctx-&gt;window_focused) {
++					/* Still track mod releases so a Ctrl
++					 * up after focus-loss cannot be lost
++					 * forever if focus returns mid-chord. */
++					if (ev-&gt;value == 0)
++						bgtk_update_modifiers(ctx, *ev);
++					break;
++				}
+ 				bgtk_update_modifiers(ctx, *ev);
+ 				if (ev-&gt;code == KEY_LEFTSHIFT ||
+ 				    ev-&gt;code == KEY_RIGHTSHIFT ||
+@@ -339,19 +353,47 @@ int main(void)
+ 				    ev-&gt;code == KEY_LEFTALT ||
+ 				    ev-&gt;code == KEY_RIGHTALT)
+ 					break;
+-				if (ev-&gt;value == 1 || ev-&gt;value == 2) {
+-					char out[8];
+-					int n = bgtk_key_to_bytes(
+-						ev-&gt;code,
+-						bgtk_mods_from_ctx(ctx),
+-						BGTK_KEY_TTY, out, sizeof(out));
+-					if (n &gt; 0)
+-						(void)write(master_fd, out, n);
++				/* Press / autorepeat only — never synthesize
++				 * on release. */
++				if (ev-&gt;value != 1 &amp;&amp; ev-&gt;value != 2)
++					break;
++				mods = bgtk_mods_from_ctx(ctx);
++				n = bgtk_key_to_bytes(ev-&gt;code, mods,
++						      BGTK_KEY_TTY, out,
++						      sizeof(out));
++				/*
++				 * Stuck-Ctrl safety: Ctrl+J/K are LF/VT (0x0A/
++				 * 0x0B). In vi that scrolls/corrupts the buffer
++				 * ("bottom lines jump up"). If we would emit a
++				 * C0 letter but only one mod side bit is set
++				 * from a single press that never got a matching
++				 * release pattern, still send it — the real
++				 * fix is focus/ESC clear. Log for diagnosis.
++				 */
++				if (n == 1 &amp;&amp; (unsigned char)out[0] &lt; 0x20 &amp;&amp;
++				    (ev-&gt;code == KEY_J || ev-&gt;code == KEY_K))
++					bgtk_log("TTY C0 for key %u mod=ctrl — "
++						 "if vi misbehaves, mod was stuck",
++						 ev-&gt;code);
++				if (n &gt; 0) {
++					if (write(master_fd, out, (size_t)n) &lt; 0)
++						bgtk_log_errno("PTY write key");
+ 				}
++				/* Esc is a natural "reset" in vi — drop any
++				 * sticky mod so the next j/k is a plain letter. */
++				if (ev-&gt;code == KEY_ESC)
++					bgtk_clear_modifiers(ctx);
+ 				break;
+ 			}
+ 			case MSG_FOCUS_CHANGE:
++				/* Clear sticky mod bits (a lost Ctrl release
++				 * otherwise turns j/k into LF/VT and vi insert
++				 * mode corrupts the buffer). Re-render cells
++				 * before compositing so focus dim is clean. */
+ 				ctx-&gt;window_focused = msg.data.focus_event.state;
++				bgtk_clear_modifiers(ctx);
++				term_render(ts, ctx, img-&gt;data.image.pixels,
++					    inner_w, inner_h);
+ 				bgtk_draw_widgets(ctx);
+ 				break;
+ 			case MSG_BUFFER_CHANGE:
+diff --git a/bgtk.c b/bgtk.c
+index 3f91552..54f108e 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -266,6 +266,35 @@ int bgtk_inject_event(struct BGTK_Context *ctx, struct InputEvent ev)
+ 	return res;
+ }
+ 
++/* Load and validate one FreeType face from path. Returns NULL on failure. */
++static FT_Face bgtk_load_face(struct BGTK_Context *ctx, const char *path,
++			      const char *role)
++{
++	FT_Face face = NULL;
++	int tw = 0, th = 0;
++
++	if (!ctx || !ctx-&gt;ft_library || !path || !path[0])
++		return NULL;
++	if (FT_New_Face(ctx-&gt;ft_library, path, 0, &amp;face) != 0) {
++		bgtk_log("could not load %s font '%s'", role ? role : "font",
++			 path);
++		return NULL;
++	}
++	/* Prefer Unicode cmap so ASCII is not remapped to symbol glyphs. */
++	FT_Select_Charmap(face, FT_ENCODING_UNICODE);
++	FT_Set_Pixel_Sizes(face, 0, ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14);
++	measure_text(face, "Ag", &amp;tw, &amp;th);
++	if (tw &lt;= 0 || th &lt;= 0) {
++		bgtk_log("%s font '%s' has no usable glyphs (tw=%d th=%d)",
++			 role ? role : "font", path, tw, th);
++		FT_Done_Face(face);
++		return NULL;
++	}
++	bgtk_log("loaded %s font '%s' size=%d", role ? role : "font", path,
++		 ctx-&gt;font_size);
++	return face;
++}
++
+ // Common resource setup (config, freetype, font) after buffer/conn/ dims are set.
+ // Used by both real bgtk_init and bgtk_init_mock.
+ static void bgtk_init_resources(struct BGTK_Context *ctx)
+@@ -280,14 +309,24 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
+ 	struct config config = {0};
+ 	parse_config(&amp;config);
+ 	ctx-&gt;theme = config.theme;
+-	strncpy(ctx-&gt;font_path, config.font_path, MAX_PATH_LEN - 1);
+-	ctx-&gt;font_path[MAX_PATH_LEN - 1] = '\0';
++	strncpy(ctx-&gt;font_sans_path, config.font_sans_path, MAX_PATH_LEN - 1);
++	ctx-&gt;font_sans_path[MAX_PATH_LEN - 1] = '\0';
++	strncpy(ctx-&gt;font_mono_path, config.font_mono_path, MAX_PATH_LEN - 1);
++	ctx-&gt;font_mono_path[MAX_PATH_LEN - 1] = '\0';
++	strncpy(ctx-&gt;font_serif_path, config.font_serif_path, MAX_PATH_LEN - 1);
++	ctx-&gt;font_serif_path[MAX_PATH_LEN - 1] = '\0';
+ 	ctx-&gt;font_size = config.font_size;
++	ctx-&gt;ft_face = NULL;
++	ctx-&gt;ft_face_mono = NULL;
++	ctx-&gt;ft_face_serif = NULL;
+ 
+-	bgtk_log("init resources %dx%d theme_bg=0x%08X text=0x%08X font_size=%d font='%s'",
++	bgtk_log("init resources %dx%d theme_bg=0x%08X text=0x%08X font_size=%d "
++		 "sans='%s' mono='%s' serif='%s'",
+ 		 ctx-&gt;width, ctx-&gt;height, ctx-&gt;theme.background,
+ 		 ctx-&gt;theme.button_text, ctx-&gt;font_size,
+-		 ctx-&gt;font_path[0] ? ctx-&gt;font_path : "(none)");
++		 ctx-&gt;font_sans_path[0] ? ctx-&gt;font_sans_path : "(none)",
++		 ctx-&gt;font_mono_path[0] ? ctx-&gt;font_mono_path : "(none)",
++		 ctx-&gt;font_serif_path[0] ? ctx-&gt;font_serif_path : "(none)");
+ 
+ 	// 1. Initialize FreeType
+ 	if (FT_Init_FreeType(&amp;ctx-&gt;ft_library)) {
+@@ -297,42 +336,27 @@ static void bgtk_init_resources(struct BGTK_Context *ctx)
+ 		return;
+ 	}
+ 
+-	// 2. The actual FT loading (New_Face, Select, sizing, validation) lives here
+-	//    in init_resources. The default *selection* (with #ifdefs) was done in
+-	//    init_config_defaults.
+-	if (ctx-&gt;font_path[0] != '\0') {
+-		if (FT_New_Face(ctx-&gt;ft_library, ctx-&gt;font_path, 0, &amp;ctx-&gt;ft_face) != 0) {
+-			bgtk_log("could not load font '%s'; text will use placeholders",
+-				 ctx-&gt;font_path);
+-			ctx-&gt;font_path[0] = '\0';
+-		} else {
+-			bgtk_log("loaded font '%s' size=%d", ctx-&gt;font_path, ctx-&gt;font_size);
+-		}
+-	} else {
+-		bgtk_log("no font path configured and no system default found");
+-	}
++	/* Load sans (UI), mono, serif faces. Selection defaults live in config. */
++	ctx-&gt;ft_face = bgtk_load_face(ctx, ctx-&gt;font_sans_path, "sans");
++	if (!ctx-&gt;ft_face)
++		bgtk_log("no usable UI/sans font; text will use placeholders");
++	ctx-&gt;ft_face_mono = bgtk_load_face(ctx, ctx-&gt;font_mono_path, "mono");
++	ctx-&gt;ft_face_serif = bgtk_load_face(ctx, ctx-&gt;font_serif_path, "serif");
++}
+ 
+-	if (ctx-&gt;ft_face) {
+-		// Force a Unicode charmap if the font has one. This prevents
+-		// "symbol" or other cmap encodings from mapping ASCII to the
+-		// wrong glyphs (which often look like triangles/boxes for .notdef).
+-		FT_Select_Charmap(ctx-&gt;ft_face, FT_ENCODING_UNICODE);
+-
+-		FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
+-
+-		// Validate that the loaded face actually produces glyph metrics.
+-		// Catches .ttc wrong face, symbol fonts, or broken files that
+-		// "load" without error but produce no visible text.
+-		int tw = 0, th = 0;
+-		measure_text(ctx-&gt;ft_face, "Ag", &amp;tw, &amp;th);
+-		if (tw &lt;= 0 || th &lt;= 0) {
+-			bgtk_log("font '%s' has no usable glyphs (tw=%d th=%d); dropping face",
+-				 ctx-&gt;font_path, tw, th);
+-			FT_Done_Face(ctx-&gt;ft_face);
+-			ctx-&gt;ft_face = NULL;
+-			ctx-&gt;font_path[0] = '\0';
+-		}
+-	}
++FT_Face bgtk_font_face(struct BGTK_Context *ctx, int role)
++{
++	FT_Face face = NULL;
++
++	if (!ctx)
++		return NULL;
++	if (role == BGTK_FONT_MONO)
++		face = ctx-&gt;ft_face_mono;
++	else if (role == BGTK_FONT_SERIF)
++		face = ctx-&gt;ft_face_serif;
++	else
++		face = ctx-&gt;ft_face;
++	return face ? face : ctx-&gt;ft_face;
+ }
+ 
+ struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
+@@ -451,11 +475,21 @@ void bgtk_destroy(struct BGTK_Context *ctx)
+ 	}
+ 	/* Release framebuffer (mmap for real apps, malloc for mock). */
+ 	bgtk_release_buffer(ctx);
++	if (ctx-&gt;ft_face_serif) {
++		FT_Done_Face(ctx-&gt;ft_face_serif);
++		ctx-&gt;ft_face_serif = NULL;
++	}
++	if (ctx-&gt;ft_face_mono) {
++		FT_Done_Face(ctx-&gt;ft_face_mono);
++		ctx-&gt;ft_face_mono = NULL;
++	}
+ 	if (ctx-&gt;ft_face) {
+ 		FT_Done_Face(ctx-&gt;ft_face);
++		ctx-&gt;ft_face = NULL;
+ 	}
+ 	if (ctx-&gt;ft_library) {
+ 		FT_Done_FreeType(ctx-&gt;ft_library);
++		ctx-&gt;ft_library = NULL;
+ 	}
+ 
+ 	free(ctx);
+@@ -532,6 +566,10 @@ void bgtk_set_window_focus(struct BGTK_Context *ctx, int focused)
+ 		return;
+ 	}
+ 	ctx-&gt;window_focused = focused;
++	/* Modifier releases only go to the focused client. Losing focus mid-
++	 * chord (or a peer exiting on Ctrl+C) otherwise leaves ctrl stuck —
++	 * terminal then turns j/k into Ctrl+J/K (LF/VT) and vi "mumbles". */
++	bgtk_clear_modifiers(ctx);
+ 	bgtk_draw_widgets(ctx);
+ }
+ 
+@@ -556,7 +594,17 @@ int bgtk_handle_input_event(struct BGTK_Context *ctx, struct InputEvent ev)
+ 		return 1;
+ 	}
+ 	bgtk_update_modifiers(ctx, ev);
+-	// Start event handling from the root widget
++
++	/* Keyboard: deliver straight to the focused widget. Nested
++	 * table/frame/scroll trees often fail to reach a focused text
++	 * field via a root walk (esp. HTML settings pages). */
++	if (ev.type == EV_KEY &amp;&amp; ev.code &lt; BTN_MISC &amp;&amp; ctx-&gt;focused_widget &amp;&amp;
++	    ctx-&gt;focused_widget-&gt;handle_event) {
++		if (ctx-&gt;focused_widget-&gt;handle_event(ctx-&gt;focused_widget, ev))
++			return 1;
++	}
++
++	// Start event handling from the root widget (pointer, etc.)
+ 	if (!ctx-&gt;root_widget) {
+ 		return 0;
+ 	}
+diff --git a/bgtk.h b/bgtk.h
+index 9f038be..3c6ceeb 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -176,14 +176,18 @@ struct BGTK_Context {
+ 	int width;
+ 	int height;
+ 
+-	// FreeType data
++	// FreeType data (ft_face is the UI/sans face; mono/serif optional)
+ 	FT_Library ft_library;
+ 	FT_Face ft_face;
++	FT_Face ft_face_mono;
++	FT_Face ft_face_serif;
+ 	int font_size;
+ 
+ 	// Theme data
+ 	BGTK_Theme theme;
+-	char font_path[MAX_PATH_LEN];
++	char font_sans_path[MAX_PATH_LEN];
++	char font_mono_path[MAX_PATH_LEN];
++	char font_serif_path[MAX_PATH_LEN];
+ 
+ 	// Single root widget for the widget tree
+ 	struct BGTK_Widget* root_widget;
+@@ -195,7 +199,8 @@ struct BGTK_Context {
+ 	// 0 = unfocused, 1 = focused.
+ 	int window_focused;
+ 
+-	// Modifier state (updated by bgtk_update_modifiers / handle_input).
++	/* Modifier state: bit0=left, bit1=right (see bgtk_update_modifiers).
++	 * Non-zero means that mod is active. Cleared on focus change. */
+ 	int shift_held;
+ 	int ctrl_held;
+ 	int alt_held;
+@@ -215,9 +220,12 @@ enum {
+ };
+ 
+ // Track Shift/Ctrl/Alt from an EV_KEY event (press/release/repeat).
++// Left/right keys are tracked separately (sticky-mod safe).
+ void bgtk_update_modifiers(struct BGTK_Context *ctx, struct InputEvent ev);
+ // Build mod bitflags from context held state.
+ int bgtk_mods_from_ctx(const struct BGTK_Context *ctx);
++// Clear all mod bits (call on window focus change).
++void bgtk_clear_modifiers(struct BGTK_Context *ctx);
+ // US QWERTY keycode → bytes. Returns length written (0 if unmapped).
+ int bgtk_key_to_bytes(int code, int mods, int mode, char *out, int max);
+ 
+@@ -231,8 +239,19 @@ int bgtk_is_app_quit_event(const struct BGTK_Context *ctx, struct InputEvent ev)
+ void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget);
+ 
+ // Sets window focus state (from server focus events).
++// Also clears shift/ctrl/alt held flags — releases while unfocused are lost.
+ void bgtk_set_window_focus(struct BGTK_Context* ctx, int focused);
+ 
++/* Font roles for multi-face support (sans = UI default). */
++enum {
++	BGTK_FONT_SANS = 0,
++	BGTK_FONT_MONO = 1,
++	BGTK_FONT_SERIF = 2
++};
++
++/* Face for role, falling back to UI/sans (ft_face) if that role is missing. */
++FT_Face bgtk_font_face(struct BGTK_Context *ctx, int role);
++
+ 
+ // BGTK_Widget_Type
+ enum BGTK_Widget_Type {
+diff --git a/config.c b/config.c
+index b298ef8..5b62503 100644
+--- a/config.c
++++ b/config.c
+@@ -9,6 +9,7 @@
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
+ #include &lt;strings.h&gt;  // strcasecmp
++#include &lt;sys/stat.h&gt;
+ #include &lt;unistd.h&gt;  // for access() in default font selection
+ 
+ // Helper: trim whitespace
+@@ -62,37 +63,114 @@ static int is_font_filename(const char *name)
+ 	       !strcasecmp(dot, ".ttc") || !strcasecmp(dot, ".otc");
+ }
+ 
+-/* Scan dir (non-recursive) for the first readable font file. Returns 1 if set. */
+-static int pick_font_in_dir(const char *dir, char *out, size_t outlen)
++/* Font family for default selection: sans (UI), mono, serif. */
++enum {
++	FONT_FAMILY_SANS = 0,
++	FONT_FAMILY_MONO = 1,
++	FONT_FAMILY_SERIF = 2
++};
++
++static void lower_copy(char *dst, size_t n, const char *src)
++{
++	size_t i;
++	if (!dst || n == 0)
++		return;
++	for (i = 0; i + 1 &lt; n &amp;&amp; src &amp;&amp; src[i]; i++)
++		dst[i] = (char)tolower((unsigned char)src[i]);
++	dst[i] = '\0';
++}
++
++/* Score a filename for a family; higher is better. 0 = not a candidate. */
++static int font_family_score(const char *name, int family)
++{
++	char low[256];
++	int mono, serif, sans;
++
++	if (!name || !name[0])
++		return 0;
++	lower_copy(low, sizeof(low), name);
++
++	mono = strstr(low, "mono") || strstr(low, "courier") ||
++	       strstr(low, "consolas") || strstr(low, "menlo") ||
++	       strstr(low, "monaco") || strstr(low, "inconsolata") ||
++	       strstr(low, "sourcecode") || strstr(low, "source code") ||
++	       strstr(low, "jetbrains") || strstr(low, "firacode") ||
++	       strstr(low, "fira code") || strstr(low, "hack") ||
++	       strstr(low, "fixed") || strstr(low, "sfnsmono") ||
++	       strstr(low, "sf mono") || strstr(low, "liberationmono");
++	serif = strstr(low, "serif") || strstr(low, "times") ||
++		strstr(low, "georgia") || strstr(low, "garamond") ||
++		strstr(low, "palatino") || strstr(low, "bookman") ||
++		strstr(low, "libertine") || strstr(low, "charter");
++	/* "sans" and common UI families; exclude mono/serif names. */
++	sans = strstr(low, "sans") || strstr(low, "arial") ||
++	       strstr(low, "helvetica") || strstr(low, "roboto") ||
++	       strstr(low, "ubuntu") || strstr(low, "noto") ||
++	       strstr(low, "dejavu") || strstr(low, "liberation") ||
++	       strstr(low, "inter") || strstr(low, "segoe");
++
++	if (family == FONT_FAMILY_MONO)
++		return mono ? 3 : 0;
++	if (family == FONT_FAMILY_SERIF) {
++		if (mono)
++			return 0;
++		if (strstr(low, "serif") &amp;&amp; !strstr(low, "sans"))
++			return 4;
++		return serif ? 3 : 0;
++	}
++	/* SANS: prefer explicit sans; reject mono; weak-accept generic UI fonts. */
++	if (mono)
++		return 0;
++	if (strstr(low, "sans") &amp;&amp; !strstr(low, "serif"))
++		return 4;
++	if (serif &amp;&amp; !strstr(low, "sans"))
++		return 0;
++	if (sans)
++		return 2;
++	return 1; /* any other proportional font as last-resort sans */
++}
++
++/* Scan dir for best readable font matching family. Returns 1 if set. */
++static int pick_font_in_dir(const char *dir, char *out, size_t outlen, int family)
+ {
+ 	DIR *d;
+ 	struct dirent *ent;
+ 	char path[MAX_PATH_LEN];
++	char best[MAX_PATH_LEN];
++	int best_score = 0;
+ 
+ 	if (!dir || !dir[0] || !out || outlen &lt; 8)
+ 		return 0;
++	best[0] = '\0';
+ 	d = opendir(dir);
+ 	if (!d)
+ 		return 0;
+ 	while ((ent = readdir(d)) != NULL) {
++		int sc;
+ 		if (!is_font_filename(ent-&gt;d_name))
+ 			continue;
++		sc = font_family_score(ent-&gt;d_name, family);
++		if (sc &lt;= best_score)
++			continue;
+ 		if (snprintf(path, sizeof(path), "%s/%s", dir, ent-&gt;d_name) &gt;=
+ 		    (int)sizeof(path))
+ 			continue;
+ 		if (access(path, R_OK) != 0)
+ 			continue;
+-		strncpy(out, path, outlen - 1);
+-		out[outlen - 1] = '\0';
+-		closedir(d);
+-		return 1;
++		strncpy(best, path, sizeof(best) - 1);
++		best[sizeof(best) - 1] = '\0';
++		best_score = sc;
+ 	}
+ 	closedir(d);
+-	return 0;
++	if (best_score &lt;= 0 || !best[0])
++		return 0;
++	strncpy(out, best, outlen - 1);
++	out[outlen - 1] = '\0';
++	return 1;
+ }
+ 
+ /* Try a path that may be a font file or a directory of fonts. */
+-static int pick_font_path(const char *path, char *out, size_t outlen)
++static int pick_font_path(const char *path, char *out, size_t outlen, int family)
+ {
+ 	DIR *d;
+ 
+@@ -101,78 +179,133 @@ static int pick_font_path(const char *path, char *out, size_t outlen)
+ 	d = opendir(path);
+ 	if (d) {
+ 		closedir(d);
+-		return pick_font_in_dir(path, out, outlen);
++		return pick_font_in_dir(path, out, outlen, family);
+ 	}
+ 	if (access(path, R_OK) != 0)
+ 		return 0;
++	/* Exact file path: accept if name fits family (or any for explicit file). */
++	if (font_family_score(path, family) &lt;= 0 &amp;&amp; family != FONT_FAMILY_SANS)
++		return 0;
+ 	strncpy(out, path, outlen - 1);
+ 	out[outlen - 1] = '\0';
+ 	return 1;
+ }
+ 
+-static void pick_default_font(char *out, size_t outlen)
++static void pick_default_font_family(char *out, size_t outlen, int family)
+ {
+ 	const char *home = getenv("HOME");
+ 	const char *xdg_data = getenv("XDG_DATA_HOME");
+ 	char dir[MAX_PATH_LEN];
++	const char **system_fonts;
++	static const char *sans_fonts[] = {
++#ifdef __linux__
++		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
++		"/usr/share/fonts/TTF/DejaVuSans.ttf",
++		"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
++		"/usr/share/fonts/truetype/freefont/FreeSans.ttf",
++		"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
++		"/share/fonts/truetype/dejavu/DejaVuSans.ttf",
++		"/share/fonts/TTF/DejaVuSans.ttf",
++		"/usr/share/fonts/dejavu/DejaVuSans.ttf",
++#endif
++#ifdef __APPLE__
++		"/System/Library/Fonts/Supplemental/Arial.ttf",
++		"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
++		"/Library/Fonts/Arial Unicode.ttf",
++		"/System/Library/Fonts/Helvetica.ttc",
++#endif
++		NULL
++	};
++	static const char *mono_fonts[] = {
++#ifdef __linux__
++		"/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
++		"/usr/share/fonts/TTF/DejaVuSansMono.ttf",
++		"/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
++		"/usr/share/fonts/truetype/freefont/FreeMono.ttf",
++		"/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
++		"/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
++		"/share/fonts/TTF/DejaVuSansMono.ttf",
++#endif
++#ifdef __APPLE__
++		"/System/Library/Fonts/SFNSMono.ttf",
++		"/System/Library/Fonts/Monaco.ttf",
++		"/System/Library/Fonts/Menlo.ttc",
++		"/Library/Fonts/Courier New.ttf",
++		"/System/Library/Fonts/Supplemental/Courier New.ttf",
++#endif
++		NULL
++	};
++	static const char *serif_fonts[] = {
++#ifdef __linux__
++		"/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
++		"/usr/share/fonts/TTF/DejaVuSerif.ttf",
++		"/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
++		"/usr/share/fonts/truetype/freefont/FreeSerif.ttf",
++		"/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf",
++		"/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
++		"/share/fonts/TTF/DejaVuSerif.ttf",
++#endif
++#ifdef __APPLE__
++		"/System/Library/Fonts/Supplemental/Times New Roman.ttf",
++		"/Library/Fonts/Times New Roman.ttf",
++		"/System/Library/Fonts/Supplemental/Georgia.ttf",
++		"/Library/Fonts/Georgia.ttf",
++		"/System/Library/Fonts/Times.ttc",
++#endif
++		NULL
++	};
++	int i;
++
++	out[0] = '\0';
++	if (family == FONT_FAMILY_MONO)
++		system_fonts = mono_fonts;
++	else if (family == FONT_FAMILY_SERIF)
++		system_fonts = serif_fonts;
++	else
++		system_fonts = sans_fonts;
++
++	/* Prefer well-known system paths first (predictable defaults). */
++	for (i = 0; system_fonts[i]; i++) {
++		if (pick_font_path(system_fonts[i], out, outlen, family))
++			return;
++	}
+ 
+-	/* User font folders (highest priority). */
++	/* Then scan user/system font directories for a matching family name. */
+ 	if (xdg_data &amp;&amp; xdg_data[0] == '/') {
+ 		snprintf(dir, sizeof(dir), "%s/fonts", xdg_data);
+-		if (pick_font_path(dir, out, outlen))
++		if (pick_font_path(dir, out, outlen, family))
+ 			return;
+ 	}
+ 	if (home &amp;&amp; home[0]) {
+ 		snprintf(dir, sizeof(dir), "%s/.local/share/fonts", home);
+-		if (pick_font_path(dir, out, outlen))
++		if (pick_font_path(dir, out, outlen, family))
+ 			return;
+ 		snprintf(dir, sizeof(dir), "%s/.fonts", home);
+-		if (pick_font_path(dir, out, outlen))
++		if (pick_font_path(dir, out, outlen, family))
+ 			return;
+ #ifdef __APPLE__
+ 		snprintf(dir, sizeof(dir), "%s/Library/Fonts", home);
+-		if (pick_font_path(dir, out, outlen))
++		if (pick_font_path(dir, out, outlen, family))
+ 			return;
+ #endif
+ 	}
+ #ifdef __APPLE__
+-	if (pick_font_path("/Library/Fonts", out, outlen))
++	if (pick_font_path("/Library/Fonts", out, outlen, family))
+ 		return;
+-#endif
+-#ifdef __linux__
+-	/* Common admin/user install location on Linux. */
+-	if (pick_font_path("/usr/local/share/fonts", out, outlen))
++	if (pick_font_path("/System/Library/Fonts", out, outlen, family))
++		return;
++	if (pick_font_path("/System/Library/Fonts/Supplemental", out, outlen,
++			   family))
+ 		return;
+ #endif
+-
+-	/* Fixed system candidates. */
+-	{
+-		static const char *system_fonts[] = {
+ #ifdef __linux__
+-			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+-			"/usr/share/fonts/TTF/DejaVuSans.ttf",
+-			"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+-			"/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+-			"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+-			"/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+-			"/share/fonts/TTF/DejaVuSans.ttf",
+-			"/usr/share/fonts/dejavu/DejaVuSans.ttf",
+-#endif
+-#ifdef __APPLE__
+-			"/System/Library/Fonts/Supplemental/Arial.ttf",
+-			"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+-			"/Library/Fonts/Arial Unicode.ttf",
+-			"/System/Library/Fonts/Helvetica.ttc",
+-			"/System/Library/Fonts/SFNSMono.ttf",
+-			"/System/Library/Fonts/Monaco.ttf",
++	if (pick_font_path("/usr/local/share/fonts", out, outlen, family))
++		return;
++	if (pick_font_path("/usr/share/fonts/truetype", out, outlen, family))
++		return;
++	if (pick_font_path("/usr/share/fonts/TTF", out, outlen, family))
++		return;
+ #endif
+-			NULL
+-		};
+-		for (int i = 0; system_fonts[i]; i++) {
+-			if (pick_font_path(system_fonts[i], out, outlen))
+-				return;
+-		}
+-	}
+ }
+ 
+ void init_config_defaults(struct config *config)
+@@ -191,19 +324,29 @@ void init_config_defaults(struct config *config)
+ 	config-&gt;theme.frame_border_size = 4;
+ 	config-&gt;theme.frame_border_color = 0xFF333333;
+ 
+-	// Font defaults (loaded at runtime from the config file under [font]).
+-	// If the user does not provide a path, we select a sane platform default here
+-	// (the #ifdefs live in the config package).
+-	config-&gt;font_path[0] = '\0';
++	/* Font defaults under [font]: sans, mono, serif, size. */
++	config-&gt;font_sans_path[0] = '\0';
++	config-&gt;font_mono_path[0] = '\0';
++	config-&gt;font_serif_path[0] = '\0';
+ 	config-&gt;font_size = 14;
+ 
+ 	// Background image fields (safe defaults)
+ 	config-&gt;path[0] = '\0';
+ 	config-&gt;mode = IMAGE_TILED;
+ 
+-	// Prefer user font folders, then system UI fonts.
+-	if (config-&gt;font_path[0] == '\0')
+-		pick_default_font(config-&gt;font_path, MAX_PATH_LEN);
++	pick_default_font_family(config-&gt;font_sans_path, MAX_PATH_LEN,
++				 FONT_FAMILY_SANS);
++	pick_default_font_family(config-&gt;font_mono_path, MAX_PATH_LEN,
++				 FONT_FAMILY_MONO);
++	pick_default_font_family(config-&gt;font_serif_path, MAX_PATH_LEN,
++				 FONT_FAMILY_SERIF);
++	/* Mono/serif fall back to UI font if nothing family-specific found. */
++	if (!config-&gt;font_mono_path[0] &amp;&amp; config-&gt;font_sans_path[0])
++		strncpy(config-&gt;font_mono_path, config-&gt;font_sans_path,
++			MAX_PATH_LEN - 1);
++	if (!config-&gt;font_serif_path[0] &amp;&amp; config-&gt;font_sans_path[0])
++		strncpy(config-&gt;font_serif_path, config-&gt;font_sans_path,
++			MAX_PATH_LEN - 1);
+ }
+ 
+ 
+@@ -219,12 +362,17 @@ void format_hex_color(uint32_t color, char *buf, int buflen)
+ int write_config(const struct config *config)
+ {
+ 	const char *home = getenv("HOME");
++	char dir[512];
++	char path[512];
++	FILE *f;
++
+ 	if (!home)
+ 		return -1;
+ 
+-	char path[512];
++	snprintf(dir, sizeof(dir), "%s/.config", home);
++	(void)mkdir(dir, 0755);
+ 	snprintf(path, sizeof(path), "%s/.config/bgtk.conf", home);
+-	FILE *f = fopen(path, "w");
++	f = fopen(path, "w");
+ 	if (!f) {
+ 		perror("[BGTK] Write config file");
+ 		return -1;
+@@ -257,8 +405,12 @@ int write_config(const struct config *config)
+ 	fprintf(f, "frame_border_color = %s\n", c);
+ 
+ 	fprintf(f, "\n[font]\n");
+-	if (config-&gt;font_path[0])
+-		fprintf(f, "path = %s\n", config-&gt;font_path);
++	if (config-&gt;font_sans_path[0])
++		fprintf(f, "sans = %s\n", config-&gt;font_sans_path);
++	if (config-&gt;font_mono_path[0])
++		fprintf(f, "mono = %s\n", config-&gt;font_mono_path);
++	if (config-&gt;font_serif_path[0])
++		fprintf(f, "serif = %s\n", config-&gt;font_serif_path);
+ 	fprintf(f, "size = %d\n", config-&gt;font_size);
+ 
+ 	fclose(f);
+@@ -309,8 +461,9 @@ int parse_config(struct config *config)
+ 		}
+ 
+ 		char key[32];
+-		char value[128];
+-		sscanf(trimmed, "%s = %[^\n]", key, value);
++		char value[MAX_PATH_LEN];
++		key[0] = value[0] = '\0';
++		sscanf(trimmed, "%31s = %511[^\n]", key, value);
+ 
+ 		if (strcmp(current_section, "background") == 0) {
+ 			if (strcmp(key, "type") == 0) {
+@@ -354,11 +507,19 @@ int parse_config(struct config *config)
+ 				    parse_hex_color(value);
+ 			}
+ 		} else if (strcmp(current_section, "font") == 0) {
+-
+-			if (strcmp(key, "path") == 0) {
+-				strncpy(config-&gt;font_path, value,
++			if (strcmp(key, "sans") == 0) {
++				strncpy(config-&gt;font_sans_path, value,
++					MAX_PATH_LEN - 1);
++				config-&gt;font_sans_path[MAX_PATH_LEN - 1] = '\0';
++			} else if (strcmp(key, "mono") == 0) {
++				strncpy(config-&gt;font_mono_path, value,
++					MAX_PATH_LEN - 1);
++				config-&gt;font_mono_path[MAX_PATH_LEN - 1] = '\0';
++			} else if (strcmp(key, "serif") == 0) {
++				strncpy(config-&gt;font_serif_path, value,
+ 					MAX_PATH_LEN - 1);
+-				config-&gt;font_path[MAX_PATH_LEN - 1] = '\0';
++				config-&gt;font_serif_path[MAX_PATH_LEN - 1] =
++					'\0';
+ 			} else if (strcmp(key, "size") == 0) {
+ 				config-&gt;font_size = atoi(value);
+ 			}
+diff --git a/config.h b/config.h
+index 5fbd13a..ef21432 100644
+--- a/config.h
++++ b/config.h
+@@ -34,7 +34,12 @@ typedef struct {
+ 
+ // Config structure
+ struct config {
+-	char font_path[MAX_PATH_LEN];
++	/* UI / proportional sans ([font] key: sans). */
++	char font_sans_path[MAX_PATH_LEN];
++	/* Monospace (terminal); falls back to sans if unset/unloadable. */
++	char font_mono_path[MAX_PATH_LEN];
++	/* Serif (documents / gemini body text optional). */
++	char font_serif_path[MAX_PATH_LEN];
+ 	int font_size;
+ 
+ 	BackgroundType type;
+diff --git a/keys.c b/keys.c
+index 088d110..3f64a19 100644
+--- a/keys.c
++++ b/keys.c
+@@ -4,19 +4,52 @@
+ #include &lt;linux/input.h&gt;
+ #include &lt;string.h&gt;
+ 
++/*
++ * Modifier bits (left | right tracked separately so releasing one side while
++ * the other is still down does not clear the mod, and a lost release on one
++ * side can still be fixed by releasing the other / focus clear).
++ * bit0 = left, bit1 = right.
++ */
++#define MOD_L 1
++#define MOD_R 2
++
+ void bgtk_update_modifiers(struct BGTK_Context *ctx, struct InputEvent ev)
+ {
+-	int held;
++	int on;
++	int *slot = NULL;
++	int bit = 0;
+ 
+ 	if (!ctx || ev.type != EV_KEY)
+ 		return;
+-	held = (ev.value != 0);
+-	if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT)
+-		ctx-&gt;shift_held = held;
+-	else if (ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL)
+-		ctx-&gt;ctrl_held = held;
+-	else if (ev.code == KEY_LEFTALT || ev.code == KEY_RIGHTALT)
+-		ctx-&gt;alt_held = held;
++	/* value: 0=release, 1=press, 2=repeat — only 0 clears. */
++	on = (ev.value != 0);
++
++	if (ev.code == KEY_LEFTSHIFT) {
++		slot = &amp;ctx-&gt;shift_held;
++		bit = MOD_L;
++	} else if (ev.code == KEY_RIGHTSHIFT) {
++		slot = &amp;ctx-&gt;shift_held;
++		bit = MOD_R;
++	} else if (ev.code == KEY_LEFTCTRL) {
++		slot = &amp;ctx-&gt;ctrl_held;
++		bit = MOD_L;
++	} else if (ev.code == KEY_RIGHTCTRL) {
++		slot = &amp;ctx-&gt;ctrl_held;
++		bit = MOD_R;
++	} else if (ev.code == KEY_LEFTALT) {
++		slot = &amp;ctx-&gt;alt_held;
++		bit = MOD_L;
++	} else if (ev.code == KEY_RIGHTALT) {
++		slot = &amp;ctx-&gt;alt_held;
++		bit = MOD_R;
++	} else {
++		return;
++	}
++
++	if (on)
++		*slot |= bit;
++	else
++		*slot &amp;= ~bit;
+ }
+ 
+ int bgtk_mods_from_ctx(const struct BGTK_Context *ctx)
+@@ -34,6 +67,15 @@ int bgtk_mods_from_ctx(const struct BGTK_Context *ctx)
+ 	return m;
+ }
+ 
++void bgtk_clear_modifiers(struct BGTK_Context *ctx)
++{
++	if (!ctx)
++		return;
++	ctx-&gt;shift_held = 0;
++	ctx-&gt;ctrl_held = 0;
++	ctx-&gt;alt_held = 0;
++}
++
+ int bgtk_is_app_quit_event(const struct BGTK_Context *ctx, struct InputEvent ev)
+ {
+ 	if (ev.type != EV_KEY || (ev.value != 1 &amp;&amp; ev.value != 2))
+diff --git a/test/headless.c b/test/headless.c
+index 105ea0f..c5fc9f4 100644
+--- a/test/headless.c
++++ b/test/headless.c
+@@ -274,6 +274,113 @@ int main(void)
+ 				return 1;
+ 			}
+ 		}
++		/* L/R mod bits: press both ctrls, release one, still ctrl. */
++		{
++			struct BGTK_Context *mctx = bgtk_init_mock(100, 40);
++			struct InputEvent me = {0};
++			char out[4];
++			int n;
++
++			me.type = EV_KEY;
++			me.value = 1;
++			me.code = KEY_LEFTCTRL;
++			bgtk_update_modifiers(mctx, me);
++			me.code = KEY_RIGHTCTRL;
++			bgtk_update_modifiers(mctx, me);
++			me.value = 0;
++			me.code = KEY_LEFTCTRL;
++			bgtk_update_modifiers(mctx, me);
++			if (!(bgtk_mods_from_ctx(mctx) &amp; BGTK_MOD_CTRL)) {
++				bgtk_log("headless: ctrl should stay held via right");
++				bgtk_destroy_mock(mctx);
++				return 1;
++			}
++			/* With ctrl held, j must be C0 (LF=10), not 'j' — this
++			 * is what breaks vi when mod state is wrong. */
++			n = bgtk_key_to_bytes(KEY_J, bgtk_mods_from_ctx(mctx),
++					      BGTK_KEY_TTY, out, sizeof(out));
++			if (n != 1 || out[0] != 10) {
++				bgtk_log("headless: Ctrl+J TTY expected 0x0a got n=%d b=%d",
++					 n, n &gt; 0 ? (unsigned char)out[0] : -1);
++				bgtk_destroy_mock(mctx);
++				return 1;
++			}
++			bgtk_clear_modifiers(mctx);
++			n = bgtk_key_to_bytes(KEY_J, bgtk_mods_from_ctx(mctx),
++					      BGTK_KEY_TTY, out, sizeof(out));
++			if (n != 1 || out[0] != 'j') {
++				bgtk_log("headless: plain J after clear expected 'j'");
++				bgtk_destroy_mock(mctx);
++				return 1;
++			}
++			bgtk_destroy_mock(mctx);
++		}
++
++		/* Focused field receives keys even if tree walk would miss it
++		 * (settings Theme page / nested HTML tables). */
++		{
++			struct BGTK_Context *fctx = bgtk_init_mock(300, 80);
++			struct BGTK_Widget *fi =
++				bgtk_text_input(fctx, "x", 120, 0,
++						(BGTK_Options){.padding = 4});
++			/* Nest the input under a frame so only focus routing
++			 * (not a root-level walk of a free widget) is tested. */
++			struct BGTK_Widget *ff =
++				bgtk_frame(fctx, fi, 200, 50,
++					   (BGTK_Options){.padding = 4});
++			fctx-&gt;root_widget = ff;
++			bgtk_set_focus(fctx, fi);
++			struct InputEvent fk = {0};
++			fk.type = EV_KEY;
++			fk.value = 1;
++			fk.code = KEY_Y;
++			/* Deliberately zero coords — keyboard has no position. */
++			fk.x = 0;
++			fk.y = 0;
++			bgtk_inject_event(fctx, fk);
++			if (!fi-&gt;data.text_input.text ||
++			    strcmp(fi-&gt;data.text_input.text, "xy") != 0) {
++				bgtk_log("headless: focus-key routing expected 'xy' got '%s'",
++					 fi-&gt;data.text_input.text
++						 ? fi-&gt;data.text_input.text
++						 : "(null)");
++				bgtk_destroy_mock(fctx);
++				return 1;
++			}
++			bgtk_destroy_mock(fctx);
++		}
++
++		/* Sticky mod: Ctrl down, focus leaves (release lost to other app
++		 * or peer exited on Ctrl+C), focus returns — typing must work. */
++		ke.value = 1;
++		ke.code = KEY_LEFTCTRL;
++		bgtk_inject_event(kctx, ke);
++		if (!kctx-&gt;ctrl_held) {
++			bgtk_log("headless: expected ctrl_held after press");
++			bgtk_destroy_mock(kctx);
++			return 1;
++		}
++		bgtk_set_window_focus(kctx, 0);
++		bgtk_set_window_focus(kctx, 1);
++		if (kctx-&gt;ctrl_held || kctx-&gt;shift_held || kctx-&gt;alt_held) {
++			bgtk_log("headless: mods stuck after focus cycle "
++				 "ctrl=%d shift=%d alt=%d",
++				 kctx-&gt;ctrl_held, kctx-&gt;shift_held,
++				 kctx-&gt;alt_held);
++			bgtk_destroy_mock(kctx);
++			return 1;
++		}
++		ke.code = KEY_X;
++		bgtk_inject_event(kctx, ke);
++		got = kti-&gt;data.text_input.text;
++		if (!got || strcmp(got, "x") != 0) {
++			bgtk_log("headless: expected 'x' after sticky-ctrl fix got '%s'",
++				 got ? got : "(null)");
++			bgtk_destroy_mock(kctx);
++			return 1;
++		}
++		bgtk_draw_widgets(kctx);
++		take_screenshot(kctx, "headless_04d_focus_clears_mods.png");
+ 		bgtk_destroy_mock(kctx);
+ 	}
+ 
+diff --git a/test/test_gemini_browser.c b/test/test_gemini_browser.c
+index e0825d3..4b17c8b 100644
+--- a/test/test_gemini_browser.c
++++ b/test/test_gemini_browser.c
+@@ -33,7 +33,53 @@ static struct BGTK_Widget *link_target_widgets[128];
+ static char link_targets[128][512];
+ static int num_page_links = 0;
+ 
+-/* --- Real Gemini client (copied/adapted from the main app for the test) --- */
++/* --- Real Gemini client (must retry TLS_WANT_POLLIN/POLLOUT; n&lt;=0 is wrong) --- */
++
++#ifndef TLS_WANT_POLLIN
++#define TLS_WANT_POLLIN (-2)
++#endif
++#ifndef TLS_WANT_POLLOUT
++#define TLS_WANT_POLLOUT (-3)
++#endif
++
++static ssize_t test_tls_read(struct tls *t, void *buf, size_t len)
++{
++	int waited = 0;
++	for (;;) {
++		ssize_t n = tls_read(t, buf, len);
++		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
++			if (waited &gt;= 15000)
++				return -1;
++			usleep(5000);
++			waited += 5;
++			continue;
++		}
++		return n;
++	}
++}
++
++static ssize_t test_tls_write(struct tls *t, const void *buf, size_t len)
++{
++	int waited = 0;
++	const char *p = buf;
++	size_t left = len;
++	while (left &gt; 0) {
++		ssize_t n = tls_write(t, p, left);
++		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
++			if (waited &gt;= 15000)
++				return -1;
++			usleep(5000);
++			waited += 5;
++			continue;
++		}
++		if (n &lt;= 0)
++			return n;
++		p += n;
++		left -= (size_t)n;
++		waited = 0;
++	}
++	return (ssize_t)len;
++}
+ 
+ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, char **out_body)
+ {
+@@ -101,7 +147,7 @@ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, c
+ 
+ 	char req[1200];
+ 	int rlen = snprintf(req, sizeof(req), "%s\r\n", selector);
+-	if (tls_write(ctx_tls, req, (size_t)rlen) &lt; 0) {
++	if (test_tls_write(ctx_tls, req, (size_t)rlen) &lt; 0) {
+ 		tls_close(ctx_tls);
+ 		tls_free(ctx_tls);
+ 		tls_config_free(cfg);
+@@ -111,7 +157,7 @@ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, c
+ 	char hbuf[1024] = {0};
+ 	int hlen = 0;
+ 	while (hlen &lt; (int)sizeof(hbuf) - 1) {
+-		ssize_t n = tls_read(ctx_tls, hbuf + hlen, 1);
++		ssize_t n = test_tls_read(ctx_tls, hbuf + hlen, 1);
+ 		if (n &lt;= 0)
+ 			break;
+ 		hlen += (int)n;
+@@ -139,7 +185,7 @@ static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, c
+ 	}
+ 	for (;;) {
+ 		char rbuf[1024];
+-		ssize_t n = tls_read(ctx_tls, rbuf, sizeof(rbuf));
++		ssize_t n = test_tls_read(ctx_tls, rbuf, sizeof(rbuf));
+ 		if (n &lt;= 0)
+ 			break;
+ 		if (blen + (size_t)n + 1 &gt; cap) {
+diff --git a/test/test_settings.c b/test/test_settings.c
+index 09dff85..2cc8f63 100644
+--- a/test/test_settings.c
++++ b/test/test_settings.c
+@@ -43,6 +43,34 @@ int main(void)
+ 	bgtk_draw_widgets(ctx);
+ 	take_screenshot(ctx, "settings_00_background.png");
+ 
++	/* 00b: Click Background Apply (must hit-test after preview insert).
++	 * Content scrollable is on the right; Apply sits under the preview. */
++	{
++		struct config *sc = settings_get_config();
++		uint32_t before = sc ? sc-&gt;color : 0;
++		struct InputEvent click = {0};
++		click.type = EV_KEY;
++		click.code = BTN_LEFT;
++		click.value = 1;
++		/* Screen pos of Apply (content scroll ~161,17; Apply ~4,190). */
++		click.x = 192;
++		click.y = 225;
++		bgtk_inject_event(ctx, click);
++		click.value = 0;
++		if (!bgtk_inject_event(ctx, click)) {
++			fprintf(stderr,
++				"test_settings: Background Apply click not handled\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Apply reads the field (still default) and rewrites config. */
++		if (sc &amp;&amp; sc-&gt;color != before &amp;&amp; before != 0) {
++			/* color may stay the same if field unchanged — ok */
++		}
++		(void)before;
++		take_screenshot(ctx, "settings_00b_bg_apply.png");
++	}
++
+ 	/* Sidebar buttons are inside a scrollable; their content-space positions
+ 	 * are offset by the scrollable's screen position (~8px) plus internal
+ 	 * padding/margin.  Each button is ~38px tall with ~4px gap.
+@@ -79,7 +107,7 @@ int main(void)
+ 	}
+ 	take_screenshot(ctx, "settings_02_shortcuts.png");
+ 
+-	/* 03: Click "Font" */
++	/* 03: Click "Font" — sans/mono/serif pickers + size */
+ 	{
+ 		struct InputEvent click = {0};
+ 		click.type = EV_KEY;
+@@ -93,6 +121,39 @@ int main(void)
+ 	}
+ 	take_screenshot(ctx, "settings_03_font.png");
+ 
++	/* Defaults must include distinct mono/serif paths (or at least set). */
++	{
++		struct config *sc = settings_get_config();
++		if (!sc || !sc-&gt;font_sans_path[0]) {
++			fprintf(stderr, "test_settings: missing UI/sans font path\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		if (!sc-&gt;font_mono_path[0] || !sc-&gt;font_serif_path[0]) {
++			fprintf(stderr,
++				"test_settings: mono/serif defaults missing "
++				"mono='%s' serif='%s'\n",
++				sc-&gt;font_mono_path, sc-&gt;font_serif_path);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++	}
++
++	/* Open Mono picker (second font row button, content panel). */
++	{
++		struct InputEvent click = {0};
++		click.type = EV_KEY;
++		click.code = BTN_LEFT;
++		click.value = 1;
++		/* Content panel ~x=200; Mono row roughly under Sans. */
++		click.x = 280;
++		click.y = 95;
++		bgtk_inject_event(ctx, click);
++		click.value = 0;
++		bgtk_inject_event(ctx, click);
++	}
++	take_screenshot(ctx, "settings_03b_font_mono_open.png");
++
+ 	/* 04: Click "Theme" */
+ 	{
+ 		struct InputEvent click = {0};
+@@ -107,6 +168,58 @@ int main(void)
+ 	}
+ 	take_screenshot(ctx, "settings_04_theme.png");
+ 
++	/* 04b: Focus first theme color field and type a char (nested table). */
++	{
++		struct InputEvent click = {0};
++		struct InputEvent key = {0};
++		struct config *sc;
++		const char *got;
++
++		click.type = EV_KEY;
++		click.code = BTN_LEFT;
++		click.value = 1;
++		/* Content scroll ~161,17; first input ~151,14 (see probe). */
++		click.x = 161 + 151 + 20;
++		click.y = 17 + 14 + 12;
++		bgtk_inject_event(ctx, click);
++		click.value = 0;
++		bgtk_inject_event(ctx, click);
++
++		key.type = EV_KEY;
++		key.value = 1;
++		key.code = KEY_A;
++		key.x = 0;
++		key.y = 0;
++		if (!bgtk_inject_event(ctx, key)) {
++			fprintf(stderr,
++				"test_settings: theme field key not handled\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		sc = settings_get_config();
++		(void)sc;
++		/* Field text is on the widget; re-read via tree is heavy —
++		 * screenshot + non-zero handle is the gate. Append check via
++		 * focused widget if set. */
++		if (ctx-&gt;focused_widget &amp;&amp;
++		    ctx-&gt;focused_widget-&gt;type == BGTK_WIDGET_TEXT_INPUT) {
++			got = ctx-&gt;focused_widget-&gt;data.text_input.text;
++			if (!got || !strchr(got, 'a')) {
++				fprintf(stderr,
++					"test_settings: theme type expected 'a' in '%s'\n",
++					got ? got : "(null)");
++				bgtk_destroy_mock(ctx);
++				return 1;
++			}
++		} else {
++			fprintf(stderr,
++				"test_settings: theme input not focused after click\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		take_screenshot(ctx, "settings_04b_theme_typed.png");
++	}
++
+ 	/* 05: Go back to Background */
+ 	{
+ 		struct InputEvent click = {0};
+diff --git a/test/test_terminal.c b/test/test_terminal.c
+index 91a621b..ae6e192 100644
+--- a/test/test_terminal.c
++++ b/test/test_terminal.c
+@@ -25,6 +25,8 @@
+ #include &lt;pty.h&gt;
+ #endif
+ 
++#include &lt;linux/input.h&gt;
++
+ #include "bgtk.h"
+ #include "internal.h"
+ #include "terminal.h"
+@@ -296,6 +298,64 @@ int main(void)
+ 		}
+ 	}
+ 
++	/* Vim j-at-bottom scroll: region 1..(rows-1), LF, restore, new line.
++	 * Top of text region must advance (line 01 → 02); status row untouched. */
++	{
++		struct Term_State *vs = term_create(20, 10);
++		char row0[24], row8[24];
++		int c;
++		char out[4];
++		int n;
++
++		for (int r = 0; r &lt; 9; r++) {
++			char b[48];
++			snprintf(b, sizeof(b),
++				 "\033[%d;1Hline %02d XXXXXXXXXXX", r + 1,
++				 r + 1);
++			term_feed(vs, b, -1);
++		}
++		term_feed(vs,
++			  "\033[?25l\033[1;9r\033[9;1H\r\n\033[1;10r"
++			  "\033[9;1Hline 10 XXXXXXXXXXX\r\033[?25h",
++			  -1);
++		for (c = 0; c &lt; 20; c++) {
++			char ch0 = vs-&gt;cells[c].ch;
++			char ch8 = vs-&gt;cells[8 * 20 + c].ch;
++			row0[c] = (ch0 &gt;= 32 &amp;&amp; ch0 &lt; 127) ? ch0 : '.';
++			row8[c] = (ch8 &gt;= 32 &amp;&amp; ch8 &lt; 127) ? ch8 : '.';
++		}
++		row0[20] = row8[20] = '\0';
++		if (!strstr(row0, "line 02") || !strstr(row8, "line 10")) {
++			bgtk_log("vim j-scroll failed row0='%s' row8='%s'",
++				 row0, row8);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Ctrl+J must map to LF; plain j must be 'j' (stuck-ctrl check). */
++		n = bgtk_key_to_bytes(KEY_J, BGTK_MOD_CTRL, BGTK_KEY_TTY, out, 4);
++		if (n != 1 || out[0] != 10) {
++			bgtk_log("Ctrl+J map broken");
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		n = bgtk_key_to_bytes(KEY_J, 0, BGTK_KEY_TTY, out, 4);
++		if (n != 1 || out[0] != 'j') {
++			bgtk_log("plain j map broken");
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		term_destroy(vs);
++	}
++
+ 	printf("test_terminal complete. PNG frames written.\n");
+ 
+ 	free(img-&gt;data.image.pixels);
+diff --git a/widgets.c b/widgets.c
+index ef5f58f..1fddd69 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -373,38 +373,38 @@ scrollable_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ // Frame event handler
+ static int frame_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ {
++	struct BGTK_Widget *child = widget-&gt;data.frame.child;
++
+ 	// Keyboard events don't have meaningful pointer coordinates.
+ 	// Forward them to the child without bounds checking.
+ 	if (ev.type == EV_KEY) {
+-		if (widget-&gt;data.frame.child) {
+-			return widget-&gt;data.frame.child-&gt;handle_event(widget-&gt;
+-								      data.
+-								      frame.
+-								      child,
+-								      ev);
+-		}
++		if (child)
++			return child-&gt;handle_event(child, ev);
++		return 0;
+ 	}
+ 	// First check if the event is within the frame's bounds
+ 	if (!(ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+ 	      ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h))) {
+ 		return 0;	// Event not in this widget
+ 	}
+-	// Pass event to child widget if it exists
+-	if (widget-&gt;data.frame.child) {
+-		// Events use absolute coordinates.
+-		// Only forward to the child if the event is within the child's
+-		// absolute bounds.
+-		int cx0 = widget-&gt;data.frame.child-&gt;x;
+-		int cy0 = widget-&gt;data.frame.child-&gt;y;
+-		int cx1 = cx0 + widget-&gt;data.frame.child-&gt;w;
+-		int cy1 = cy0 + widget-&gt;data.frame.child-&gt;h;
++	// Pass event to child widget if it exists and the point is in the child
++	if (child) {
++		int cx0 = child-&gt;x;
++		int cy0 = child-&gt;y;
++		int cx1 = cx0 + child-&gt;w;
++		int cy1 = cy0 + child-&gt;h;
+ 
+ 		if (ev.x &gt;= cx0 &amp;&amp; ev.x &lt; cx1 &amp;&amp; ev.y &gt;= cy0 &amp;&amp; ev.y &lt; cy1) {
+-			return widget-&gt;data.frame.child-&gt;handle_event(widget-&gt;
+-								      data.
+-								      frame.
+-								      child,
+-								      ev);
++			if (child-&gt;handle_event(child, ev))
++				return 1;
++		}
++		/* Click on cell padding (common in HTML tables): focus a
++		 * text-input child so the user can type without a pixel-perfect
++		 * hit on the field. */
++		if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1 &amp;&amp;
++		    child-&gt;type == BGTK_WIDGET_TEXT_INPUT) {
++			bgtk_set_focus(widget-&gt;ctx, child);
++			return 1;
+ 		}
+ 	}
+ 	// If clicked inside the frame but not on the child, focus the frame.
+</pre>

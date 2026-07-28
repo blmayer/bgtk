@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 0f13cb9</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 0f13cb9
+parent <a href=commit-973f06e.html>973f06e</a> 
+author myr &lt;myr@terminal.pink&gt;
+date   2026-02-26T15:12:43-03:00
+
+    fixed changing images
+
+<a href=tree-0f13cb9.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/image_viewer.c b/apps/image_viewer.c
+index 8d5925e..b5086c7 100644
+--- a/apps/image_viewer.c
++++ b/apps/image_viewer.c
+@@ -8,6 +8,7 @@
+ static struct BGTK_Context* ctx = NULL;
+ static struct BGTK_Widget* text_input = NULL;
+ static struct BGTK_Widget* image_widget = NULL;
++static struct BGTK_Widget* col = NULL;  // Parent list widget
+ 
+ static void load_button_clicked(void) {
+ 	if (!ctx || !text_input || text_input-&gt;type != BGTK_WIDGET_TEXT_INPUT) {
+@@ -21,15 +22,17 @@ static void load_button_clicked(void) {
+ 	}
+ 
+ 	struct BGTK_Widget* new_image = bgtk_image(ctx,
+-						   path,
+-						   800,
+-						   520,
+-						   (BGTK_Options){
+-						       .flags = 0,
+-						       .padding = 5,
+-						       .margin = 2,
+-						   });
++					   path,
++					   800,
++					   520,
++					   (BGTK_Options){
++					       .flags = 0,
++					       .padding = 5,
++					       .margin = 2,
++					   });
+ 	if (new_image) {
++		// Replace pointer in parent list before freeing old widget
++		col-&gt;data.list_widget.items[1] = new_image;
+ 		free(image_widget);
+ 		image_widget = new_image;
+ 	}
+@@ -118,8 +121,7 @@ int main(void) {
+ 
+ 	struct BGTK_Widget* col_widgets[2] = {row, image_widget};
+ 
+-	struct BGTK_Widget* col =
+-	    bgtk_list(ctx,
++	col = bgtk_list(ctx,
+ 		      col_widgets,
+ 		      2,
+ 		      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL});
+</pre>

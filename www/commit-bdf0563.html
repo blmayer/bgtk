@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk bdf0563</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit bdf0563
+parent <a href=commit-9fb3ffe.html>9fb3ffe</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-06-21T22:15:42-03:00
+
+    Fixed private DSR and secondary DA responses for vim
+
+<a href=tree-bdf0563.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/term_core.c b/apps/term_core.c
+index 6ece143..1e4e276 100644
+--- a/apps/term_core.c
++++ b/apps/term_core.c
+@@ -248,14 +248,18 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 	case 'n':
+ 		if (p0 == 6 &amp;&amp; t-&gt;pty_fd &gt;= 0) {
+ 			char buf[32];
+-			int n = snprintf(buf, sizeof(buf), "\033[%d;%dR",
++			int n = snprintf(buf, sizeof(buf),
++					 t-&gt;csi_priv ? "\033[?%d;%dR"
++						     : "\033[%d;%dR",
+ 					 t-&gt;cur_row + 1, t-&gt;cur_col + 1);
+ 			(void)write(t-&gt;pty_fd, buf, n);
+ 		}
+ 		break;
+ 	case 'c':
+ 		if (t-&gt;pty_fd &gt;= 0) {
+-			const char *resp = "\033[?1;2c";
++			const char *resp = t-&gt;csi_priv
++				? "\033[&gt;0;0;0c"   /* Secondary DA */
++				: "\033[?1;2c";    /* Primary DA */
+ 			(void)write(t-&gt;pty_fd, resp, strlen(resp));
+ 		}
+ 		break;
+</pre>

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 7ed64a9</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 7ed64a9
+parent <a href=commit-e4ce4ad.html>e4ce4ad</a> 
+author myr &lt;myr@terminal.pink&gt;
+date   2025-12-28T13:30:03-03:00
+
+    fixed build
+
+<a href=tree-7ed64a9.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/app.c b/app.c
+index 90da360..5811bd9 100644
+--- a/app.c
++++ b/app.c
+@@ -16,8 +16,8 @@ void button_callback(void) {
+ 		puts(" setting new label");
+ 		char counter_text[32];
+ 		sprintf(counter_text, "Counter: %d", counter);
+-		printf("calling set_label: %p\n", counter_label-&gt;set_label);
+-		counter_label-&gt;set_label(counter_label, counter_text);
++		printf("calling set_label: %p\n", counter_label-&gt;data.label.set_label);
++		counter_label-&gt;data.label.set_label(counter_label, counter_text);
+ 	}
+ }
+ 
+diff --git a/bgtk.c b/bgtk.c
+index 1f2795b..0b595da 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -65,15 +65,15 @@ void bgtk_destroy(struct BGTK_Context* ctx) {
+ 	// Free the root widget and its children recursively
+ 	if (ctx-&gt;root_widget) {
+ 		if (ctx-&gt;root_widget-&gt;type == BGTK_WIDGET_SCROLLABLE) {
+-			if (ctx-&gt;root_widget-&gt;data.scrollable.widgets) {
++			if (ctx-&gt;root_widget-&gt;data.scrollable.items) {
+ 				for (int i = 0;
+ 				     i &lt; ctx-&gt;root_widget-&gt;data.scrollable
+ 					     .widget_count;
+ 				     i++) {
+ 					free(ctx-&gt;root_widget-&gt;data.scrollable
+-						 .widgets[i]);
++						 .items[i]);
+ 				}
+-				free(ctx-&gt;root_widget-&gt;data.scrollable.widgets);
++				free(ctx-&gt;root_widget-&gt;data.scrollable.items);
+ 			}
+ 			if (ctx-&gt;root_widget-&gt;data.scrollable.tmp) {
+ 				free(ctx-&gt;root_widget-&gt;data.scrollable.tmp);
+@@ -199,7 +199,7 @@ int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev) {
+ 				for (int i = 0;
+ 				     i &lt; w-&gt;data.scrollable.widget_count; i++) {
+ 					struct BGTK_Widget* item =
+-					    w-&gt;data.scrollable.widgets[i];
++					    w-&gt;data.scrollable.items[i];
+ 					if (ev.x &gt;= item-&gt;x &amp;&amp;
+ 					    ev.x &lt; (item-&gt;x + item-&gt;w) &amp;&amp;
+ 					    ev.y &gt;= item-&gt;y &amp;&amp;
+diff --git a/bgtk.h b/bgtk.h
+index de1c21e..f904409 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -59,6 +59,7 @@ struct BGTK_Widget {
+ 	union {
+ 		struct {
+ 			struct BGTK_Widget* text;  // Text widget for label
++			void (*set_label)(struct BGTK_Widget* self, char*);
+ 		} label;
+ 		struct {
+ 			struct BGTK_Widget* label;  // Label widget for button
+@@ -68,7 +69,7 @@ struct BGTK_Widget {
+ 			char* text;
+ 		} text;
+ 		struct {
+-			struct BGTK_Widget** widgets;  // List of child widgets
++			struct BGTK_Widget** items;  // List of child widgets
+ 			int widget_count;
+ 			int widget_capacity;
+ 			int scroll_y;	     // Current scroll position
+@@ -86,6 +87,10 @@ struct BGTK_Widget {
+ 
+ // --- Core Functions ---
+ 
++void bgtk_draw_widgets(struct BGTK_Context* ctx);
++
++void bgtk_destroy(struct BGTK_Context* ctx);
++
+ // Initializes BGTK with given dimensions.
+ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width, int height);
+ 
+diff --git a/drawing.c b/drawing.c
+index b09d9f5..30477f0 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -287,7 +287,7 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
+ 				for (int i = 0;
+ 				     i &lt; w-&gt;data.scrollable.widget_count; i++) {
+ 					struct BGTK_Widget* child =
+-					    w-&gt;data.scrollable.widgets[i];
++					    w-&gt;data.scrollable.items[i];
+ 
+ 					child-&gt;x = w-&gt;x + w-&gt;margin + w-&gt;padding;
+ 					if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+diff --git a/widgets.c b/widgets.c
+index 9e06609..fdb8222 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -31,7 +31,7 @@ void set_label(struct BGTK_Widget* widget, char* label) {
+ 	}
+ 
+ 	// Create a new text widget for the label
+-	struct BGTK_Widget* text_widget = bgtk_text(widget-&gt;ctx, label, 0);
++	struct BGTK_Widget* text_widget = bgtk_text(widget-&gt;ctx, label, (BGTK_Options){ .flags = 0 });
+ 	if (!text_widget) {
+ 		perror(
+ 		    "BGTK Failed to create text widget for "
+@@ -57,7 +57,7 @@ struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text, BGTK_Option
+ 		return NULL;
+ 	}
+ 
+-	widget-&gt;set_label = set_label;
++	widget-&gt;data.label.set_label = set_label;
+ 
+ 	// Create a text widget for the label
+ 	struct BGTK_Widget* text_widget = bgtk_text(ctx, text, (BGTK_Options){ .flags = 0 });
+@@ -80,7 +80,7 @@ struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text, BGTK_Option
+ 
+ struct BGTK_Widget* bgtk_text(struct BGTK_Context* ctx, char* text, BGTK_Options options) {
+ 	printf("BGTK creating text widget\n");
+-	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_TEXT, flags);
++	struct BGTK_Widget* widget = widget_new(ctx, BGTK_WIDGET_TEXT, options);
+ 	printf("BGTK allocated text widget\n");
+ 	if (!widget) {
+ 		perror("BGTK Failed to create new widget");
+@@ -133,7 +133,7 @@ struct BGTK_Widget* bgtk_scrollable(struct BGTK_Context* ctx,
+ 		return NULL;
+ 	}
+ 
+-	widget-&gt;data.scrollable.widgets = (struct BGTK_Widget**)calloc(
++	widget-&gt;data.scrollable.items = (struct BGTK_Widget**)calloc(
+ 	    widget_count, sizeof(struct BGTK_Widget*));
+ 	if (!widget-&gt;data.scrollable.items) {
+ 		perror("calloc");
+</pre>

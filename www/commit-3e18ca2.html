@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 3e18ca2</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 3e18ca2
+parent <a href=commit-7eb0087.html>7eb0087</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-16T13:03:31-03:00
+
+    fix: input focus geometry, settings field focus, Labyrinth home
+
+    Keep text-input border thickness stable when focused (text no longer
+    drops). Stop labels/containers stealing keyboard focus so settings
+    fields stay editable. Load about:home from static HTML at startup.
+    Document www snapshot via git archive --prefix=bgtk/ in AGENTS.md.
+
+<a href=tree-3e18ca2.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 5c72cc5..8b865ea 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -41,7 +41,7 @@ works on Linux and macOS without BGCE.
+ │   ├── test_labyrinth.c
+ │   ├── server_client.sh
+ │   └── screenshots/  - PNG output from headless tests (gitignored)
+-└── www/              - Sample HTML for html tests
++└── www/              - Site snapshot (index.html + bgtk.tar.gz source tarball)
+ ```
+ 
+ ## Key Components
+@@ -283,6 +283,25 @@ etc.) still need BGCE on Linux.
+ ### HTML
+ - `bgtk_html_parse()`, `bgtk_html_parse_inline()`
+ 
++## Source snapshot (`www/bgtk.tar.gz`)
++
++When the user asks to refresh the site tarball, commit, or push a release
++snapshot, **always** rebuild with `git archive` and a `bgtk/` prefix (so
++extract yields `bgtk/...`, matching README download instructions):
++
++```bash
++git archive --worktree-attributes --format=tar.gz --prefix=bgtk/ \
++	-o www/bgtk.tar.gz HEAD
++```
++
++Notes:
++- Prefer this over hand-rolled `tar` (includes only tracked files; respects
++  `.gitattributes` `export-ignore`).
++- `www/bgtk.tar.gz` is listed as `export-ignore` so the archive does not nest
++  itself.
++- Rebuild **after** the code commit is on `HEAD` (or include both in order:
++  commit code → archive → commit tarball), then push.
++
+ This is a toolkit for the BGCE display server. It works by directly writing to
+ a graphical buffer; this library lets developers create user interfaces easily.
+ Headless/mock mode lets you develop and verify UIs by inspecting PNG screenshots
+diff --git a/apps/labyrinth.c b/apps/labyrinth.c
+index 0552720..28428f8 100644
+--- a/apps/labyrinth.c
++++ b/apps/labyrinth.c
+@@ -38,6 +38,7 @@
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
++#include &lt;strings.h&gt;
+ #include &lt;sys/socket.h&gt;
+ #include &lt;sys/stat.h&gt;
+ #include &lt;time.h&gt;
+@@ -478,6 +479,7 @@ static int hist_back(char *out, size_t n)
+ /* Built-in pages &amp; fetch                                             */
+ /* ------------------------------------------------------------------ */
+ 
++/* Pure ASCII so any locale/charset build still embeds correctly. */
+ static const char *HOME_HTML =
+ 	"&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;title&gt;Labyrinth&lt;/title&gt;&lt;/head&gt;&lt;body&gt;"
+ 	"&lt;h1&gt;Labyrinth&lt;/h1&gt;"
+@@ -497,10 +499,10 @@ static const char *HOME_HTML =
+ 	"&lt;/table&gt;"
+ 	"&lt;h2&gt;URLs&lt;/h2&gt;"
+ 	"&lt;ul&gt;"
+-	"&lt;li&gt;&lt;code&gt;about:home&lt;/code&gt; — this page&lt;/li&gt;"
+-	"&lt;li&gt;&lt;code&gt;about:blank&lt;/code&gt; — empty document&lt;/li&gt;"
+-	"&lt;li&gt;&lt;code&gt;file:///path/to/page.html&lt;/code&gt; — local file&lt;/li&gt;"
+-	"&lt;li&gt;&lt;code&gt;http://…&lt;/code&gt; / &lt;code&gt;https://…&lt;/code&gt; — web (libtls)&lt;/li&gt;"
++	"&lt;li&gt;&lt;code&gt;about:home&lt;/code&gt; - this page&lt;/li&gt;"
++	"&lt;li&gt;&lt;code&gt;about:blank&lt;/code&gt; - empty document&lt;/li&gt;"
++	"&lt;li&gt;&lt;code&gt;file:///path/to/page.html&lt;/code&gt; - local file&lt;/li&gt;"
++	"&lt;li&gt;&lt;code&gt;http://&lt;/code&gt; / &lt;code&gt;https://&lt;/code&gt; - web (libtls)&lt;/li&gt;"
+ 	"&lt;/ul&gt;"
+ 	"&lt;p&gt;Try "
+ 	"&lt;a href=\"about:blank\"&gt;about:blank&lt;/a&gt; · "
+@@ -510,6 +512,33 @@ static const char *HOME_HTML =
+ static const char *BLANK_HTML =
+ 	"&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;body&gt;&lt;/body&gt;&lt;/html&gt;";
+ 
++/* Normalize about: URLs: trim space, accept about://home, trailing / #. */
++static int about_page(const char *url, const char *page)
++{
++	const char *p;
++	size_t n;
++
++	if (!url || !page)
++		return 0;
++	while (*url == ' ' || *url == '\t')
++		url++;
++	if (strncasecmp(url, "about:", 6) != 0)
++		return 0;
++	p = url + 6;
++	if (p[0] == '/' &amp;&amp; p[1] == '/')
++		p += 2;
++	while (*p == '/')
++		p++;
++	n = strlen(page);
++	if (strncasecmp(p, page, n) != 0)
++		return 0;
++	p += n;
++	if (*p == '/' || *p == '#' || *p == '?' || *p == '\0' ||
++	    *p == ' ' || *p == '\t')
++		return 1;
++	return 0;
++}
++
+ static char *read_file_all(const char *path, size_t *out_len)
+ {
+ 	FILE *f;
+@@ -902,18 +931,37 @@ static char *wrap_http_error(int st, char *body)
+ 	return wrap;
+ }
+ 
++/* Builtin pages: pointer to static HTML (not malloc). NULL if not builtin. */
++static const char *builtin_document(const char *url)
++{
++	if (about_page(url, "home") || (url &amp;&amp; !strcmp(url, "about:")))
++		return HOME_HTML;
++	if (about_page(url, "blank"))
++		return BLANK_HTML;
++	return NULL;
++}
++
+ static char *fetch_document(const char *url, char *err, size_t errlen)
+ {
++	const char *builtin;
++
+ 	if (!url || !url[0]) {
+ 		if (err)
+ 			snprintf(err, errlen, "empty URL");
+ 		return NULL;
+ 	}
+-	if (!strcmp(url, "about:home") || !strcmp(url, "about://home"))
+-		return strdup(HOME_HTML);
+-	if (!strcmp(url, "about:blank") || !strcmp(url, "about://blank"))
+-		return strdup(BLANK_HTML);
+-	if (!strncmp(url, "about:", 6)) {
++	/* Skip leading spaces (address bar paste). */
++	while (*url == ' ' || *url == '\t')
++		url++;
++	builtin = builtin_document(url);
++	if (builtin) {
++		char *copy = strdup(builtin);
++
++		if (!copy &amp;&amp; err)
++			snprintf(err, errlen, "out of memory");
++		return copy;
++	}
++	if (!strncasecmp(url, "about:", 6)) {
+ 		if (err)
+ 			snprintf(err, errlen, "unknown about: page");
+ 		return NULL;
+@@ -1019,22 +1067,38 @@ static void load_url(const char *url)
+ {
+ 	char err[256];
+ 	char *html;
++	const char *builtin;
+ 
+ 	if (!url || !url[0])
+ 		return;
++	while (*url == ' ' || *url == '\t')
++		url++;
+ 	snprintf(current_url, sizeof(current_url), "%s", url);
+ 	set_addr_bar(current_url);
+ 	bgtk_log("labyrinth load %s", current_url);
+ 
+-	html = fetch_document(current_url, err, sizeof(err));
+-	if (!html) {
+-		show_message_page("Load failed", err[0] ? err : "unknown error");
+-		if (ctx)
+-			bgtk_draw_widgets(ctx);
+-		return;
++	/*
++	 * Builtins never go through fetch/strdup failure as a hard error —
++	 * pass the static string so about:home always paints the shortcuts.
++	 */
++	builtin = builtin_document(current_url);
++	if (builtin) {
++		load_html_string(builtin);
++	} else {
++		err[0] = '\0';
++		html = fetch_document(current_url, err, sizeof(err));
++		if (!html) {
++			bgtk_log("labyrinth load failed: %s",
++				 err[0] ? err : "unknown error");
++			show_message_page("Load failed",
++					  err[0] ? err : "unknown error");
++			if (ctx)
++				bgtk_draw_widgets(ctx);
++			return;
++		}
++		load_html_string(html);
++		free(html);
+ 	}
+-	load_html_string(html);
+-	free(html);
+ 	if (ctx) {
+ 		/* Prefer focusing content so j/k scroll the page. */
+ 		if (content_host &amp;&amp; content_host-&gt;data.frame.child) {
+@@ -1286,8 +1350,15 @@ int main(void)
+ 	ctx-&gt;root_widget = root_frame;
+ 	labyrinth_layout_chrome();
+ 
+-	/* Home + shortcut list; start ready to type a URL. */
+-	load_url(current_url);
++	/*
++	 * Always paint builtin home first (shortcuts table). Do not depend on
++	 * fetch/network/strdup — Load failed at startup was a user-facing bug
++	 * when about: matching or allocation failed.
++	 */
++	snprintf(current_url, sizeof(current_url), "about:home");
++	set_addr_bar(current_url);
++	labyrinth_layout_chrome();
++	load_html_string(HOME_HTML);
+ 	focus_addr_bar();
+ 	bgtk_draw_widgets(ctx);
+ 
+diff --git a/drawing.c b/drawing.c
+index 50be71a..869f2fa 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -1324,15 +1324,14 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	uint32_t border;
+ 	int bw;
+ 
+-	/* Per-widget border (-1 = theme; 0 = borderless / minimal field). */
++	/* Per-widget border (-1 = theme; 0 = borderless / minimal field).
++	 * Same thickness focused and unfocused — a thicker focus ring shrank
++	 * the content box and made the text sit lower when focused. */
+ 	bw = w-&gt;data.text_input.border_w &gt;= 0
+ 		     ? w-&gt;data.text_input.border_w
+ 		     : (int)ctx-&gt;theme.input_border_size;
+ 	if (bw &lt; 0)
+ 		bw = 0;
+-	/* Focused fields get a thicker ring only when a border is drawn. */
+-	if (focused &amp;&amp; bw &gt; 0 &amp;&amp; bw &lt; 3)
+-		bw = 3;
+ 	if (bw * 2 &gt; w-&gt;w - 2 * w-&gt;margin)
+ 		bw = (w-&gt;w - 2 * w-&gt;margin) / 2;
+ 	if (bw * 2 &gt; w-&gt;h - 2 * w-&gt;margin)
+@@ -1346,6 +1345,7 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 						 : 0xFF0A0A0A;
+ 	else
+ 		field_bg = focused ? focus_bg : input_bg;
++	/* Focus uses color, not thickness. */
+ 	border = focused ? focus : 0xFF888888;
+ 
+ 	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
+diff --git a/widgets.c b/widgets.c
+index 9aa83ae..557fea5 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -43,17 +43,14 @@ void bgtk_widget_set_parent(struct BGTK_Widget *child,
+ 		child-&gt;parent = parent;
+ }
+ 
+-// Default event handler for widgets
++// Default event handler — labels/text/images do not take keyboard focus.
++// (Focus-on-click here stole typing from settings form fields.)
+ static int
+ default_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ {
+-	if (bgtk_widget_hit(widget, ev.x, ev.y)) {
+-		if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
+-			bgtk_set_focus(widget-&gt;ctx, widget);
+-			return 1;
+-		}
+-	}
+-	return 0;		// Event not handled by this widget
++	(void)widget;
++	(void)ev;
++	return 0;
+ }
+ 
+ // Button event handler
+@@ -439,10 +436,13 @@ static int scrollable_handle_event(struct BGTK_Widget *widget,
+ 		}
+ 	}
+ 
+-	if (ev.type == EV_KEY &amp;&amp; ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
+-		bgtk_set_focus(widget-&gt;ctx, widget);
++	/*
++	 * Do not steal keyboard focus on empty clicks. Focusing the scrollable
++	 * made subsequent typing vanish (scrollable only handles j/k/page);
++	 * settings forms need the text field to keep focus.
++	 */
++	if (ev.type == EV_KEY &amp;&amp; ev.code == BTN_LEFT &amp;&amp; ev.value == 1)
+ 		return 1;
+-	}
+ 
+ 	return 0;
+ }
+@@ -480,11 +480,9 @@ static int frame_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 			return 1;
+ 		}
+ 	}
+-	// If clicked inside the frame but not on the child, focus the frame.
+-	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
+-		bgtk_set_focus(widget-&gt;ctx, widget);
++	/* Empty click inside frame: consume, do not steal focus from fields. */
++	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1)
+ 		return 1;
+-	}
+ 
+ 	return 0;		// Event not handled
+ }
+@@ -832,10 +830,10 @@ list_widget_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
+ 		break;
+ 	}
+ 
+-	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
+-		bgtk_set_focus(widget-&gt;ctx, widget);
++	/* Consume empty clicks without focusing the list (keeps text-field
++	 * focus for typing in settings forms). */
++	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1)
+ 		return 1;
+-	}
+ 
+ 	return 0;		// Event not handled
+ }
+</pre>

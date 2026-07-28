@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk a566406</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit a566406
+parent <a href=commit-9260139.html>9260139</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-06T18:51:48-03:00
+
+    build: include FreeType (and libxml) under $HOME/.local.
+
+    Add include/freetype2 and include/libxml2, always -L$HOME/.local/lib for
+    freetype, and search home pkgconfig so home-prefix FreeType is found.
+
+<a href=tree-a566406.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/Makefile b/Makefile
+index b464fda..1b2da8b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -5,43 +5,54 @@
+ # the common Linux location.
+ CC ?= cc
+ 
+-FREETYPE_CFLAGS := $(shell pkg-config --cflags freetype2 2&gt;/dev/null)
++# User-local prefix (bgce, freetype, libxml, etc. under a home install).
++HOME_LOCAL ?= $(HOME)/.local
++# FreeType headers live in include/freetype2, not only include/.
++HOME_LOCAL_CFLAGS = -I$(HOME_LOCAL)/include -I$(HOME_LOCAL)/include/freetype2 \
++	-I$(HOME_LOCAL)/include/libxml2
++HOME_LOCAL_LDFLAGS = -L$(HOME_LOCAL)/lib
++# So pkg-config finds .pc files from a home-prefix install.
++PKG_CONFIG_ENV = PKG_CONFIG_PATH="$(HOME_LOCAL)/lib/pkgconfig:$(HOME_LOCAL)/share/pkgconfig:$${PKG_CONFIG_PATH}"
++
++FREETYPE_CFLAGS := $(shell $(PKG_CONFIG_ENV) pkg-config --cflags freetype2 2&gt;/dev/null)
+ ifeq ($(FREETYPE_CFLAGS),)
+-  FREETYPE_CFLAGS := -I/include/freetype2
++  FREETYPE_CFLAGS := -I$(HOME_LOCAL)/include/freetype2 -I$(HOME_LOCAL)/include \
++	-I/include/freetype2
+ endif
+ 
+-FREETYPE_LIBS := $(shell pkg-config --libs freetype2 2&gt;/dev/null)
+-FREETYPE_LIBDIRS :=
++FREETYPE_LIBS := $(shell $(PKG_CONFIG_ENV) pkg-config --libs freetype2 2&gt;/dev/null)
++# Always search home lib for -lfreetype even when pkg-config returns flags.
++FREETYPE_LIBDIRS := -L$(HOME_LOCAL)/lib
+ ifeq ($(FREETYPE_LIBS),)
+   # Flat /lib (lin0) plus macOS Homebrew fallbacks for dev hosts
+   FREETYPE_LIBS := -lfreetype
+-  FREETYPE_LIBDIRS := -L/lib -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
++  FREETYPE_LIBDIRS += -L/lib -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
+ endif
+ 
+-OPENSSL_CFLAGS := $(shell pkg-config --cflags openssl 2&gt;/dev/null)
++OPENSSL_CFLAGS := $(shell $(PKG_CONFIG_ENV) pkg-config --cflags openssl 2&gt;/dev/null)
+ ifeq ($(OPENSSL_CFLAGS),)
+-  OPENSSL_CFLAGS := -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/include -I/usr/local/opt/openssl/include
++  OPENSSL_CFLAGS := -I$(HOME_LOCAL)/include \
++	-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/openssl@3/include \
++	-I/opt/homebrew/include -I/usr/local/opt/openssl/include
+ endif
+-OPENSSL_LIBDIRS := -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/lib -L/usr/local/opt/openssl/lib -L/usr/local/lib
++OPENSSL_LIBDIRS := -L$(HOME_LOCAL)/lib \
++	-L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/openssl@3/lib \
++	-L/opt/homebrew/lib -L/usr/local/opt/openssl/lib -L/usr/local/lib
+ OPENSSL_LIBS := -lssl -lcrypto
+ 
+-LIBXML2_CFLAGS := $(shell pkg-config --cflags libxml-2.0 2&gt;/dev/null)
++LIBXML2_CFLAGS := $(shell $(PKG_CONFIG_ENV) pkg-config --cflags libxml-2.0 2&gt;/dev/null)
+ ifeq ($(LIBXML2_CFLAGS),)
+-  LIBXML2_CFLAGS := -I/include/libxml2
++  LIBXML2_CFLAGS := -I$(HOME_LOCAL)/include/libxml2 -I$(HOME_LOCAL)/include \
++	-I/include/libxml2
+ endif
+-LIBXML2_LIBS := $(shell pkg-config --libs libxml-2.0 2&gt;/dev/null)
++LIBXML2_LIBS := $(shell $(PKG_CONFIG_ENV) pkg-config --libs libxml-2.0 2&gt;/dev/null)
+ ifeq ($(LIBXML2_LIBS),)
+-  LIBXML2_LIBS := -lxml2
++  LIBXML2_LIBS := -L$(HOME_LOCAL)/lib -lxml2
+ endif
+ 
+ COMPAT_DIR := compat
+ UNAME_S := $(shell uname)
+ 
+-# User-local prefix (bgce, freetype, etc. under a home install).
+-HOME_LOCAL ?= $(HOME)/.local
+-HOME_LOCAL_CFLAGS = -I$(HOME_LOCAL)/include
+-HOME_LOCAL_LDFLAGS = -L$(HOME_LOCAL)/lib
+-
+ # Base compile flags. Do NOT put -fPIC here: TinyCC errors with
+ # "section type conflict: .symtab 01 &lt;&gt; 02" when linking many PIC
+ # relocatable objects into a normal executable. PIC is only for lib objs.
+@@ -148,7 +159,9 @@ help:
+ 	@echo "Variables (override on the command line)"
+ 	@echo "  CC=$(CC)"
+ 	@echo "  CFLAGS=$(CFLAGS)"
+-	@echo "  HOME_LOCAL=$(HOME_LOCAL)   # added as -I.../include and -L.../lib"
++	@echo "  HOME_LOCAL=$(HOME_LOCAL)"
++	@echo "    compile: -I\$$HOME_LOCAL/include{,/freetype2,/libxml2}"
++	@echo "    link:    -L\$$HOME_LOCAL/lib  (and pkg-config under lib/pkgconfig)"
+ 	@echo "  PREFIX=$(if $(PREFIX),$(PREFIX),(empty → flat /lib /include /bin))"
+ 	@echo "  INSTALL_LIB=$(INSTALL_LIB)"
+ 	@echo "  INSTALL_INCLUDE=$(INSTALL_INCLUDE)"
+</pre>

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 30f55b6</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 30f55b6
+parent <a href=commit-bbe317e.html>bbe317e</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-11T17:02:26-03:00
+
+    fix: sys_status single get_buffer so window is not black
+
+    Measure with a local buffer, then request the content-sized shm once.
+    A second get_buffer replaced the server buffer; if the client failed to
+    map it, the compositor showed an empty frame (all black).
+
+<a href=tree-30f55b6.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/sys_status.c b/apps/sys_status.c
+index c44d1e8..37bd356 100644
+--- a/apps/sys_status.c
++++ b/apps/sys_status.c
+@@ -858,26 +858,17 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
+ 
+ #ifndef SYS_STATUS_TEST_MODE
+ 
+-/* Replace the mapped buffer with one of the measured size. */
+-static int sys_status_apply_size(struct BGTK_Context *c, int conn, int w, int h)
++/*
++ * Adopt a mapped BGCE buffer as the live framebuffer.
++ * prev is freed (malloc) or munmap'd depending on buffer_mapped.
++ */
++static int sys_status_adopt_buffer(struct BGTK_Context *c, void *nb, int w,
++				   int h)
+ {
+-	struct BufferRequest req;
+-	void *nb;
+ 	size_t old_bytes;
+ 
+-	if (!c || w &lt; 1 || h &lt; 1)
++	if (!c || !nb || w &lt; 1 || h &lt; 1)
+ 		return -1;
+-	if (w == c-&gt;width &amp;&amp; h == c-&gt;height)
+-		return 0;
+-
+-	req.width = (uint32_t)w;
+-	req.height = (uint32_t)h;
+-	/* Same calling convention as other BGTK apps (by value). */
+-	nb = bgce_get_buffer(conn, req);
+-	if (!nb) {
+-		bgtk_log("resize get_buffer %dx%d failed", w, h);
+-		return -1;
+-	}
+ 	old_bytes = (size_t)c-&gt;width * (size_t)c-&gt;height * BGCE_BPP;
+ 	if (c-&gt;shm_buffer) {
+ 		if (c-&gt;buffer_mapped &amp;&amp; old_bytes &gt; 0)
+@@ -901,11 +892,13 @@ int main(void)
+ {
+ 	int conn;
+ 	struct BufferRequest req;
+-	void *buf;
++	void *boot = NULL;
++	void *buf = NULL;
+ 	struct BGCEMessage msg;
+ 	struct timeval now, t_clock, t_fast, t_disk, t_weather;
+ 	int need_draw = 1;
+ 	struct BGTK_Widget *root;
++	int want_w, want_h;
+ 
+ 	setvbuf(stderr, NULL, _IONBF, 0);
+ 	bgtk_log_open("sys_status");
+@@ -917,28 +910,71 @@ int main(void)
+ 		return 1;
+ 	}
+ 	bgtk_log("bgce_connect ok fd=%d", conn);
+-	/* Bootstrap buffer so FreeType is available to measure labels. */
+-	req.width = BOOT_W;
+-	req.height = BOOT_H;
+-	buf = bgce_get_buffer(conn, req);
+-	if (!buf) {
+-		bgtk_log("bgce_get_buffer %dx%d failed", BOOT_W, BOOT_H);
++
++	/*
++	 * Measure with a local (non-shm) buffer first, then call
++	 * bgce_get_buffer ONCE at the content size.
++	 *
++	 * A second get_buffer replaces the server buffer: if the client
++	 * fails to map the reply, the compositor shows an empty buffer
++	 * (all black) while we still hold the old mapping. That was the
++	 * "resize get_buffer 398x284 failed" black window.
++	 */
++	boot = calloc((size_t)BOOT_W * (size_t)BOOT_H * BGCE_BPP, 1);
++	if (!boot) {
++		bgtk_log_errno("calloc bootstrap %dx%d", BOOT_W, BOOT_H);
+ 		bgce_disconnect(conn);
+ 		return 1;
+ 	}
+-	bgtk_log("bgce_get_buffer ok %p", buf);
+-	ctx = bgtk_init(conn, buf, BOOT_W, BOOT_H);
++	ctx = bgtk_init(conn, boot, BOOT_W, BOOT_H);
+ 	if (!ctx) {
+ 		bgtk_log("bgtk_init failed — check fonts / FreeType");
++		free(boot);
+ 		bgce_disconnect(conn);
+ 		return 1;
+ 	}
++	/* Local malloc, not mmap — destroy must free, not munmap. */
++	ctx-&gt;buffer_mapped = 0;
++	boot = NULL; /* owned by ctx now */
+ 
+ 	root = sys_status_build_ui(ctx);
+ 	ctx-&gt;root_widget = root;
+-	/* Request the measured content size (tight fit). */
+-	if (sys_status_apply_size(ctx, conn, root-&gt;w, root-&gt;h) != 0)
+-		bgtk_log("keeping bootstrap size %dx%d", ctx-&gt;width, ctx-&gt;height);
++	want_w = root-&gt;w &gt; 0 ? root-&gt;w : BOOT_W;
++	want_h = root-&gt;h &gt; 0 ? root-&gt;h : BOOT_H;
++
++	req.width = (uint32_t)want_w;
++	req.height = (uint32_t)want_h;
++	buf = bgce_get_buffer(conn, req);
++	if (!buf) {
++		/* Fall back to bootstrap dimensions (still only one server buf). */
++		bgtk_log("get_buffer %dx%d failed; trying %dx%d", want_w, want_h,
++			 BOOT_W, BOOT_H);
++		req.width = BOOT_W;
++		req.height = BOOT_H;
++		buf = bgce_get_buffer(conn, req);
++		if (buf) {
++			want_w = BOOT_W;
++			want_h = BOOT_H;
++			/* Layout was fitted to content; expand root to buffer. */
++			if (root) {
++				root-&gt;w = want_w;
++				root-&gt;h = want_h;
++			}
++		}
++	}
++	if (!buf) {
++		bgtk_log("bgce_get_buffer failed — no window buffer");
++		bgtk_destroy(ctx);
++		bgce_disconnect(conn);
++		return 1;
++	}
++	if (sys_status_adopt_buffer(ctx, buf, want_w, want_h) != 0) {
++		bgtk_log("adopt buffer failed");
++		munmap(buf, (size_t)want_w * (size_t)want_h * BGCE_BPP);
++		bgtk_destroy(ctx);
++		bgce_disconnect(conn);
++		return 1;
++	}
+ 
+ 	gettimeofday(&amp;now, NULL);
+ 	t_clock = t_fast = t_disk = t_weather = now;
+</pre>

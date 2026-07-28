@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 02f19b1</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 02f19b1
+parent <a href=commit-c08c453.html>c08c453</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-10T12:02:07-03:00
+
+    fix: vi view/scroll, sys_status row_gap, test screenshots dir
+
+    Pin terminal view_off on live PTY output so vim redraws are not hidden
+    behind scrollback; stop CUD/CUU clamping to DECSTBM; ignore DCS. Add
+    theme.row_gap (settings + sys_status). Route take_screenshot basenames
+    to test/screenshots/ and gitignore generated PNGs.
+
+<a href=tree-02f19b1.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..471f3de
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,20 @@
++# Objects / libs
++*.o
++libbgtk.so
++
++# Built test binaries (repo root)
++/headless
++/test_terminal
++/test_html
++/test_settings
++/test_theme_gallery
++/test_sys_status
++/test_gemini_browser
++
++# Headless test screenshots (regenerated on run)
++test/screenshots/*.png
++
++# Local junk
++.DS_Store
++.tai
++.codebase-memory/
+diff --git a/AGENTS.md b/AGENTS.md
+index 8386ae1..2adbc6e 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -31,12 +31,13 @@ works on Linux and macOS without BGCE.
+ │   ├── terminal.c / terminal.h / term_core.c
+ │   └── gemini_browser.c
+ ├── compat/           - Stubs/headers so headless builds work off Linux (bgce, input.h)
+-├── test/             - Headless/mock tests (produce PNG screenshots)
++├── test/             - Headless/mock tests
+ │   ├── headless.c
+ │   ├── test_terminal.c
+ │   ├── test_html.c
+ │   ├── test_gemini_browser.c
+-│   └── server_client.sh
++│   ├── server_client.sh
++│   └── screenshots/  - PNG output from headless tests (gitignored)
+ └── www/              - Sample HTML for html tests
+ ```
+ 
+@@ -161,7 +162,8 @@ BGTK is primarily validated visually, not via pixel-diff assertions. The flow:
+    set `ctx-&gt;root_widget`.
+ 3. **Draw** — `bgtk_draw_widgets(ctx)`.
+ 4. **Screenshot** — `take_screenshot(ctx, "descriptive_name.png")` writes the
+-   current buffer as PNG (pass `NULL` for a timestamped name).
++   current buffer as PNG under `test/screenshots/` (bare basenames; pass `NULL`
++   for a timestamped name there).
+ 5. **Simulate input** (when relevant) — build a `struct InputEvent` (mouse
+    click, key press, etc.) and call `bgtk_inject_event(ctx, ev)`, then draw
+    and screenshot again.
+@@ -198,7 +200,7 @@ bgtk_destroy_mock(ctx);
+ | `bgtk_init_mock(w, h)` | Headless context with owned framebuffer |
+ | `bgtk_destroy_mock(ctx)` | Free mock context and its buffer |
+ | `bgtk_draw_widgets(ctx)` | Render the widget tree into the buffer |
+-| `take_screenshot(ctx, path)` | Dump buffer to PNG (`NULL` = timestamped name) |
++| `take_screenshot(ctx, path)` | Dump buffer to PNG under `test/screenshots/` |
+ | `bgtk_inject_event(ctx, ev)` | Synthetic mouse/keyboard input |
+ | `bgtk_set_focus(ctx, widget)` | Focus (e.g. text input) before key events |
+ 
+@@ -208,11 +210,11 @@ Build/run examples (on macOS, `make` defaults to headless targets):
+ 
+ | Target | Source | What to inspect |
+ |--------|--------|-----------------|
+-| `make headless &amp;&amp; ./headless` | `test/headless.c` | Basic widgets, click, focus, typing (`headless_*.png`) |
+-| `make test_terminal &amp;&amp; ./test_terminal` | `test/test_terminal.c` | Terminal/ANSI rendering (`term_*.png`) |
+-| `make test_html &amp;&amp; ./test_html` | `test/test_html.c` | HTML → widget tree (`test_html_*.png`) |
+-| `make test_gemini_browser &amp;&amp; ./test_gemini_browser` | `test/test_gemini_browser.c` | Gemini browser UI flow (`gemini_browser_*.png`) |
+-| `make test_sys_status &amp;&amp; ./test_sys_status` | `test/test_sys_status.c` | System status dashboard (`sys_status_*.png`) |
++| `make headless &amp;&amp; ./headless` | `test/headless.c` | Basic widgets (`test/screenshots/headless_*.png`) |
++| `make test_terminal &amp;&amp; ./test_terminal` | `test/test_terminal.c` | Terminal/ANSI (`test/screenshots/term_*.png`) |
++| `make test_html &amp;&amp; ./test_html` | `test/test_html.c` | HTML → widgets (`test/screenshots/test_html_*.png`) |
++| `make test_gemini_browser &amp;&amp; ./test_gemini_browser` | `test/test_gemini_browser.c` | Gemini browser (`test/screenshots/gemini_browser_*.png`) |
++| `make test_sys_status &amp;&amp; ./test_sys_status` | `test/test_sys_status.c` | System status (`test/screenshots/sys_status_*.png`) |
+ 
+ Headless binaries link `compat/bgce_stub.c` and use `-Icompat` so they compile
+ on non-Linux machines. Real apps (`test_app`, `terminal`, `gemini_browser`,
+diff --git a/Makefile b/Makefile
+index 4002a53..eda5285 100644
+--- a/Makefile
++++ b/Makefile
+@@ -166,12 +166,13 @@ help:
+ 	@echo "  test_terminal        Terminal/ANSI (+ optional real PTY) screenshots"
+ 	@echo "  test_html            HTML → widget tree screenshots"
+ 	@echo "  test_settings        Settings UI screenshots"
+-	@echo "  test_theme_gallery   Settings under candidate themes (settings_theme_*.png)"
++	@echo "  test_theme_gallery   Settings under candidate themes"
+ 	@echo "  test_gemini_browser  Gemini browser flow screenshots (libtls for live fetch)"
++	@echo "  (PNGs land in test/screenshots/)"
+ 	@echo ""
+ 	@echo "  Maintenance"
+ 	@echo "  install              Install lib, header, and built apps"
+-	@echo "  clean                Remove binaries and objects"
++	@echo "  clean                Remove binaries, objects, and test PNGs"
+ 	@echo "  test                 Smoke-run test_app + image_viewer under bgce"
+ 	@echo "  snapshot             Regenerate www/bgtk.tar.gz from HEAD"
+ 	@echo ""
+@@ -319,6 +320,7 @@ clean:
+ 		$(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) \
+ 		$(TEST_HTML_OBJ) $(SETTINGS_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) \
+ 		$(SYS_STATUS_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) libbgtk.so
++	rm -f test/screenshots/*.png
+ 
+ # Rebuild core apps before install. After BGTK_Context layout changes, a
+ # lib-only install leaves blank windows (apps write root_widget at wrong offset).
+diff --git a/README.md b/README.md
+index a0902cf..0c7028c 100644
+--- a/README.md
++++ b/README.md
+@@ -26,7 +26,7 @@ create graphical user interfaces by directly writing to a shared graphical buffe
+ When using mocks, the following functions are the primary tools:
+ 
+ - `bgtk_init_mock(width, height)` — create a context with its own in-memory framebuffer.
+-- `take_screenshot(ctx, "name.png")` — dump the current buffer to a PNG (pass `NULL` for a timestamped name).
++- `take_screenshot(ctx, "name.png")` — dump the buffer to `test/screenshots/name.png` (pass `NULL` for a timestamped name there).
+ - `bgtk_inject_event(ctx, ev)` — feed synthetic mouse/keyboard events.
+ - `bgtk_destroy_mock(ctx)` — clean up a mock context (frees the internal buffer).
+ 
+@@ -68,7 +68,7 @@ make headless
+ ./headless
+ ```
+ 
+-This builds `test/headless.c` and generates several `headless_*.png` files demonstrating:
++This builds `test/headless.c` and writes several `test/screenshots/headless_*.png` files demonstrating:
+ - Layout and widget sizing
+ - Button press / callback
+ - Text input focus + typing (via injected key events)
+@@ -201,7 +201,7 @@ make headless
+ ./headless
+ ```
+ 
+-This produces `headless_*.png` files you can open to visually inspect the rendered UI at each step (layout, interaction, text input, etc.).
++This produces `test/screenshots/headless_*.png` files you can open to visually inspect the rendered UI at each step (layout, interaction, text input, etc.).
+ 
+ See the "Testing with Mocks" section above for how to integrate this style of testing into your own code.
+ 
+diff --git a/apps/settings.c b/apps/settings.c
+index df07beb..ae3024d 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -79,6 +79,7 @@ static struct BGTK_Widget *theme_rule_color_input;
+ static struct BGTK_Widget *theme_margin_input;
+ static struct BGTK_Widget *theme_padding_input;
+ static struct BGTK_Widget *theme_frame_margin_input;
++static struct BGTK_Widget *theme_row_gap_input;
+ static struct BGTK_Widget *theme_baseline_input;
+ 
+ static int font_dropdown_open;
+@@ -1079,6 +1080,9 @@ static void apply_theme(void *userdata)
+ 	    theme_frame_margin_input-&gt;data.text_input.text)
+ 		cfg.theme.frame_margin =
+ 			atoi(theme_frame_margin_input-&gt;data.text_input.text);
++	if (theme_row_gap_input &amp;&amp; theme_row_gap_input-&gt;data.text_input.text)
++		cfg.theme.row_gap =
++			atoi(theme_row_gap_input-&gt;data.text_input.text);
+ 	if (theme_baseline_input &amp;&amp; theme_baseline_input-&gt;data.text_input.text)
+ 		cfg.theme.text_baseline_offset =
+ 			atoi(theme_baseline_input-&gt;data.text_input.text);
+@@ -1572,13 +1576,14 @@ static struct BGTK_Widget *build_theme_page(void)
+ 	rows[n++] = ui_row_field("Highlight", theme_highlight_input);
+ 
+ 	theme_margin_input = theme_int_input(cfg.theme.margin, 60);
+-	rows[n++] = ui_row_field("Widget margin", theme_margin_input);
++	theme_row_gap_input = theme_int_input(cfg.theme.row_gap, 60);
++	rows[n++] = ui_row2("Widget margin", theme_margin_input,
++			    "Row gap", theme_row_gap_input);
+ 
+ 	theme_padding_input = theme_int_input(cfg.theme.padding, 60);
+-	rows[n++] = ui_row_field("Frame padding", theme_padding_input);
+-
+ 	theme_frame_margin_input = theme_int_input(cfg.theme.frame_margin, 60);
+-	rows[n++] = ui_row_field("Frame margin", theme_frame_margin_input);
++	rows[n++] = ui_row2("Frame padding", theme_padding_input,
++			    "Frame margin", theme_frame_margin_input);
+ 
+ 	theme_baseline_input =
+ 		theme_int_input(cfg.theme.text_baseline_offset, 60);
+@@ -1608,7 +1613,8 @@ static void clear_page_ptrs(void)
+ 	theme_focus_input = theme_focus_bg_input = theme_input_bg_input = NULL;
+ 	theme_highlight_input = theme_rule_color_input = NULL;
+ 	theme_margin_input = theme_padding_input = NULL;
+-	theme_frame_margin_input = theme_baseline_input = NULL;
++	theme_frame_margin_input = theme_row_gap_input = NULL;
++	theme_baseline_input = NULL;
+ }
+ 
+ /* Size root + shell_row; EXPAND fills content_panel / sidebar height. */
+diff --git a/apps/sys_status.c b/apps/sys_status.c
+index 8d15794..2bdb1ec 100644
+--- a/apps/sys_status.c
++++ b/apps/sys_status.c
+@@ -679,6 +679,20 @@ static int ss_mar(struct BGTK_Context *c)
+ 	return (c &amp;&amp; c-&gt;theme.margin &gt; 0) ? c-&gt;theme.margin : 8;
+ }
+ 
++/* Vertical gap between status rows (px). List packing uses 2×margin. */
++static int ss_row_gap(struct BGTK_Context *c)
++{
++	if (c &amp;&amp; c-&gt;theme.row_gap &gt; 0)
++		return c-&gt;theme.row_gap;
++	return 8;
++}
++
++static int ss_list_m(struct BGTK_Context *c)
++{
++	int m = (ss_row_gap(c) + 1) / 2;
++	return m &gt; 0 ? m : 1;
++}
++
+ /* Size root frame from label text (call after metrics are filled). */
+ static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *frame)
+ {
+@@ -687,10 +701,13 @@ static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *fram
+ 	int pad = ss_pad(c);
+ 	int mar = ss_mar(c);
+ 	int half = mar &gt; 1 ? mar / 2 : 1;
+-	int text_p = pad &gt; 2 ? pad / 2 : 2;
+-	int text_m = half &gt; 0 ? half : 1;
+-	int row_m = half, row_p = half;
+-	int list_m = mar, list_p = pad &gt; 2 ? pad / 2 : 2;
++	/* Tight chrome: 2px text pad; row gap from theme.row_gap. */
++	int text_p = 2;
++	int text_m = 0;
++	int row_m = half &gt; 2 ? half / 2 : 2; /* name|value gap = 2×row_m */
++	int row_p = 0;
++	int list_m = ss_list_m(c);
++	int list_p = 4;
+ 	int frame_p = pad, bw;
+ 	int row_w, row_h, list_w, list_h;
+ 	int text_chrome = 2 * (text_p + text_m);
+@@ -736,21 +753,24 @@ static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *fram
+ 			value_labels[i]-&gt;w = val_w;
+ 			value_labels[i]-&gt;h = text_h;
+ 		}
+-		/* horizontal list: content = sum(w) + 2*m*(n-1), plus pad/margin */
+-		row_w = name_w + val_w + 2 * row_m + 2 * (row_p + row_m);
+-		row_h = text_h + 2 * (row_p + row_m);
++		/* h-list: sum(w) + 2*m between items + 2*padding (margin ≠ side). */
++		row_w = name_w + val_w + 2 * row_m + 2 * row_p;
++		row_h = text_h + 2 * row_p;
+ 		if (row_widgets[i]) {
+ 			row_widgets[i]-&gt;w = row_w;
+ 			row_widgets[i]-&gt;h = row_h;
++			row_widgets[i]-&gt;margin = row_m;
++			row_widgets[i]-&gt;padding = row_p;
+ 		}
+ 	}
+ 
+-	/* vertical list of N rows */
+-	list_w = row_w + 2 * (list_p + list_m);
+-	list_h = N_ROWS * row_h + 2 * list_m * (N_ROWS - 1) +
+-		 2 * (list_p + list_m);
++	/* v-list: sum(h) + 2*m*(n-1) + 2*padding */
++	list_w = row_w + 2 * list_p;
++	list_h = N_ROWS * row_h + 2 * list_m * (N_ROWS - 1) + 2 * list_p;
+ 	root_list-&gt;w = list_w;
+ 	root_list-&gt;h = list_h;
++	root_list-&gt;margin = list_m;
++	root_list-&gt;padding = list_p;
+ 
+ 	bw = frame-&gt;data.frame.border_w;
+ 	if (bw &lt; 1)
+@@ -771,9 +791,10 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
+ 	int pad = ss_pad(c);
+ 	int mar = ss_mar(c);
+ 	int half = mar &gt; 1 ? mar / 2 : 1;
+-	int text_p = pad &gt; 2 ? pad / 2 : 2;
+-	int text_m = half &gt; 0 ? half : 1;
+-	int list_p = pad &gt; 2 ? pad / 2 : 2;
++	int text_p = 2;
++	int row_m = half &gt; 2 ? half / 2 : 2;
++	int list_m = ss_list_m(c);
++	int list_p = 4;
+ 
+ 	ctx = c;
+ 	for (i = 0; i &lt; N_ROWS; i++) {
+@@ -786,22 +807,23 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
+ 	for (i = 0; i &lt; N_ROWS; i++) {
+ 		struct BGTK_Widget *name =
+ 			bgtk_text(c, (char *)row_names[i],
+-				  (BGTK_Options){.padding = text_p,
+-						 .margin = text_m});
++				  (BGTK_Options){.padding = text_p, .margin = 0});
+ 		struct BGTK_Widget *val =
+ 			bgtk_text(c, "…",
+-				  (BGTK_Options){.padding = text_p,
+-						 .margin = text_m});
++				  (BGTK_Options){.padding = text_p, .margin = 0});
+ 		struct BGTK_Widget *pair[2] = { name, val };
+ 		struct BGTK_Widget *row;
+ 
++		/* Keys use theme.highlight (header_level 10 = accent). */
++		if (name)
++			name-&gt;data.text.header_level = 10;
+ 		name_labels[i] = name;
+ 		value_labels[i] = val;
+ 		row = bgtk_list(c, pair, 2,
+ 				(BGTK_Options){
+ 					.orientation = BGTK_LIST_HORIZONTAL,
+-					.padding = half,
+-					.margin = half,
++					.padding = 0,
++					.margin = row_m,
+ 				});
+ 		row_widgets[i] = row;
+ 		rows[i] = row;
+@@ -811,7 +833,7 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
+ 			 (BGTK_Options){
+ 				 .orientation = BGTK_LIST_VERTICAL,
+ 				 .padding = list_p,
+-				 .margin = mar,
++				 .margin = list_m,
+ 			 });
+ 	root_list = list;
+ 	/* Temporary size; sys_status_fit_size sets the real one. */
+diff --git a/apps/term_core.c b/apps/term_core.c
+index 7b7481c..849605d 100644
+--- a/apps/term_core.c
++++ b/apps/term_core.c
+@@ -342,17 +342,17 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 	int p1 = nparam &gt; 1 ? params[1] : 0;
+ 
+ 	switch (final) {
+-	case 'A': /* CUU — stay inside scroll region (no auto-scroll) */
++	case 'A': /* CUU — move only; never scroll. Screen edges (not
++		   * DECSTBM): origin mode is not implemented, so the
++		   * cursor may leave the scroll region (vim status line). */
+ 		t-&gt;cur_row -= p0 ? p0 : 1;
+-		if (t-&gt;cur_row &lt; t-&gt;scroll_top)
+-			t-&gt;cur_row = t-&gt;scroll_top;
+ 		if (t-&gt;cur_row &lt; 0)
+ 			t-&gt;cur_row = 0;
+ 		break;
+-	case 'B': /* CUD — clamp to scroll_bot; do not scroll content */
++	case 'B': /* CUD — move only; never scroll. Do not clamp to
++		   * scroll_bot (that trapped the cursor off the status
++		   * line and pulled it back into the region). */
+ 		t-&gt;cur_row += p0 ? p0 : 1;
+-		if (t-&gt;cur_row &gt; t-&gt;scroll_bot)
+-			t-&gt;cur_row = t-&gt;scroll_bot;
+ 		if (t-&gt;cur_row &gt;= t-&gt;rows)
+ 			t-&gt;cur_row = t-&gt;rows - 1;
+ 		break;
+@@ -382,9 +382,16 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 			for (int i = 0;
+ 			     i &lt;= t-&gt;cur_row * t-&gt;cols + t-&gt;cur_col; i++)
+ 				t-&gt;cells[i] = default_cell();
+-		} else if (p0 == 2) {
++		} else if (p0 == 2 || p0 == 3) {
+ 			for (int i = 0; i &lt; t-&gt;rows * t-&gt;cols; i++)
+ 				t-&gt;cells[i] = default_cell();
++			/* Full clear (vim/fullscreen apps): pin live view so
++			 * scrollback view_off cannot hide the first rows. */
++			t-&gt;view_off = 0;
++			if (p0 == 3) {
++				t-&gt;sb_len = 0;
++				t-&gt;sb_start = 0;
++			}
+ 		}
+ 		break;
+ 	case 'K':
+@@ -406,7 +413,10 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 		for (int i = 0; i &lt; (p0 ? p0 : 1); i++) scroll_down(t);
+ 		break;
+ 	case 'L': {
++		/* IL — only inside the scrolling region. */
+ 		int n = p0 ? p0 : 1;
++		if (t-&gt;cur_row &lt; t-&gt;scroll_top || t-&gt;cur_row &gt; t-&gt;scroll_bot)
++			break;
+ 		for (int i = 0; i &lt; n &amp;&amp; t-&gt;cur_row &lt;= t-&gt;scroll_bot; i++) {
+ 			memmove(&amp;t-&gt;cells[(t-&gt;cur_row + 1) * t-&gt;cols],
+ 				&amp;t-&gt;cells[t-&gt;cur_row * t-&gt;cols],
+@@ -418,7 +428,10 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 		break;
+ 	}
+ 	case 'M': {
++		/* DL — only inside the scrolling region. */
+ 		int n = p0 ? p0 : 1;
++		if (t-&gt;cur_row &lt; t-&gt;scroll_top || t-&gt;cur_row &gt; t-&gt;scroll_bot)
++			break;
+ 		for (int i = 0; i &lt; n &amp;&amp; t-&gt;cur_row &lt;= t-&gt;scroll_bot; i++) {
+ 			memmove(&amp;t-&gt;cells[t-&gt;cur_row * t-&gt;cols],
+ 				&amp;t-&gt;cells[(t-&gt;cur_row + 1) * t-&gt;cols],
+@@ -518,6 +531,20 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 		break;
+ 	case 'h':
+ 	case 'l':
++		/* Private modes we care about: alt screen enters a clean
++		 * live view (vim). Others ignored. */
++		if (t-&gt;csi_priv &amp;&amp; (p0 == 1049 || p0 == 1047 || p0 == 47)) {
++			if (final == 'h') {
++				t-&gt;view_off = 0;
++				for (int i = 0; i &lt; t-&gt;rows * t-&gt;cols; i++)
++					t-&gt;cells[i] = default_cell();
++				t-&gt;cur_row = t-&gt;cur_col = 0;
++				t-&gt;scroll_top = 0;
++				t-&gt;scroll_bot = t-&gt;rows - 1;
++			} else {
++				t-&gt;view_off = 0;
++			}
++		}
+ 		break;
+ 	default:
+ 		break;
+@@ -530,7 +557,16 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 
+ void term_feed(struct Term_State *t, const char *data, int len)
+ {
++	if (!t || !data)
++		return;
+ 	if (len &lt; 0) len = (int)strlen(data);
++	if (len &lt;= 0)
++		return;
++	/* Live PTY/app output always follows the bottom. Leaving view_off&gt;0
++	 * after the user wheel-scrolled made fullscreen apps (vim) paint the
++	 * live buffer while the top rows still showed history — "first line
++	 * missing" with the scrollback still active. */
++	t-&gt;view_off = 0;
+ 	for (int i = 0; i &lt; len; i++) {
+ 		unsigned char ch = (unsigned char)data[i];
+ 
+@@ -569,7 +605,10 @@ void term_feed(struct Term_State *t, const char *data, int len)
+ 				t-&gt;csi_nparam = 0;
+ 				memset(t-&gt;csi_params, 0, sizeof(t-&gt;csi_params));
+ 				t-&gt;csi_priv = 0;
+-			} else if (ch == ']') {
++			} else if (ch == ']' || ch == 'P') {
++				/* OSC (]) or DCS (P): ignore until BEL/ST.
++				 * vim probes with DCS; without this, payload
++				 * chars (e.g. "zz") corrupt the cell grid. */
+ 				t-&gt;esc_state = 4;
+ 			} else if (ch == '(' || ch == ')') {
+ 				t-&gt;esc_state = 5;
+@@ -587,6 +626,7 @@ void term_feed(struct Term_State *t, const char *data, int len)
+ 				t-&gt;cur_row = t-&gt;cur_col = 0;
+ 				t-&gt;cur_fg = 7; t-&gt;cur_bg = 0; t-&gt;cur_bold = 0;
+ 				t-&gt;scroll_top = 0; t-&gt;scroll_bot = t-&gt;rows - 1;
++				t-&gt;view_off = 0;
+ 				t-&gt;esc_state = 0;
+ 			} else {
+ 				t-&gt;esc_state = 0;
+diff --git a/bgtk.c b/bgtk.c
+index 7dd7109..72f85c0 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -350,20 +350,53 @@ void bgtk_log_die(int status, const char *fmt, ...)
+ 	_exit(status);
+ }
+ 
++/* Create every parent component of path (mkdir -p). path is a file path. */
++static void bgtk_mkdir_parents(const char *path)
++{
++	char dir[512];
++	size_t n;
++	char *p;
++
++	if (!path)
++		return;
++	n = strlen(path);
++	if (n == 0 || n &gt;= sizeof(dir))
++		return;
++	memcpy(dir, path, n + 1);
++	p = strrchr(dir, '/');
++	if (!p || p == dir)
++		return;
++	*p = '\0';
++	for (p = dir + 1; *p; p++) {
++		if (*p != '/')
++			continue;
++		*p = '\0';
++		mkdir(dir, 0755);
++		*p = '/';
++	}
++	mkdir(dir, 0755);
++}
++
+ int take_screenshot(struct BGTK_Context *ctx, const char *path)
+ {
+ 	if (!ctx || !ctx-&gt;shm_buffer) {
+ 		return -1;
+ 	}
+-	char filename[256];
++	char filename[512];
+ 	const char *out_path = path;
+ 	if (!out_path) {
+-		// Timestamped name for SYSRQ / convenience
++		/* Timestamped under test/screenshots (SYSRQ / convenience). */
+ 		struct timeval tv;
+ 		gettimeofday(&amp;tv, NULL);
+-		snprintf(filename, sizeof(filename), "screenshot_%ld_%06d.png",
++		snprintf(filename, sizeof(filename),
++			 BGTK_TEST_SCREENSHOT_DIR "/screenshot_%ld_%06d.png",
+ 			 (long)tv.tv_sec, (int)tv.tv_usec);
+ 		out_path = filename;
++	} else if (!strchr(path, '/')) {
++		/* Bare basename → keep the tree clean. */
++		snprintf(filename, sizeof(filename),
++			 BGTK_TEST_SCREENSHOT_DIR "/%s", path);
++		out_path = filename;
+ 	}
+ 
+ 	// Convert internal 0xAARRGGBB buffer (alpha may vary) to proper
+@@ -384,6 +417,7 @@ int take_screenshot(struct BGTK_Context *ctx, const char *path)
+ 		rgba[i*4 + 3] = 0xFF;             // force opaque
+ 	}
+ 
++	bgtk_mkdir_parents(out_path);
+ 	int result = stbi_write_png(out_path, ctx-&gt;width, ctx-&gt;height,
+ 				    4, rgba, ctx-&gt;width * 4);
+ 	free(rgba);
+diff --git a/bgtk.h b/bgtk.h
+index 6a64a09..d477345 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -446,14 +446,18 @@ void bgtk_destroy_mock(struct BGTK_Context* ctx);
+ struct BGTK_Context* bgtk_init(int conn_fd, void* buffer, int width, int height);
+ 
+ // Initializes BGTK in mock/headless mode for testing. Owns an internal framebuffer.
+-// Use take_screenshot(ctx, "foo.png") after draws to inspect rendered output as an image.
++// Use take_screenshot(ctx, "foo.png") after draws (writes under test/screenshots/).
+ struct BGTK_Context* bgtk_init_mock(int width, int height);
+ 
+ // Handles a single event and returns whether a redraw is needed.
+ int bgtk_handle_input_event(struct BGTK_Context* ctx, struct InputEvent ev);
+ 
+ // Take a screenshot of the current framebuffer to a PNG file.
+-// If path is NULL, a timestamped name is generated automatically (for KEY_SYSRQ).
++// If path is NULL, a timestamped name is written under BGTK_TEST_SCREENSHOT_DIR
++// (for KEY_SYSRQ / convenience). A bare basename (no '/') is also placed there so
++// headless tests do not drop PNGs in the repo root. Paths with '/' are used as-is.
++// Parent directories are created as needed.
++#define BGTK_TEST_SCREENSHOT_DIR "test/screenshots"
+ int take_screenshot(struct BGTK_Context* ctx, const char* path);
+ 
+ // Inject a synthetic input event (for testing). Coordinates are absolute widget coords.
+diff --git a/config.c b/config.c
+index 74f753e..6efcb3b 100644
+--- a/config.c
++++ b/config.c
+@@ -350,10 +350,12 @@ void init_config_defaults(struct config *config)
+ 	 *   frame_margin = 0  → border is the window edge
+ 	 *   padding           → air inside the border
+ 	 *   margin            → gap between sibling widgets
++	 *   row_gap           → vertical space between stacked rows (px)
+ 	 */
+ 	config-&gt;theme.margin = 8;
+ 	config-&gt;theme.padding = 12;
+ 	config-&gt;theme.frame_margin = 0;
++	config-&gt;theme.row_gap = 8;
+ 
+ 	/* Font defaults under [font]: sans, mono, serif, size. */
+ 	config-&gt;font_sans_path[0] = '\0';
+@@ -451,6 +453,7 @@ int write_config(const struct config *config)
+ 	fprintf(f, "margin = %d\n", config-&gt;theme.margin);
+ 	fprintf(f, "padding = %d\n", config-&gt;theme.padding);
+ 	fprintf(f, "frame_margin = %d\n", config-&gt;theme.frame_margin);
++	fprintf(f, "row_gap = %d\n", config-&gt;theme.row_gap);
+ 
+ 	fprintf(f, "\n[font]\n");
+ 	if (config-&gt;font_sans_path[0])
+@@ -573,6 +576,8 @@ int parse_config(struct config *config)
+ 				config-&gt;theme.padding = atoi(value);
+ 			} else if (strcmp(key, "frame_margin") == 0) {
+ 				config-&gt;theme.frame_margin = atoi(value);
++			} else if (strcmp(key, "row_gap") == 0) {
++				config-&gt;theme.row_gap = atoi(value);
+ 			}
+ 		} else if (strcmp(current_section, "font") == 0) {
+ 			if (strcmp(key, "sans") == 0) {
+diff --git a/config.h b/config.h
+index 126e7f1..ccd498c 100644
+--- a/config.h
++++ b/config.h
+@@ -49,10 +49,14 @@ typedef struct {
+ 	 *   margin       — gap between sibling widgets (lists, rows)
+ 	 *   padding      — air inside the frame border (content inset)
+ 	 *   frame_margin — air outside the frame border (sowm cards: 0)
++	 *   row_gap      — preferred vertical gap between stacked rows
++	 *                  (e.g. status lines); list widgets use 2×margin
++	 *                  as inter-item space, so margin ≈ row_gap/2
+ 	 */
+ 	int margin;
+ 	int padding;
+ 	int frame_margin;
++	int row_gap;
+ } BGTK_Theme;
+ 
+ // Config structure
+diff --git a/test/headless.c b/test/headless.c
+index 981138c..e97a2b9 100644
+--- a/test/headless.c
++++ b/test/headless.c
+@@ -4,11 +4,11 @@
+  *     make headless
+  *     ./headless
+  *
+- * Produces headless_*.png files you can open to visually inspect the UI.
++ * Produces test/screenshots/headless_*.png files you can open to visually inspect the UI.
+  *
+  * Key APIs demonstrated:
+  *   - bgtk_init_mock(w, h)          : create a context with an owned in-memory buffer
+- *   - take_screenshot(ctx, "foo.png") or take_screenshot(ctx, NULL)
++ *   - take_screenshot(ctx, "foo.png") → test/screenshots/foo.png
+  *   - bgtk_inject_event(ctx, ev)    : simulate clicks and key presses
+  *   - bgtk_destroy_mock(ctx)
+  *   - BGTK_Options.text_align       : left / center / right within widget bounds
+diff --git a/test/screenshots/.gitkeep b/test/screenshots/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+diff --git a/test/test_gemini_browser.c b/test/test_gemini_browser.c
+index 4ec5f7e..640c39d 100644
+--- a/test/test_gemini_browser.c
++++ b/test/test_gemini_browser.c
+@@ -11,7 +11,7 @@
+  *
+  * Build: make test_gemini_browser
+  * Run:   ./test_gemini_browser
+- * Output: gemini_browser_*.png files
++ * Output: test/screenshots/gemini_browser_*.png files
+  */
+ 
+ #include &lt;stdio.h&gt;
+diff --git a/test/test_html.c b/test/test_html.c
+index 6371395..e453141 100644
+--- a/test/test_html.c
++++ b/test/test_html.c
+@@ -3,7 +3,7 @@
+  * Build:  make test_html
+  * Run:    ./test_html
+  *
+- * Produces test_html_*.png screenshots for visual inspection.
++ * Produces test/screenshots/test_html_*.png screenshots for visual inspection.
+  */
+ 
+ #include &lt;stdio.h&gt;
+diff --git a/test/test_settings.c b/test/test_settings.c
+index ef01366..828e1c0 100644
+--- a/test/test_settings.c
++++ b/test/test_settings.c
+@@ -5,7 +5,7 @@
+  * Build:  make test_settings
+  * Run:    ./test_settings
+  *
+- * Produces settings_*.png screenshots for visual inspection.
++ * Produces test/screenshots/settings_*.png screenshots for visual inspection.
+  * Exercises the sidebar navigation, page content, text input, and apply flow.
+  */
+ 
+diff --git a/test/test_terminal.c b/test/test_terminal.c
+index f4d6481..b40a53a 100644
+--- a/test/test_terminal.c
++++ b/test/test_terminal.c
+@@ -6,7 +6,7 @@
+  *
+  * Build:  make test_terminal
+  * Run:    ./test_terminal
+- * Output: term_*.png screenshots
++ * Output: test/screenshots/term_*.png screenshots
+  */
+ 
+ #include &lt;errno.h&gt;
+@@ -445,10 +445,11 @@ int main(void)
+ 			bgtk_destroy_mock(ctx);
+ 			return 1;
+ 		}
+-		/* With scroll region, CUD stops at bottom margin (no scroll). */
++		/* CUD does not scroll; it may leave the scroll region
++		 * (status line sits below DECSTBM). */
+ 		term_feed(vs, "\033[1;4r\033[4;1H\033[B", -1);
+-		if (vs-&gt;cur_row != 3) {
+-			bgtk_log("CUD past margin cur_row=%d want 3",
++		if (vs-&gt;cur_row != 4) {
++			bgtk_log("CUD past margin cur_row=%d want 4",
+ 				 vs-&gt;cur_row);
+ 			term_destroy(vs);
+ 			free(img-&gt;data.image.pixels);
+@@ -456,6 +457,97 @@ int main(void)
+ 			bgtk_destroy_mock(ctx);
+ 			return 1;
+ 		}
++		if (vs-&gt;cells[0].ch != 'A' || vs-&gt;cells[20].ch != 'B') {
++			bgtk_log("CUD at margin scrolled buffer");
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		term_destroy(vs);
++	}
++
++	/*
++	 * Scrollback view_off must not hide live output. If the user wheel-
++	 * scrolled then a fullscreen app (vim) redraws, top rows must show
++	 * the live buffer — not history.
++	 */
++	{
++		struct Term_State *vs = term_create(20, 6);
++		int r, c;
++		char row0[24];
++
++		/* Fill live screen and push a few rows into scrollback. */
++		for (r = 0; r &lt; 6; r++) {
++			char b[48];
++			snprintf(b, sizeof(b), "\033[%d;1Hold-%02d", r + 1, r);
++			term_feed(vs, b, -1);
++		}
++		for (r = 0; r &lt; 4; r++)
++			term_feed(vs, "\033[6;1H\n", -1);
++		if (vs-&gt;sb_len &lt; 1) {
++			bgtk_log("expected scrollback after full LF");
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* User scrolls up into history. */
++		if (!term_view_scroll(vs, vs-&gt;sb_len) || vs-&gt;view_off &lt; 1) {
++			bgtk_log("view_scroll up failed off=%d sb=%d",
++				 vs-&gt;view_off, vs-&gt;sb_len);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Vim-like: enter alt screen + clear + draw first line. */
++		term_feed(vs,
++			  "\033[?1049h\033[2J\033[H"
++			  "line 01 content here\r\nline 02 content here",
++			  -1);
++		if (vs-&gt;view_off != 0) {
++			bgtk_log("view_off stuck at %d after live feed",
++				 vs-&gt;view_off);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		for (c = 0; c &lt; 20; c++) {
++			char ch = vs-&gt;cells[c].ch;
++			row0[c] = (ch &gt;= 32 &amp;&amp; ch &lt; 127) ? ch : '.';
++		}
++		row0[20] = '\0';
++		if (!strstr(row0, "line 01")) {
++			bgtk_log("first live line hidden row0='%s'", row0);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Visual: paint into main test surface for screenshot inspect. */
++		{
++			int rr, cc;
++			for (rr = 0; rr &lt; ts-&gt;rows * ts-&gt;cols; rr++)
++				ts-&gt;cells[rr] = (struct Term_Cell){
++					.ch = ' ', .fg = 7, .bg = 0, .bold = 0
++				};
++			for (rr = 0; rr &lt; ts-&gt;rows &amp;&amp; rr &lt; vs-&gt;rows; rr++)
++				for (cc = 0; cc &lt; ts-&gt;cols &amp;&amp; cc &lt; vs-&gt;cols; cc++)
++					ts-&gt;cells[rr * ts-&gt;cols + cc] =
++						vs-&gt;cells[rr * vs-&gt;cols + cc];
++			ts-&gt;view_off = 0;
++			term_render(ts, ctx, img-&gt;data.image.pixels, inner_w,
++				    inner_h);
++			bgtk_draw_widgets(ctx);
++			take_screenshot(ctx, "term_10_vim_live_first_line.png");
++		}
+ 		term_destroy(vs);
+ 	}
+ 
+diff --git a/test/test_theme_gallery.c b/test/test_theme_gallery.c
+index b946cd1..96ffa17 100644
+--- a/test/test_theme_gallery.c
++++ b/test/test_theme_gallery.c
+@@ -5,7 +5,7 @@
+  *
+  * Build:  make test_theme_gallery
+  * Run:    ./test_theme_gallery
+- * Output: settings_theme_*.png
++ * Output: test/screenshots/settings_theme_*.png
+  */
+ 
+ #include &lt;stdio.h&gt;
+</pre>

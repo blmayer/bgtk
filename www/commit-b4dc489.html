@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk b4dc489</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit b4dc489
+parent <a href=commit-43fbd0f.html>43fbd0f</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-06T19:43:05-03:00
+
+    fix: avoid strncpy overlap crash in bgtk_log_open.
+
+    bgtk_log_ensure reopened the log with bgtk_log_name as the app name,
+    which strncpy'd the buffer onto itself and aborted under fortify.
+
+<a href=tree-b4dc489.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/bgtk.c b/bgtk.c
+index a3defe8..3f91552 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -82,7 +82,8 @@ void bgtk_log_open(const char *app_name)
+ 	char dir[512];
+ 	char path[640];
+ 
+-	if (app_name &amp;&amp; app_name[0]) {
++	/* Avoid strncpy(dst, dst) when ensure() reopens with bgtk_log_name. */
++	if (app_name &amp;&amp; app_name[0] &amp;&amp; app_name != bgtk_log_name) {
+ 		strncpy(bgtk_log_name, app_name, sizeof(bgtk_log_name) - 1);
+ 		bgtk_log_name[sizeof(bgtk_log_name) - 1] = '\0';
+ 	}
+</pre>

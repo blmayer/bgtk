@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk c34688d</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit c34688d
+parent <a href=commit-0a314a7.html>0a314a7</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-06-21T23:57:52-03:00
+
+    feat: added text_align option and headless L/C/R screenshot coverage
+
+<a href=tree-c34688d.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/bgtk.h b/bgtk.h
+index 29765ea..3e49235 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -219,7 +219,14 @@ enum BGTK_Widget_Type {
+ };
+ 
+ // Widget flags
+-#define BGTK_FLAG_CENTER (1 &lt;&lt; 0)  // Center widgets horizontally
++#define BGTK_FLAG_CENTER (1 &lt;&lt; 0)  // Center child widgets horizontally (containers)
++
++// Text alignment within a widget's content area (like CSS text-align)
++enum BGTK_Text_Align {
++	BGTK_ALIGN_LEFT = 0,
++	BGTK_ALIGN_CENTER,
++	BGTK_ALIGN_RIGHT,
++};
+ 
+ // List widget orientation
+ enum BGTK_List_Orientation {
+@@ -232,6 +239,7 @@ typedef struct {
+ 	int flags;      // Flags for widget behavior (e.g., BGTK_FLAG_CENTER).
+ 	int padding;    // Internal spacing (pixels).
+ 	int margin;     // External spacing (pixels).
++	enum BGTK_Text_Align text_align;  // Horizontal text alignment (default: left)
+ 	enum BGTK_List_Orientation orientation;  // For list widget: vertical or horizontal
+ } BGTK_Options;
+ 
+@@ -243,6 +251,7 @@ struct BGTK_Widget {
+ 	int flags;          // Flags for widget behavior
+ 	int padding;        // Internal spacing (pixels)
+ 	int margin;         // External spacing (pixels)
++	enum BGTK_Text_Align text_align;  // Horizontal text alignment
+ 	
+ 	// Function pointer for event handling
+ 	int (*handle_event)(struct BGTK_Widget* widget, struct InputEvent ev);
+diff --git a/drawing.c b/drawing.c
+index f247c30..684d178 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -97,20 +97,25 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 	case BGTK_WIDGET_LABEL:
+ 		if (w-&gt;data.label.text) {
+ 			calculate_widget_size(ctx, w-&gt;data.label.text);
+-			w-&gt;w = w-&gt;data.label.text-&gt;w +
++			int nw = w-&gt;data.label.text-&gt;w +
+ 			    2 * (w-&gt;padding + w-&gt;margin);
+-			w-&gt;h = w-&gt;data.label.text-&gt;h +
++			int nh = w-&gt;data.label.text-&gt;h +
+ 			    2 * (w-&gt;padding + w-&gt;margin);
++			// Keep a larger pre-set width (for text_align room).
++			if (w-&gt;w &lt; nw)
++				w-&gt;w = nw;
++			w-&gt;h = nh;
+ 		}
+ 		break;
+ 	case BGTK_WIDGET_TEXT:
+ 		if (w-&gt;data.text.text) {
+-			measure_text(ctx-&gt;ft_face, w-&gt;data.text.text,
+-				     &amp;w-&gt;w, &amp;w-&gt;h);
+-			// Add padding + margin to the text widget
+-			// (outer size)
+-			w-&gt;w += 2 * (w-&gt;padding + w-&gt;margin);
+-			w-&gt;h += 2 * (w-&gt;padding + w-&gt;margin);
++			int tw = 0, th = 0;
++			measure_text(ctx-&gt;ft_face, w-&gt;data.text.text, &amp;tw, &amp;th);
++			int nw = tw + 2 * (w-&gt;padding + w-&gt;margin);
++			int nh = th + 2 * (w-&gt;padding + w-&gt;margin);
++			if (w-&gt;w &lt; nw)
++				w-&gt;w = nw;
++			w-&gt;h = nh;
+ 		}
+ 		break;
+ 	case BGTK_WIDGET_BUTTON:
+@@ -121,10 +126,13 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 			if (border_w &lt; 1) {
+ 				border_w = 1;
+ 			}
+-			w-&gt;w = w-&gt;data.button.label-&gt;w +
++			int nw = w-&gt;data.button.label-&gt;w +
+ 			    2 * (w-&gt;margin + w-&gt;padding + border_w);
+-			w-&gt;h = w-&gt;data.button.label-&gt;h +
++			int nh = w-&gt;data.button.label-&gt;h +
+ 			    2 * (w-&gt;margin + w-&gt;padding + border_w);
++			if (w-&gt;w &lt; nw)
++				w-&gt;w = nw;
++			w-&gt;h = nh;
+ 		}
+ 		break;
+ 
+@@ -353,6 +361,20 @@ static void draw_image(struct BGTK_Context *ctx, struct BGTK_Widget w,
+ 	}
+ }
+ 
++// Compute horizontal offset for text_align within a content box of width
++// content_w given measured text width text_w.
++static int text_align_offset(enum BGTK_Text_Align align, int content_w,
++			     int text_w)
++{
++	if (content_w &lt;= text_w)
++		return 0;
++	if (align == BGTK_ALIGN_CENTER)
++		return (content_w - text_w) / 2;
++	if (align == BGTK_ALIGN_RIGHT)
++		return content_w - text_w;
++	return 0;  // BGTK_ALIGN_LEFT
++}
++
+ static void draw_label(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		       uint32_t *pixels)
+ {
+@@ -360,9 +382,13 @@ static void draw_label(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
+ 		  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin,
+ 		  ctx-&gt;theme.background);
+-	// Draw text widget (offset for padding and margin)
++	// Draw text widget (offset for padding and margin + alignment)
+ 	if (w-&gt;data.label.text) {
+-		w-&gt;data.label.text-&gt;x = w-&gt;x + w-&gt;margin + w-&gt;padding;
++		int content_x0 = w-&gt;x + w-&gt;margin + w-&gt;padding;
++		int content_w = w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
++		int ax = text_align_offset(w-&gt;text_align, content_w,
++					   w-&gt;data.label.text-&gt;w);
++		w-&gt;data.label.text-&gt;x = content_x0 + ax;
+ 		w-&gt;data.label.text-&gt;y = w-&gt;y + w-&gt;margin + w-&gt;padding;
+ 		draw_widget(ctx, w-&gt;data.label.text, pixels);
+ 	}
+@@ -382,14 +408,21 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	} else if (is_fuchsia_line) {
+ 		color = BGTK_COLOR_FUCHSIA;
+ 	}
++
++	int content_x0 = w-&gt;x + w-&gt;margin + w-&gt;padding;
++	int content_y0 = w-&gt;y + w-&gt;margin + w-&gt;padding;
++	int content_w = w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
++	int tw = 0, th = 0;
++	measure_text(ctx-&gt;ft_face, w-&gt;data.text.text, &amp;tw, &amp;th);
++	int ax = text_align_offset(w-&gt;text_align, content_w, tw);
++	int tx = content_x0 + ax;
++	int ty = content_y0;
++
+ 	if (is_header) {
+ 		// cheap bold effect via 1px offset
+-		draw_text(ctx, pixels, w-&gt;data.text.text,
+-			  w-&gt;x + w-&gt;margin + w-&gt;padding + 1,
+-			  w-&gt;y + w-&gt;margin + w-&gt;padding + 1, color);
++		draw_text(ctx, pixels, w-&gt;data.text.text, tx + 1, ty + 1, color);
+ 	}
+-	draw_text(ctx, pixels, w-&gt;data.text.text, w-&gt;x + w-&gt;margin + w-&gt;padding,
+-		  w-&gt;y + w-&gt;margin + w-&gt;padding, color);
++	draw_text(ctx, pixels, w-&gt;data.text.text, tx, ty, color);
+ 	if (is_header) {
+ 		ctx-&gt;font_size = old_size;
+ 	}
+@@ -448,8 +481,10 @@ static void draw_button(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 			content_h = 0;
+ 		}
+ 
++		// Horizontal: respect text_align; vertical: always center
+ 		int lx = content_x0 +
+-		    (content_w - w-&gt;data.button.label-&gt;w) / 2 + off;
++		    text_align_offset(w-&gt;text_align, content_w,
++				      w-&gt;data.button.label-&gt;w) + off;
+ 		int ly = content_y0 +
+ 		    (content_h - w-&gt;data.button.label-&gt;h) / 2 + off;
+ 
+@@ -648,7 +683,6 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		scroll_x = 0;
+ 	}
+ 
+-	int draw_x = text_x - scroll_x;
+ 	const char *full =
+ 	    w-&gt;data.text_input.text ? w-&gt;data.text_input.text : "";
+ 
+@@ -656,6 +690,20 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		return;
+ 	}
+ 
++	// Align text within the inner content area when it fits without scroll.
++	int content_w = inner_w - 2 * w-&gt;padding;
++	if (content_w &lt; 1) {
++		content_w = 1;
++	}
++	int tw = 0, th = 0;
++	measure_text(ctx-&gt;ft_face, full, &amp;tw, &amp;th);
++	int align_off = 0;
++	if (scroll_x == 0 &amp;&amp; tw &lt; content_w) {
++		align_off = text_align_offset(w-&gt;text_align, content_w, tw);
++	}
++
++	int draw_x = text_x - scroll_x + align_off;
++
+ 	int stride = ctx-&gt;width;
+ 	FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
+ 	int pen_x = draw_x;
+@@ -725,7 +773,7 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	}
+ 
+ 	if (focused) {
+-		int cursor_x = text_x - scroll_x;
++		int cursor_x = text_x - scroll_x + align_off;
+ 		for (uint32_t i = 0; i &lt; w-&gt;data.text_input.cursor_pos; i++) {
+ 			FT_UInt index =
+ 			    FT_Get_Char_Index(ctx-&gt;ft_face,
+diff --git a/test/headless.c b/test/headless.c
+index 10bfa87..ba9f08d 100644
+--- a/test/headless.c
++++ b/test/headless.c
+@@ -11,6 +11,7 @@
+  *   - take_screenshot(ctx, "foo.png") or take_screenshot(ctx, NULL)
+  *   - bgtk_inject_event(ctx, ev)    : simulate clicks and key presses
+  *   - bgtk_destroy_mock(ctx)
++ *   - BGTK_Options.text_align       : left / center / right within widget bounds
+  *
+  * No BGCE server, DRM, or real input devices are required.
+  * This is the recommended workflow for developing and debugging widgets.
+@@ -35,6 +36,84 @@ static void on_click(void)
+ 	}
+ }
+ 
++/* Force outer width so text_align has horizontal room (draw still measures height). */
++static struct BGTK_Widget *fix_w(struct BGTK_Widget *w, int width)
++{
++	if (w)
++		w-&gt;w = width;
++	return w;
++}
++
++/* One column: heading + text/label/button/input all at the given alignment,
++ * at a shared width so left/center/right is obvious in screenshots.
++ * out_input (optional) receives the column's text_input for later focus/typing. */
++static struct BGTK_Widget *align_column(struct BGTK_Context *ctx,
++					const char *heading,
++					enum BGTK_Text_Align align,
++					struct BGTK_Widget **out_input)
++{
++	const int row_w = 190;
++	BGTK_Options ao = {.padding = 4, .margin = 2, .text_align = align};
++
++	struct BGTK_Widget *h = fix_w(bgtk_text(ctx, (char *)heading, ao), row_w);
++	struct BGTK_Widget *t = fix_w(bgtk_text(ctx, "text", ao), row_w);
++	struct BGTK_Widget *l = fix_w(bgtk_label(ctx, "label", ao), row_w);
++	struct BGTK_Widget *bl = bgtk_text(ctx, "btn", (BGTK_Options){.padding = 2, .text_align = align});
++	struct BGTK_Widget *b = fix_w(
++		bgtk_button(ctx, bl, NULL, (BGTK_Options){.padding = 6, .margin = 2, .text_align = align}),
++		row_w);
++	struct BGTK_Widget *ti = bgtk_text_input(ctx, "input", row_w, 0, ao);
++	if (out_input)
++		*out_input = ti;
++
++	struct BGTK_Widget *items[5] = {h, t, l, b, ti};
++	return bgtk_list(ctx, items, 5,
++		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = 4});
++}
++
++static int run_align_scene(void)
++{
++	/* Wide enough for three 200px columns side by side. */
++	struct BGTK_Context *ctx = bgtk_init_mock(680, 280);
++	if (!ctx) {
++		fprintf(stderr, "headless: align init failed\n");
++		return 1;
++	}
++
++	struct BGTK_Widget *title = bgtk_text(ctx, "text_align L / C / R",
++		(BGTK_Options){.padding = 4, .margin = 4});
++
++	struct BGTK_Widget *right_input = NULL;
++	struct BGTK_Widget *cols[3] = {
++		align_column(ctx, "LEFT", BGTK_ALIGN_LEFT, NULL),
++		align_column(ctx, "CENTER", BGTK_ALIGN_CENTER, NULL),
++		align_column(ctx, "RIGHT", BGTK_ALIGN_RIGHT, &amp;right_input),
++	};
++	struct BGTK_Widget *row = bgtk_list(ctx, cols, 3,
++		(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .margin = 4});
++
++	struct BGTK_Widget *stack[2] = {title, row};
++	ctx-&gt;root_widget = bgtk_list(ctx, stack, 2,
++		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = 4});
++
++	bgtk_draw_widgets(ctx);
++	take_screenshot(ctx, "headless_05_text_align.png");
++
++	/* Focus the right-aligned input and type a short string; alignment
++	 * should still apply while the text fits (no horizontal scroll). */
++	bgtk_set_focus(ctx, right_input);
++	struct InputEvent key = {0};
++	key.type = EV_KEY;
++	key.value = 1;
++	key.code = KEY_H; bgtk_inject_event(ctx, key);
++	key.code = KEY_I; bgtk_inject_event(ctx, key);
++	bgtk_draw_widgets(ctx);
++	take_screenshot(ctx, "headless_06_text_align_input.png");
++
++	bgtk_destroy_mock(ctx);
++	return 0;
++}
++
+ int main(void)
+ {
+ 	/* 1. Headless init: no server, we get a plain malloc framebuffer */
+@@ -106,7 +185,12 @@ int main(void)
+ 	key.code = KEY_BACKSPACE; bgtk_inject_event(ctx, key);
+ 	take_screenshot(ctx, "headless_04_backspaced.png");
+ 
+-	printf("headless test complete. PNG frames written.\n");
+ 	bgtk_destroy_mock(ctx);
++
++	/* 7. text_align showcase (separate scene, wider canvas) */
++	if (run_align_scene() != 0)
++		return 1;
++
++	printf("headless test complete. PNG frames written.\n");
+ 	return 0;
+ }
+diff --git a/widgets.c b/widgets.c
+index 334fed9..6fc8b52 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -566,6 +566,7 @@ static struct BGTK_Widget *widget_new(struct BGTK_Context *ctx,
+ 	widget-&gt;flags = options.flags;
+ 	widget-&gt;padding = options.padding;
+ 	widget-&gt;margin = options.margin;
++	widget-&gt;text_align = options.text_align;
+ 	widget-&gt;w = 0;
+ 	widget-&gt;h = 0;
+ 
+@@ -581,9 +582,10 @@ void set_label(struct BGTK_Widget *widget, char *label)
+ 		free(widget-&gt;data.label.text-&gt;data.text.text);
+ 		free(widget-&gt;data.label.text);
+ 	}
+-	// Create a new text widget for the label
++	// Create a new text widget for the label (inherit alignment)
+ 	struct BGTK_Widget *text_widget =
+-	    bgtk_text(widget-&gt;ctx, label, (BGTK_Options) {.flags = 0 });
++	    bgtk_text(widget-&gt;ctx, label,
++		      (BGTK_Options) {.text_align = widget-&gt;text_align });
+ 	if (!text_widget) {
+ 		perror("BGTK Failed to create text widget for " "label");
+ 		return;
+@@ -609,9 +611,10 @@ struct BGTK_Widget *bgtk_label(struct BGTK_Context *ctx, char *text,
+ 
+ 	widget-&gt;data.label.set_label = set_label;
+ 
+-	// Create a text widget for the label
++	// Create a text widget for the label (inherit alignment)
+ 	struct BGTK_Widget *text_widget =
+-	    bgtk_text(ctx, text, (BGTK_Options) {.flags = 0 });
++	    bgtk_text(ctx, text,
++		      (BGTK_Options) {.text_align = options.text_align });
+ 	if (!text_widget) {
+ 		perror("BGTK Failed to create text widget for " "label");
+ 		free(widget);
+</pre>

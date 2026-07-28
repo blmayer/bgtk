@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 0725c1d</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 0725c1d
+parent <a href=commit-b0c506c.html>b0c506c</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-08T14:20:36-03:00
+
+    fix: make crash backtraces optional without execinfo.h.
+
+    Use __has_include / glibc-or-Apple only so musl and embedded
+    toolchains build; signal names still log without stack dumps.
+
+<a href=tree-0725c1d.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/bgtk.c b/bgtk.c
+index b40992e..414df37 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -18,10 +18,19 @@
+ #include &lt;time.h&gt;
+ #include &lt;unistd.h&gt;
+ 
+-#if defined(__linux__) || defined(__APPLE__)
++/* backtrace(3) is glibc/BSD; musl and many embedded toolchains lack it. */
++#if defined(__has_include)
++#if __has_include(&lt;execinfo.h&gt;)
+ #include &lt;execinfo.h&gt;
+ #define BGTK_HAVE_BACKTRACE 1
+ #endif
++#elif defined(__GLIBC__) || defined(__APPLE__)
++#include &lt;execinfo.h&gt;
++#define BGTK_HAVE_BACKTRACE 1
++#endif
++#ifndef BGTK_HAVE_BACKTRACE
++#define BGTK_HAVE_BACKTRACE 0
++#endif
+ 
+ #include "config.h"
+ #include "internal.h"
+</pre>

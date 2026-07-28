@@ -1,0 +1,2180 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk b2d5e63</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit b2d5e63
+parent <a href=commit-38e9e89.html>38e9e89</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-08T14:04:31-03:00
+
+    feat: Paper default theme, rule widget, focus colors, settings polish.
+
+    Add rule dividers, bold/italic text styles, themeable focus/highlight,
+    borderless frames/tables, text baseline options, and dual-stack IPv6
+    network probes. Settings loads full bgce.conf (bg/cursors/shortcuts),
+    reflows on resize, and defaults to the Paper palette. Theme gallery
+    headless test included.
+
+<a href=tree-b2d5e63.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/Makefile b/Makefile
+index 4d2d523..6d2220d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -83,15 +83,21 @@ ifeq ($(UNAME_S),Linux)
+   PTY_LIBS := -lutil
+ endif
+ 
++# Real BGCE apps (install always builds these so a lib-only install cannot
++# leave stale binaries against a newer libbgtk.so / struct layout).
++# gemini_browser needs libtls — built last and optional on install.
++CORE_APPS = test_app image_viewer launcher terminal settings sys_status
++ALL_APPS = $(CORE_APPS) gemini_browser
++
+ # Default `make` builds the library and core apps. settings is intentionally
+ # before gemini_browser so a missing libtls does not skip it.
+ # gemini_browser needs libtls; build it last (or: make gemini_browser).
+-TARGET = libbgtk.so test_app image_viewer launcher terminal settings sys_status gemini_browser
++TARGET = libbgtk.so $(ALL_APPS)
+ # On macOS (Darwin), plain `make` will try to build libbgtk.so and real
+ # apps which require the bgce library (Linux-specific). Default to
+ # headless/test targets so `make` succeeds for development on mac.
+ ifeq ($(UNAME_S),Darwin)
+-  TARGET = headless test_terminal test_html test_settings test_sys_status
++  TARGET = headless test_terminal test_html test_settings test_theme_gallery test_sys_status
+ endif
+ 
+ # Install layout. Empty PREFIX → flat root (/lib, /include, /bin) for lin0.
+@@ -121,6 +127,7 @@ TEST_GEMINI_OBJ := test/test_gemini_browser.o
+ TEST_HTML_OBJ := test/test_html.o
+ SETTINGS_OBJ := apps/settings.o
+ TEST_SETTINGS_OBJ := test/test_settings.o
++TEST_THEME_GALLERY_OBJ := test/test_theme_gallery.o
+ SETTINGS_TEST_OBJ := apps/settings_test.o
+ SYS_STATUS_OBJ := apps/sys_status.o
+ TEST_SYS_STATUS_OBJ := test/test_sys_status.o
+@@ -159,6 +166,7 @@ help:
+ 	@echo "  test_terminal        Terminal/ANSI (+ optional real PTY) screenshots"
+ 	@echo "  test_html            HTML → widget tree screenshots"
+ 	@echo "  test_settings        Settings UI screenshots"
++	@echo "  test_theme_gallery   Settings under candidate themes (settings_theme_*.png)"
+ 	@echo "  test_gemini_browser  Gemini browser flow screenshots (libtls for live fetch)"
+ 	@echo ""
+ 	@echo "  Maintenance"
+@@ -223,7 +231,7 @@ sys_status: $(SYS_STATUS_OBJ) libbgtk.so
+ # Headless targets still link LIB_OBJS + stub directly (no libbgce).
+ # Rebuild lib objs with -Icompat only for those units when on Linux so
+ # mock/stub headers are available; on Darwin CFLAGS already has -Icompat.
+-$(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ) $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ): CFLAGS += -I$(COMPAT_DIR)
++$(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ): CFLAGS += -I$(COMPAT_DIR)
+ 
+ $(HEADLESS_STUB): $(COMPAT_DIR)/bgce_stub.c
+ 	$(CC) $(HEADLESS_CFLAGS) -c -o $@ $&lt;
+@@ -271,6 +279,13 @@ $(TEST_SETTINGS_OBJ): test/test_settings.c
+ test_settings: $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
+ 	$(CC) -o $@ $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS)
+ 
++# Theme gallery: same settings object, different driver
++$(TEST_THEME_GALLERY_OBJ): test/test_theme_gallery.c
++	$(CC) $(CFLAGS) -c -o $@ $&lt;
++
++test_theme_gallery: $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
++	$(CC) -o $@ $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS)
++
+ # System status headless test
+ $(SYS_STATUS_TEST_OBJ): apps/sys_status.c
+ 	$(CC) $(CFLAGS) -DSYS_STATUS_TEST_MODE -c -o $@ $&lt;
+@@ -292,24 +307,30 @@ $(HEADLESS_OBJ): bgtk.h
+ $(SETTINGS_OBJ): html.h bgtk.h config.h
+ $(SETTINGS_TEST_OBJ): html.h bgtk.h config.h
+ $(TEST_SETTINGS_OBJ): html.h bgtk.h config.h
++$(TEST_THEME_GALLERY_OBJ): html.h bgtk.h config.h
+ 
+ %.o: %.c
+ 	$(CC) $(CFLAGS) -c -o $@ $&lt;
+ 
+ clean:
+-	rm -f $(TARGET) terminal test_terminal test_gemini_browser gemini_browser test_html test_settings test_sys_status settings sys_status \
++	rm -f $(TARGET) $(ALL_APPS) terminal test_terminal test_gemini_browser \
++		test_html test_settings test_theme_gallery test_sys_status headless \
+ 		$(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) \
+ 		$(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) \
+-		$(TEST_HTML_OBJ) $(SETTINGS_OBJ) $(TEST_SETTINGS_OBJ) $(SETTINGS_TEST_OBJ) \
++		$(TEST_HTML_OBJ) $(SETTINGS_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) \
+ 		$(SYS_STATUS_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) libbgtk.so
+ 
+-install: libbgtk.so bgtk.h
++# Rebuild core apps before install. After BGTK_Context layout changes, a
++# lib-only install leaves blank windows (apps write root_widget at wrong offset).
++# gemini_browser is best-effort (needs libtls).
++install: libbgtk.so bgtk.h $(CORE_APPS)
++	-$(MAKE) gemini_browser
+ 	install -d $(INSTALL_LIB)
+ 	install -m 755 libbgtk.so $(INSTALL_LIB)
+ 	install -d $(INSTALL_INCLUDE)
+ 	install -m 644 bgtk.h $(INSTALL_INCLUDE)
+ 	-install -d $(INSTALL_BIN)
+-	-for f in test_app image_viewer launcher terminal settings sys_status gemini_browser; do \
++	-for f in $(ALL_APPS); do \
+ 		if [ -f $$f ]; then install -m 755 $$f $(INSTALL_BIN); fi; \
+ 	done
+ 	-ldconfig 2&gt;/dev/null || true
+diff --git a/README.md b/README.md
+index 04d19a5..b9abfff 100644
+--- a/README.md
++++ b/README.md
+@@ -86,21 +86,25 @@ BGTK is configured via `~/.config/bgtk.conf`. Example with all options and their
+ # Background settings
+ [background]
+ type = color
+-color = #E8E8E8
++color = #F4F1EA
+ # Or use an image:
+ # type = image
+ # path = /path/to/wallpaper.png
+ # mode = tiled
+ 
+-# Theme colors and border sizes
++# Theme colors and border sizes (default: Paper)
+ [theme]
+-background = #E8E8E8
+-button = #D0D0D0
+-button_text = #111111
++background = #F4F1EA
++button = #E8E2D6
++button_text = #1C1917
+ button_border_size = 1
+-input_border_size = 2
+-frame_border_size = 4
+-frame_border_color = #333333
++input_border_size = 1
++frame_border_size = 2
++frame_border_color = #C4B8A8
++focus = #B45309
++focus_bg = #FFF7ED
++highlight = #78716C
++# text_baseline_offset = 0   # global FreeType baseline tweak (px; can be negative)
+ 
+ # Font settings (sans = UI; mono = terminal; serif = documents)
+ [font]
+diff --git a/apps/settings.c b/apps/settings.c
+index 99128de..cf15049 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -39,6 +39,7 @@ static int app_h = 480;
+ 
+ static struct BGTK_Widget *sidebar_list; /* the list widget inside the scrollable */
+ static struct BGTK_Widget *sidebar;
++static struct BGTK_Widget *panel_rule; /* vertical divider between sidebar + content */
+ static struct BGTK_Widget *content_panel;
+ static struct BGTK_Widget *root_frame;
+ 
+@@ -54,6 +55,8 @@ static struct BGTK_Widget *bg_color_input;
+ static struct BGTK_Widget *bg_path_input;
+ 
+ static struct BGTK_Widget *cursor_path_input;
++/* [cursors] theme = from ~/.config/bgce.conf (name or path). */
++static char cursor_theme[MAX_PATH_LEN];
+ 
+ #define MAX_SHORTCUT_ROWS 24
+ static struct BGTK_Widget *shortcut_inputs[MAX_SHORTCUT_ROWS];
+@@ -68,6 +71,9 @@ static struct BGTK_Widget *theme_frame_border_input;
+ static struct BGTK_Widget *theme_btn_border_input;
+ static struct BGTK_Widget *theme_input_border_input;
+ static struct BGTK_Widget *theme_frame_color_input;
++static struct BGTK_Widget *theme_focus_input;
++static struct BGTK_Widget *theme_focus_bg_input;
++static struct BGTK_Widget *theme_highlight_input;
+ 
+ /* Font dropdown: open for one role (sans/mono/serif) at a time. */
+ static int font_dropdown_open;
+@@ -575,11 +581,104 @@ static void toggle_bg_type(void *userdata)
+ 	rebuild_content();
+ }
+ 
++/* Write [cursors] theme into bgce.conf (merge, keep other sections). */
++static void write_bgce_cursors(void)
++{
++	const char *home = getenv("HOME");
++	char path[512], tmp[512], dir[512];
++	FILE *in, *out;
++	char line[512];
++	char section[64] = "";
++	int wrote = 0;
++
++	if (!home || !home[0])
++		return;
++	if (cursor_path_input &amp;&amp; cursor_path_input-&gt;data.text_input.text) {
++		strncpy(cursor_theme, cursor_path_input-&gt;data.text_input.text,
++			MAX_PATH_LEN - 1);
++		cursor_theme[MAX_PATH_LEN - 1] = '\0';
++	}
++	snprintf(dir, sizeof(dir), "%s/.config", home);
++	(void)mkdir(dir, 0755);
++	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
++	snprintf(tmp, sizeof(tmp), "%s/.config/bgce.conf.bgtk-tmp", home);
++	in = fopen(path, "r");
++	out = fopen(tmp, "w");
++	if (!out) {
++		if (in)
++			fclose(in);
++		return;
++	}
++	if (in) {
++		int skip = 0;
++		while (fgets(line, sizeof(line), in)) {
++			char *p = line;
++			while (*p == ' ' || *p == '\t')
++				p++;
++			if (*p == '[') {
++				char *end = strchr(p, ']');
++				section[0] = '\0';
++				if (end &amp;&amp;
++				    (size_t)(end - p - 1) &lt; sizeof(section)) {
++					memcpy(section, p + 1,
++					       (size_t)(end - p - 1));
++					section[end - p - 1] = '\0';
++				}
++				if (strcmp(section, "cursors") == 0) {
++					skip = 1;
++					continue;
++				}
++				if (skip) {
++					fprintf(out, "[cursors]\n");
++					if (cursor_theme[0])
++						fprintf(out, "theme = %s\n",
++							cursor_theme);
++					fprintf(out, "\n");
++					wrote = 1;
++					skip = 0;
++				}
++				fputs(line, out);
++				continue;
++			}
++			if (skip)
++				continue;
++			fputs(line, out);
++		}
++		if (skip) {
++			fprintf(out, "[cursors]\n");
++			if (cursor_theme[0])
++				fprintf(out, "theme = %s\n", cursor_theme);
++			wrote = 1;
++		}
++		fclose(in);
++	}
++	if (!wrote) {
++		fprintf(out, "[cursors]\n");
++		if (cursor_theme[0])
++			fprintf(out, "theme = %s\n", cursor_theme);
++	}
++	fclose(out);
++	if (rename(tmp, path) != 0)
++		bgtk_log_errno("write_bgce_cursors rename");
++	else
++		bgtk_log("wrote cursors theme='%s' to %s",
++			 cursor_theme[0] ? cursor_theme : "(empty)", path);
++}
++
+ static void apply_cursor(void *userdata)
+ {
+ 	(void)userdata;
+-	/* Cursor path saved for future BGCE integration */
+-	write_config(&amp;cfg);
++	write_bgce_cursors();
++	rebuild_content();
++}
++
++static void pick_cursor_theme(void *userdata)
++{
++	const char *name = (const char *)userdata;
++	if (name &amp;&amp; name[0]) {
++		strncpy(cursor_theme, name, MAX_PATH_LEN - 1);
++		cursor_theme[MAX_PATH_LEN - 1] = '\0';
++	}
+ 	rebuild_content();
+ }
+ 
+@@ -723,7 +822,16 @@ static void apply_theme(void *userdata)
+ 		cfg.theme.input_border_size = atoi(theme_input_border_input-&gt;data.text_input.text);
+ 	if (theme_frame_color_input)
+ 		cfg.theme.frame_border_color = parse_color_input(theme_frame_color_input-&gt;data.text_input.text);
++	if (theme_focus_input)
++		cfg.theme.focus = parse_color_input(theme_focus_input-&gt;data.text_input.text);
++	if (theme_focus_bg_input)
++		cfg.theme.focus_bg = parse_color_input(theme_focus_bg_input-&gt;data.text_input.text);
++	if (theme_highlight_input)
++		cfg.theme.highlight = parse_color_input(theme_highlight_input-&gt;data.text_input.text);
+ 	write_config(&amp;cfg);
++	if (ctx)
++		ctx-&gt;theme = cfg.theme;
++	rebuild_sidebar();
+ 	rebuild_content();
+ }
+ 
+@@ -763,6 +871,7 @@ static void toggle_font_dropdown(void *userdata)
+ 
+ static char *build_background_html(void)
+ {
++	/* Values come from load_bgce_config / cfg (desktop = bgce.conf). */
+ 	char color_hex[16];
+ 	format_hex_color(cfg.color, color_hex, sizeof(color_hex));
+ 
+@@ -770,6 +879,7 @@ static char *build_background_html(void)
+ 	int pos = 0;
+ 	pos += snprintf(buf + pos, 4096 - pos,
+ 		"&lt;html&gt;&lt;body&gt;"
++		"&lt;p&gt;Desktop (~/.config/bgce.conf [background])&lt;/p&gt;"
+ 		"&lt;table&gt;"
+ 		"&lt;tr&gt;&lt;td&gt;Type&lt;/td&gt;&lt;td&gt;&lt;button&gt;[ %s ]&lt;/button&gt;&lt;/td&gt;&lt;/tr&gt;",
+ 		cfg.type == BG_IMAGE ? "Image" : "Color");
+@@ -799,6 +909,7 @@ static char *build_cursor_html(void)
+ {
+ 	char **cursors = NULL;
+ 	int ncursors = scan_cursors(&amp;cursors);
++	const char *cur = cursor_theme[0] ? cursor_theme : "";
+ 
+ 	int buflen = 4096 + ncursors * 256;
+ 	char *buf = malloc(buflen);
+@@ -806,11 +917,13 @@ static char *build_cursor_html(void)
+ 
+ 	pos += snprintf(buf + pos, buflen - pos,
+ 		"&lt;html&gt;&lt;body&gt;"
++		"&lt;p&gt;From ~/.config/bgce.conf [cursors]&lt;/p&gt;"
+ 		"&lt;table&gt;"
+-		"&lt;tr&gt;&lt;td&gt;Custom path&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"\" width=\"260\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;td&gt;theme&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"260\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+ 		"&lt;/table&gt;"
+-		"&lt;p&gt;Available themes:&lt;/p&gt;"
+-		"&lt;ul&gt;");
++		"&lt;p&gt;Installed themes (click to select):&lt;/p&gt;"
++		"&lt;ul&gt;",
++		cur);
+ 
+ 	if (ncursors == 0) {
+ 		pos += snprintf(buf + pos, buflen - pos,
+@@ -926,14 +1039,17 @@ static char *build_font_html(void)
+ 
+ static char *build_theme_html(void)
+ {
+-	char bg[16], btn[16], btxt[16], fbc[16];
++	char bg[16], btn[16], btxt[16], fbc[16], foc[16], fbg[16], hi[16];
+ 	format_hex_color(cfg.theme.background, bg, sizeof(bg));
+ 	format_hex_color(cfg.theme.button, btn, sizeof(btn));
+ 	format_hex_color(cfg.theme.button_text, btxt, sizeof(btxt));
+ 	format_hex_color(cfg.theme.frame_border_color, fbc, sizeof(fbc));
++	format_hex_color(cfg.theme.focus, foc, sizeof(foc));
++	format_hex_color(cfg.theme.focus_bg, fbg, sizeof(fbg));
++	format_hex_color(cfg.theme.highlight, hi, sizeof(hi));
+ 
+-	char *buf = malloc(4096);
+-	snprintf(buf, 4096,
++	char *buf = malloc(6144);
++	snprintf(buf, 6144,
+ 		"&lt;html&gt;&lt;body&gt;"
+ 		"&lt;table&gt;"
+ 		"&lt;tr&gt;&lt;td&gt;Background&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+@@ -943,6 +1059,9 @@ static char *build_theme_html(void)
+ 		"&lt;tr&gt;&lt;td&gt;Button border size&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%u\" width=\"60\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+ 		"&lt;tr&gt;&lt;td&gt;Input border size&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%u\" width=\"60\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+ 		"&lt;tr&gt;&lt;td&gt;Frame border color&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;td&gt;Focus&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;td&gt;Focus background&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
++		"&lt;tr&gt;&lt;td&gt;Highlight&lt;/td&gt;&lt;td&gt;&lt;input type=\"text\" value=\"%s\" width=\"100\" /&gt;&lt;/td&gt;&lt;/tr&gt;"
+ 		"&lt;/table&gt;"
+ 		"&lt;div&gt;&lt;button&gt;Apply&lt;/button&gt;&lt;/div&gt;"
+ 		"&lt;/body&gt;&lt;/html&gt;",
+@@ -950,7 +1069,7 @@ static char *build_theme_html(void)
+ 		cfg.theme.frame_border_size,
+ 		cfg.theme.button_border_size,
+ 		cfg.theme.input_border_size,
+-		fbc);
++		fbc, foc, fbg, hi);
+ 	return buf;
+ }
+ 
+@@ -1051,6 +1170,7 @@ static void rebuild_content(void)
+ 	theme_bg_input = theme_btn_input = theme_btn_text_input = NULL;
+ 	theme_frame_border_input = theme_btn_border_input = NULL;
+ 	theme_input_border_input = theme_frame_color_input = NULL;
++	theme_focus_input = theme_focus_bg_input = theme_highlight_input = NULL;
+ 
+ 	/* Free old font cache only when leaving font page */
+ 	if (current_page != 3 &amp;&amp; font_list_cache) {
+@@ -1065,8 +1185,27 @@ static void rebuild_content(void)
+ 	if (current_page == 3 &amp;&amp; !font_list_cache)
+ 		font_list_count = scan_fonts(&amp;font_list_cache);
+ 
+-	int panel_w = app_w - sidebar-&gt;w - 20;
++	int rule_w = panel_rule ? panel_rule-&gt;w : 0;
++	int panel_w = app_w - (sidebar ? sidebar-&gt;w : 140) - rule_w - 16;
+ 	int panel_h = app_h - 16;
++	if (panel_w &lt; 80)
++		panel_w = 80;
++	if (panel_h &lt; 40)
++		panel_h = 40;
++	if (content_panel) {
++		content_panel-&gt;w = panel_w;
++		content_panel-&gt;h = panel_h;
++	}
++	if (sidebar) {
++		sidebar-&gt;h = panel_h;
++		if (sidebar-&gt;h &lt; 40)
++			sidebar-&gt;h = 40;
++	}
++	if (panel_rule) {
++		panel_rule-&gt;h = panel_h;
++		if (panel_rule-&gt;h &lt; 40)
++			panel_rule-&gt;h = 40;
++	}
+ 
+ 	char *html = NULL;
+ 	switch (current_page) {
+@@ -1105,14 +1244,28 @@ static void rebuild_content(void)
+ 		add_bg_preview(page, panel_w);
+ 		break;
+ 	}
+-	case 1: { /* Cursor: input(0)=custom path, buttons=cursor themes..., last=Apply */
++	case 1: { /* Cursor: input(0)=theme, buttons=themes..., last=Apply */
+ 		cursor_path_input = get_input(page, 0);
+-		/* Find total button count; last is Apply */
+ 		int bi = 0;
+-		while (get_button(page, bi)) bi++;
++		while (get_button(page, bi))
++			bi++;
++		/* Theme buttons (all but last) select; last is Apply. */
++		for (int i = 0; i + 1 &lt; bi; i++) {
++			struct BGTK_Widget *tb = get_button(page, i);
++			struct BGTK_Widget *lab;
++			if (!tb)
++				continue;
++			lab = tb-&gt;data.button.label;
++			if (lab &amp;&amp; lab-&gt;type == BGTK_WIDGET_TEXT &amp;&amp;
++			    lab-&gt;data.text.text) {
++				tb-&gt;data.button.callback = pick_cursor_theme;
++				tb-&gt;data.button.cb_data = lab-&gt;data.text.text;
++			}
++		}
+ 		if (bi &gt; 0) {
+ 			struct BGTK_Widget *ab = get_button(page, bi - 1);
+-			if (ab) ab-&gt;data.button.callback = apply_cursor;
++			if (ab)
++				ab-&gt;data.button.callback = apply_cursor;
+ 		}
+ 		break;
+ 	}
+@@ -1173,6 +1326,9 @@ static void rebuild_content(void)
+ 		theme_btn_border_input = get_input(page, 4);
+ 		theme_input_border_input = get_input(page, 5);
+ 		theme_frame_color_input = get_input(page, 6);
++		theme_focus_input = get_input(page, 7);
++		theme_focus_bg_input = get_input(page, 8);
++		theme_highlight_input = get_input(page, 9);
+ 		struct BGTK_Widget *b = get_button(page, 0);
+ 		if (b) b-&gt;data.button.callback = apply_theme;
+ 		break;
+@@ -1187,31 +1343,34 @@ static void rebuild_content(void)
+ /* Sidebar: rebuild with highlight on selected page                    */
+ /* ------------------------------------------------------------------ */
+ 
++/* Selected nav: highlight fill only (no "&gt; " prefix). */
++static struct BGTK_Widget *make_nav_button(int i, int sidebar_w)
++{
++	int selected = (i == current_page);
++	BGTK_Options to = {.padding = 2};
++	if (selected)
++		to.text_style = BGTK_TEXT_BOLD;
++	struct BGTK_Widget *lbl =
++		bgtk_text(ctx, (char *)page_names[i], to);
++	struct BGTK_Widget *btn = bgtk_button(ctx, lbl, page_cb,
++		(void *)(intptr_t)i,
++		(BGTK_Options){.padding = 6, .margin = 2});
++	btn-&gt;w = sidebar_w - 8;
++	if (selected) {
++		uint32_t hi = ctx-&gt;theme.highlight ? ctx-&gt;theme.highlight
++						   : 0xFF505060;
++		btn-&gt;data.button.bg_override = hi;
++	}
++	return btn;
++}
++
+ static void rebuild_sidebar(void)
+ {
+ 	int sidebar_w = 140;
+ 	struct BGTK_Widget **btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
+ 
+-	for (int i = 0; i &lt; NUM_PAGES; i++) {
+-		/* Selected page gets inverted colors via header_level trick */
+-		char label[64];
+-		if (i == current_page)
+-			snprintf(label, sizeof(label), "&gt; %s", page_names[i]);
+-		else
+-			snprintf(label, sizeof(label), "  %s", page_names[i]);
+-
+-		struct BGTK_Widget *lbl = bgtk_text(ctx, label, (BGTK_Options){.padding = 2});
+-
+-		/* Use header_level = 10 (fuchsia/bold) for selected item */
+-		if (i == current_page)
+-			lbl-&gt;data.text.header_level = 10;
+-
+-		btns[i] = bgtk_button(ctx, lbl, page_cb, (void *)(intptr_t)i,
+-			(BGTK_Options){.padding = 6, .margin = 2});
+-		btns[i]-&gt;w = sidebar_w - 8;
+-		if (i == current_page)
+-			btns[i]-&gt;data.button.bg_override = 0xFF505060;
+-	}
++	for (int i = 0; i &lt; NUM_PAGES; i++)
++		btns[i] = make_nav_button(i, sidebar_w);
+ 
+ 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
+ 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = 2});
+@@ -1227,23 +1386,8 @@ static struct BGTK_Widget *build_sidebar(void)
+ 	int sidebar_w = 140;
+ 	struct BGTK_Widget **btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
+ 
+-	for (int i = 0; i &lt; NUM_PAGES; i++) {
+-		char label[64];
+-		if (i == current_page)
+-			snprintf(label, sizeof(label), "&gt; %s", page_names[i]);
+-		else
+-			snprintf(label, sizeof(label), "  %s", page_names[i]);
+-
+-		struct BGTK_Widget *lbl = bgtk_text(ctx, label, (BGTK_Options){.padding = 2});
+-		if (i == current_page)
+-			lbl-&gt;data.text.header_level = 10;
+-
+-		btns[i] = bgtk_button(ctx, lbl, page_cb, (void *)(intptr_t)i,
+-			(BGTK_Options){.padding = 6, .margin = 2});
+-		btns[i]-&gt;w = sidebar_w - 8;
+-		if (i == current_page)
+-			btns[i]-&gt;data.button.bg_override = 0xFF505060;
+-	}
++	for (int i = 0; i &lt; NUM_PAGES; i++)
++		btns[i] = make_nav_button(i, sidebar_w);
+ 
+ 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
+ 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = 2});
+@@ -1269,21 +1413,28 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
+ 	app_w = width;
+ 	app_h = height;
+ 	font_dropdown_open = 0;
++	/* Keep drawing theme in sync with the config we are editing. */
++	ctx-&gt;theme = cfg.theme;
+ 
+ 	sidebar = build_sidebar();
++	panel_rule = bgtk_rule(ctx, BGTK_LIST_VERTICAL, 1,
++			       (BGTK_Options){.margin = 4, .padding = 0});
++	panel_rule-&gt;h = app_h - 16;
+ 
+-	int panel_w = app_w - sidebar-&gt;w - 20;
++	int panel_w = app_w - sidebar-&gt;w - panel_rule-&gt;w - 16;
+ 	int panel_h = app_h - 16;
++	if (panel_w &lt; 80)
++		panel_w = 80;
+ 
+ 	struct BGTK_Widget *placeholder = bgtk_text(ctx, "Select a category",
+ 		(BGTK_Options){.padding = 8, .margin = 4});
++	/* Borderless content frame; vertical rule separates sidebar. */
+ 	content_panel = bgtk_frame(ctx, placeholder, panel_w, panel_h,
+ 		(BGTK_Options){.padding = 2, .margin = 2});
+-	content_panel-&gt;data.frame.border_w = 1;
+-	content_panel-&gt;data.frame.border_color = BGTK_COLOR_GRAY;
++	content_panel-&gt;data.frame.border_w = 0;
+ 
+-	struct BGTK_Widget *cols[2] = { sidebar, content_panel };
+-	struct BGTK_Widget *row = bgtk_list(ctx, cols, 2,
++	struct BGTK_Widget *cols[3] = { sidebar, panel_rule, content_panel };
++	struct BGTK_Widget *row = bgtk_list(ctx, cols, 3,
+ 		(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .margin = 2});
+ 
+ 	root_frame = bgtk_frame(ctx, row, app_w, app_h,
+@@ -1294,6 +1445,23 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
+ 	rebuild_content();
+ }
+ 
++/* Reflow chrome + page after a window resize (MSG_BUFFER_CHANGE / mock resize). */
++void settings_layout(void)
++{
++	if (!ctx || !root_frame)
++		return;
++	app_w = ctx-&gt;width;
++	app_h = ctx-&gt;height;
++	if (app_w &lt; 200)
++		app_w = 200;
++	if (app_h &lt; 120)
++		app_h = 120;
++	root_frame-&gt;w = app_w;
++	root_frame-&gt;h = app_h;
++	/* rebuild_content resizes sidebar/content_panel and re-parses HTML. */
++	rebuild_content();
++}
++
+ struct config *settings_get_config(void)
+ {
+ 	return &amp;cfg;
+@@ -1305,6 +1473,134 @@ struct config *settings_get_config(void)
+ 
+ #ifndef SETTINGS_TEST_MODE
+ 
++/*
++ * Load full ~/.config/bgce.conf into settings state:
++ *   [background] type/color/path/mode
++ *   [cursors]    theme
++ *   [shortcuts]  combo = action
++ * Matches BGCE's load_config sections (see bgce/config.c).
++ */
++static void load_bgce_config(struct config *c)
++{
++	const char *home = getenv("HOME");
++	char path[512], line[1024], section[64] = "";
++	FILE *f;
++	char key[64], value[MAX_PATH_LEN];
++	char *valp;
++
++	if (!c || !home || !home[0])
++		return;
++	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
++	f = fopen(path, "r");
++	if (!f) {
++		bgtk_log("no %s; keeping bgtk defaults + builtin shortcuts",
++			 path);
++		return;
++	}
++
++	/* Reset shortcuts so file entries replace defaults when present. */
++	shortcuts_loaded = 0;
++	shortcut_row_count = 0;
++	cursor_theme[0] = '\0';
++
++	while (fgets(line, sizeof(line), f)) {
++		char *trimmed = line;
++		while (*trimmed == ' ' || *trimmed == '\t')
++			trimmed++;
++		if (*trimmed == '\0' || *trimmed == '#' || *trimmed == ';' ||
++		    *trimmed == '\n')
++			continue;
++		if (*trimmed == '[') {
++			char *end = strchr(trimmed, ']');
++			section[0] = '\0';
++			if (end &amp;&amp;
++			    (size_t)(end - trimmed - 1) &lt; sizeof(section)) {
++				memcpy(section, trimmed + 1,
++				       (size_t)(end - trimmed - 1));
++				section[end - trimmed - 1] = '\0';
++			}
++			continue;
++		}
++		/* Accept "key = value" and "key=value" like BGCE. */
++		if (sscanf(trimmed, "%63s = %511[^\n]", key, value) != 2 &amp;&amp;
++		    sscanf(trimmed, "%63[^=]=%511[^\n]", key, value) != 2)
++			continue;
++		{
++			char *kp = key;
++			while (*kp == ' ' || *kp == '\t')
++				kp++;
++			if (kp != key)
++				memmove(key, kp, strlen(kp) + 1);
++			/* strip trailing spaces from key when key=value form */
++			{
++				char *ke = key + strlen(key);
++				while (ke &gt; key &amp;&amp;
++				       (ke[-1] == ' ' || ke[-1] == '\t'))
++					*--ke = '\0';
++			}
++		}
++		valp = value;
++		while (*valp == ' ' || *valp == '\t')
++			valp++;
++		{
++			char *ve = valp + strlen(valp);
++			while (ve &gt; valp &amp;&amp;
++			       (ve[-1] == '\n' || ve[-1] == '\r' ||
++				ve[-1] == ' ' || ve[-1] == '\t'))
++				*--ve = '\0';
++		}
++
++		if (strcmp(section, "background") == 0) {
++			if (strcmp(key, "type") == 0) {
++				if (strcmp(valp, "image") == 0)
++					c-&gt;type = BG_IMAGE;
++				else if (strcmp(valp, "color") == 0)
++					c-&gt;type = BG_COLOR;
++			} else if (strcmp(key, "color") == 0) {
++				c-&gt;color = parse_color_input(valp);
++			} else if (strcmp(key, "path") == 0) {
++				strncpy(c-&gt;path, valp, MAX_PATH_LEN - 1);
++				c-&gt;path[MAX_PATH_LEN - 1] = '\0';
++			} else if (strcmp(key, "mode") == 0) {
++				if (strcmp(valp, "scaled") == 0)
++					c-&gt;mode = IMAGE_SCALED;
++				else
++					c-&gt;mode = IMAGE_TILED;
++			}
++		} else if (strcmp(section, "cursors") == 0) {
++			if (strcmp(key, "theme") == 0) {
++				strncpy(cursor_theme, valp, MAX_PATH_LEN - 1);
++				cursor_theme[MAX_PATH_LEN - 1] = '\0';
++			}
++		} else if (strcmp(section, "shortcuts") == 0) {
++			char label[96];
++			if (shortcut_row_count &gt;= MAX_SHORTCUT_ROWS)
++				continue;
++			if (!shortcuts_loaded) {
++				shortcut_row_count = 0;
++				shortcuts_loaded = 1;
++			}
++			shortcut_label_from_action(valp, label, sizeof(label));
++			shortcut_set_row(shortcut_row_count, label, key, valp);
++			shortcut_row_count++;
++		}
++	}
++	fclose(f);
++
++	if (!shortcuts_loaded)
++		load_shortcuts_defaults();
++	if (c-&gt;type == BG_IMAGE &amp;&amp; !c-&gt;path[0]) {
++		bgtk_log("bgce type=image but empty path; showing as color");
++		c-&gt;type = BG_COLOR;
++	}
++	bgtk_log("bgce conf: bg=%s path='%s' mode=%s cursor='%s' shortcuts=%d",
++		 c-&gt;type == BG_IMAGE ? "image" : "color",
++		 c-&gt;path[0] ? c-&gt;path : "(none)",
++		 c-&gt;mode == IMAGE_SCALED ? "scaled" : "tiled",
++		 cursor_theme[0] ? cursor_theme : "(none)",
++		 shortcut_row_count);
++}
++
+ int main(void)
+ {
+ 	bgtk_log_open("settings");
+@@ -1335,6 +1631,8 @@ int main(void)
+ 
+ 	struct config config;
+ 	parse_config(&amp;config);
++	/* Full BGCE file: background + cursors + shortcuts. */
++	load_bgce_config(&amp;config);
+ 	settings_build_ui(c, &amp;config, 700, 480);
+ 
+ 	struct BGCEMessage msg;
+@@ -1354,7 +1652,7 @@ int main(void)
+ 			bgtk_set_window_focus(c, msg.data.focus_event.state);
+ 		} else if (msg.type == MSG_BUFFER_CHANGE) {
+ 			if (bgtk_handle_buffer_change(c, &amp;msg.data.buffer_reply) == 0)
+-				bgtk_draw_widgets(c);
++				settings_layout();
+ 		}
+ 	}
+ 
+diff --git a/apps/sys_status.c b/apps/sys_status.c
+index 5474aaf..f502310 100644
+--- a/apps/sys_status.c
++++ b/apps/sys_status.c
+@@ -366,63 +366,115 @@ static void metric_disk(char *out, size_t n)
+ 	snprintf(out, n, "%s / %s (%d%%) %s", ubuf, tbuf, pct, bar);
+ }
+ 
+-/* Non-blocking-ish TCP connect with short timeout to a public DNS. */
+-static void metric_internet(char *out, size_t n)
++/*
++ * Internet / weather need only libc networking (no curl/libtls):
++ *   - Internet: dual-stack TCP :80 via getaddrinfo (IPv4 + IPv6)
++ *   - Weather: DNS + HTTP/1.0 :80 to wttr.in (AF_UNSPEC)
++ * No package deps. IPv6-only boards must not hardcode 1.1.1.1.
++ */
++/* 0 ok, -1 fail, -2 timeout */
++static int tcp_probe_ai(const struct addrinfo *rp, long *out_ms)
+ {
+-	int fd;
+-	struct sockaddr_in addr;
+-	struct timeval tv0, tv1;
+-	int flags, err = 0;
++	int fd, flags, err = 0;
++	struct timeval tv0, tv1, tv;
+ 	socklen_t elen = sizeof(err);
+ 	fd_set wfds;
+-	struct timeval tv;
+-	long ms;
+ 
+-	fd = socket(AF_INET, SOCK_STREAM, 0);
+-	if (fd &lt; 0) {
+-		snprintf(out, n, "offline (socket)");
+-		return;
+-	}
++	fd = socket(rp-&gt;ai_family, rp-&gt;ai_socktype, rp-&gt;ai_protocol);
++	if (fd &lt; 0)
++		return -1;
+ 	flags = fcntl(fd, F_GETFL, 0);
+ 	if (flags &gt;= 0)
+ 		fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+-
+-	memset(&amp;addr, 0, sizeof(addr));
+-	addr.sin_family = AF_INET;
+-	addr.sin_port = htons(53);
+-	inet_pton(AF_INET, "1.1.1.1", &amp;addr.sin_addr);
+-
+ 	gettimeofday(&amp;tv0, NULL);
+-	if (connect(fd, (struct sockaddr *)&amp;addr, sizeof(addr)) &lt; 0 &amp;&amp;
++	if (connect(fd, rp-&gt;ai_addr, rp-&gt;ai_addrlen) &lt; 0 &amp;&amp;
+ 	    errno != EINPROGRESS) {
+-		snprintf(out, n, "offline");
+ 		close(fd);
+-		return;
++		return -1;
+ 	}
+ 	FD_ZERO(&amp;wfds);
+ 	FD_SET(fd, &amp;wfds);
+-	tv.tv_sec = 1;
+-	tv.tv_usec = 500000;
++	tv.tv_sec = 2;
++	tv.tv_usec = 0;
+ 	if (select(fd + 1, NULL, &amp;wfds, NULL, &amp;tv) &lt;= 0) {
+-		snprintf(out, n, "offline (timeout)");
+ 		close(fd);
+-		return;
++		return -2;
+ 	}
+ 	if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &amp;err, &amp;elen) &lt; 0 || err != 0) {
+-		snprintf(out, n, "offline");
+ 		close(fd);
+-		return;
++		return -1;
+ 	}
+ 	gettimeofday(&amp;tv1, NULL);
+-	ms = (tv1.tv_sec - tv0.tv_sec) * 1000L +
+-	     (tv1.tv_usec - tv0.tv_usec) / 1000L;
++	if (out_ms)
++		*out_ms = (tv1.tv_sec - tv0.tv_sec) * 1000L +
++			  (tv1.tv_usec - tv0.tv_usec) / 1000L;
+ 	close(fd);
+-	snprintf(out, n, "online  (~%ld ms to 1.1.1.1)", ms);
++	return 0;
++}
++
++/* Resolve host:port (AF_UNSPEC) and try each address. */
++static int tcp_probe_host(const char *host, const char *port, long *out_ms)
++{
++	struct addrinfo hints, *res = NULL, *rp;
++	int saw_timeout = 0, r;
++
++	memset(&amp;hints, 0, sizeof(hints));
++	hints.ai_socktype = SOCK_STREAM;
++	hints.ai_family = AF_UNSPEC;
++	if (getaddrinfo(host, port, &amp;hints, &amp;res) != 0)
++		return -1;
++	for (rp = res; rp; rp = rp-&gt;ai_next) {
++		r = tcp_probe_ai(rp, out_ms);
++		if (r == 0) {
++			freeaddrinfo(res);
++			return 0;
++		}
++		if (r == -2)
++			saw_timeout = 1;
++	}
++	freeaddrinfo(res);
++	return saw_timeout ? -2 : -1;
++}
++
++static void metric_internet(char *out, size_t n)
++{
++	long ms = 0;
++	int r;
++	static const char *hosts[] = {
++		"one.one.one.one", /* Cloudflare A+AAAA */
++		"dns.google",
++		"cloudflare.com",
++		NULL
++	};
++	int i;
++
++	for (i = 0; hosts[i]; i++) {
++		r = tcp_probe_host(hosts[i], "80", &amp;ms);
++		if (r == 0) {
++			snprintf(out, n, "online (~%ld ms %s)", ms, hosts[i]);
++			return;
++		}
++	}
++	/* Literal v6 in case DNS itself is broken but connectivity works. */
++	r = tcp_probe_host("2606:4700:4700::1111", "80", &amp;ms);
++	if (r == 0) {
++		snprintf(out, n, "online (~%ld ms cf6)", ms);
++		return;
++	}
++	r = tcp_probe_host("1.1.1.1", "80", &amp;ms);
++	if (r == 0) {
++		snprintf(out, n, "online (~%ld ms 1.1.1.1)", ms);
++		return;
++	}
++	if (r == -2)
++		snprintf(out, n, "offline (timeout)");
++	else
++		snprintf(out, n, "offline (no route/DNS?)");
+ }
+ 
+-/* Minimal HTTP/1.0 GET (no TLS) — wttr.in format string. */
++/* Minimal HTTP/1.0 GET (no TLS). err: 0 ok, -1 DNS, -2 connect, -3 HTTP. */
+ static int http_get_plain(const char *host, const char *path, char *body,
+-			  size_t body_len)
++			  size_t body_len, int *err_kind)
+ {
+ 	struct addrinfo hints, *res = NULL, *rp;
+ 	int fd = -1, n;
+@@ -430,17 +482,22 @@ static int http_get_plain(const char *host, const char *path, char *body,
+ 	size_t blen = 0;
+ 	char *hdr_end;
+ 
++	if (err_kind)
++		*err_kind = -1;
+ 	memset(&amp;hints, 0, sizeof(hints));
+ 	hints.ai_socktype = SOCK_STREAM;
+ 	hints.ai_family = AF_UNSPEC;
+-	if (getaddrinfo(host, "80", &amp;hints, &amp;res) != 0)
++	if (getaddrinfo(host, "80", &amp;hints, &amp;res) != 0) {
++		if (err_kind)
++			*err_kind = -1;
+ 		return -1;
++	}
+ 	for (rp = res; rp; rp = rp-&gt;ai_next) {
+ 		fd = socket(rp-&gt;ai_family, rp-&gt;ai_socktype, rp-&gt;ai_protocol);
+ 		if (fd &lt; 0)
+ 			continue;
+ 		{
+-			struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
++			struct timeval tv = { .tv_sec = 4, .tv_usec = 0 };
+ 			setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &amp;tv, sizeof(tv));
+ 			setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &amp;tv, sizeof(tv));
+ 		}
+@@ -450,8 +507,11 @@ static int http_get_plain(const char *host, const char *path, char *body,
+ 		fd = -1;
+ 	}
+ 	freeaddrinfo(res);
+-	if (fd &lt; 0)
++	if (fd &lt; 0) {
++		if (err_kind)
++			*err_kind = -2;
+ 		return -1;
++	}
+ 
+ 	n = snprintf(req, sizeof(req),
+ 		     "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: bgtk-sys_status\r\n"
+@@ -459,6 +519,8 @@ static int http_get_plain(const char *host, const char *path, char *body,
+ 		     path, host);
+ 	if (write(fd, req, (size_t)n) &lt; 0) {
+ 		close(fd);
++		if (err_kind)
++			*err_kind = -2;
+ 		return -1;
+ 	}
+ 	while (blen + 1 &lt; sizeof(buf)) {
+@@ -469,11 +531,23 @@ static int http_get_plain(const char *host, const char *path, char *body,
+ 	}
+ 	close(fd);
+ 	buf[blen] = '\0';
++	/* Redirects to HTTPS look like "HTTP/1.1 301" with empty useful body. */
++	if (strncmp(buf, "HTTP/", 5) == 0) {
++		int code = 0;
++		sscanf(buf, "HTTP/%*s %d", &amp;code);
++		if (code &gt;= 300 &amp;&amp; code &lt; 400) {
++			if (err_kind)
++				*err_kind = -3;
++			return -1;
++		}
++	}
+ 	hdr_end = strstr(buf, "\r\n\r\n");
+-	if (!hdr_end)
++	if (!hdr_end) {
++		if (err_kind)
++			*err_kind = -3;
+ 		return -1;
++	}
+ 	hdr_end += 4;
+-	/* trim whitespace / newlines from weather line */
+ 	while (*hdr_end &amp;&amp; isspace((unsigned char)*hdr_end))
+ 		hdr_end++;
+ 	{
+@@ -481,9 +555,14 @@ static int http_get_plain(const char *host, const char *path, char *body,
+ 		while (e &gt; hdr_end &amp;&amp; isspace((unsigned char)e[-1]))
+ 			*--e = '\0';
+ 	}
+-	if (!*hdr_end)
++	if (!*hdr_end) {
++		if (err_kind)
++			*err_kind = -3;
+ 		return -1;
++	}
+ 	snprintf(body, body_len, "%s", hdr_end);
++	if (err_kind)
++		*err_kind = 0;
+ 	return 0;
+ }
+ 
+@@ -493,11 +572,19 @@ static void metric_weather(char *out, size_t n)
+ 	char clean[256];
+ 	char *p, *q;
+ 	int sp = 0;
++	int err = 0;
+ 
+ 	/* Location + temp only (ASCII). Avoid emoji — BGTK draws one byte per
+-	 * FreeType index, so multi-byte UTF-8 looks like garbage. */
+-	if (http_get_plain("wttr.in", "/?format=%l:+%t", body, sizeof(body)) != 0) {
+-		snprintf(out, n, "n/a (network)");
++	 * FreeType index, so multi-byte UTF-8 looks like garbage.
++	 * Needs DNS + HTTP:80 to wttr.in (no libcurl / no TLS). */
++	if (http_get_plain("wttr.in", "/?format=%l:+%t", body, sizeof(body),
++			   &amp;err) != 0) {
++		if (err == -1)
++			snprintf(out, n, "n/a (DNS)");
++		else if (err == -2)
++			snprintf(out, n, "n/a (connect)");
++		else
++			snprintf(out, n, "n/a (HTTP)");
+ 		return;
+ 	}
+ 	/* Keep printable ASCII; map other bytes to nothing (strip UTF-8). */
+diff --git a/bgtk.h b/bgtk.h
+index 3c6ceeb..6991d01 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -263,12 +263,16 @@ enum BGTK_Widget_Type {
+ 	BGTK_WIDGET_IMAGE,
+ 	BGTK_WIDGET_FRAME,
+ 	BGTK_WIDGET_TEXT_INPUT,
+-	// Add more types as needed
++	BGTK_WIDGET_RULE,
+ };
+ 
+ // Widget flags
+ #define BGTK_FLAG_CENTER (1 &lt;&lt; 0)  // Center child widgets horizontally (containers)
+ 
++/* Text style bits (bgtk_text / BGTK_Options.text_style). Synthetic via FreeType. */
++#define BGTK_TEXT_BOLD   (1 &lt;&lt; 0)
++#define BGTK_TEXT_ITALIC (1 &lt;&lt; 1)
++
+ // Text alignment within a widget's content area (like CSS text-align)
+ enum BGTK_Text_Align {
+ 	BGTK_ALIGN_LEFT = 0,
+@@ -276,6 +280,13 @@ enum BGTK_Text_Align {
+ 	BGTK_ALIGN_RIGHT,
+ };
+ 
++/* Vertical placement of text within the widget content box. */
++enum BGTK_VAlign {
++	BGTK_VALIGN_TOP = 0,
++	BGTK_VALIGN_CENTER,
++	BGTK_VALIGN_BOTTOM,
++};
++
+ // List widget orientation
+ enum BGTK_List_Orientation {
+ 	BGTK_LIST_VERTICAL,
+@@ -288,7 +299,10 @@ typedef struct {
+ 	int padding;    // Internal spacing (pixels).
+ 	int margin;     // External spacing (pixels).
+ 	enum BGTK_Text_Align text_align;  // Horizontal text alignment (default: left)
+-	enum BGTK_List_Orientation orientation;  // For list widget: vertical or horizontal
++	enum BGTK_VAlign text_v_align;    // Vertical text alignment (default: top)
++	int baseline_offset; // Added to FreeType baseline (px; can be negative)
++	enum BGTK_List_Orientation orientation;  // For list/rule: vertical or horizontal
++	int text_style; // BGTK_TEXT_BOLD | BGTK_TEXT_ITALIC (text widgets)
+ } BGTK_Options;
+ 
+ // BGTK_Widget: Base structure for all widgets
+@@ -300,6 +314,8 @@ struct BGTK_Widget {
+ 	int padding;        // Internal spacing (pixels)
+ 	int margin;         // External spacing (pixels)
+ 	enum BGTK_Text_Align text_align;  // Horizontal text alignment
++	enum BGTK_VAlign text_v_align;    // Vertical text alignment
++	int baseline_offset;              // FreeType baseline tweak (px)
+ 	
+ 	// Function pointer for event handling
+ 	int (*handle_event)(struct BGTK_Widget* widget, struct InputEvent ev);
+@@ -319,8 +335,14 @@ struct BGTK_Widget {
+ 		} button;
+ 		struct {
+ 			char* text;
+-			int header_level;  // 0=normal, 1/2/3 for # headers (for bigger/bold/colored rendering)
++			int header_level;  // 0=normal, 1/2/3 headers; 10=accent line
++			int style;         // BGTK_TEXT_BOLD | BGTK_TEXT_ITALIC
+ 		} text;
++		struct {
++			enum BGTK_List_Orientation orientation;
++			int thickness;     // line width in px (&gt;=1)
++			uint32_t color;    // 0 = theme.frame_border_color
++		} rule;
+ 		struct {
+ 			uint32_t* pixels;  // Pixel buffer for image
+ 			int img_w;  // Image intrinsic width
+@@ -435,4 +457,11 @@ struct BGTK_Widget* bgtk_text_input(struct BGTK_Context* ctx, char* initial_text
+ // Creates a list widget (arranges children vertically or horizontally without scrolling).
+ struct BGTK_Widget* bgtk_list(struct BGTK_Context* ctx, struct BGTK_Widget** items, int widget_count, BGTK_Options options);
+ 
++/* Divider line. orientation: BGTK_LIST_HORIZONTAL = bar across width,
++ * BGTK_LIST_VERTICAL = bar down height. thickness &lt; 1 → 1.
++ * Long axis is usually set by the parent (list/frame); short axis = thickness. */
++struct BGTK_Widget *bgtk_rule(struct BGTK_Context *ctx,
++			      enum BGTK_List_Orientation orientation,
++			      int thickness, BGTK_Options options);
++
+ #endif
+diff --git a/config.c b/config.c
+index 5b62503..c910cd0 100644
+--- a/config.c
++++ b/config.c
+@@ -311,18 +311,20 @@ static void pick_default_font_family(char *out, size_t outlen, int family)
+ void init_config_defaults(struct config *config)
+ {
+ 	config-&gt;type = BG_COLOR;
+-	/* High-contrast defaults so labels/text stay readable without a
+-	 * config file (previous semi-transparent grays made dark text vanish
+-	 * on some compositors). Full alpha, light panel, dark ink. */
+-	config-&gt;color = 0xFFE8E8E8;
+-
+-	config-&gt;theme.background = 0xFFE8E8E8;
+-	config-&gt;theme.button = 0xFFD0D0D0;
+-	config-&gt;theme.button_text = 0xFF111111;
++	/* Default "Paper" theme: warm light surface, soft chrome, readable ink. */
++	config-&gt;color = 0xFFF4F1EA;
++
++	config-&gt;theme.background = 0xFFF4F1EA;
++	config-&gt;theme.button = 0xFFE8E2D6;
++	config-&gt;theme.button_text = 0xFF1C1917;
+ 	config-&gt;theme.button_border_size = 1;
+-	config-&gt;theme.input_border_size = 2;
+-	config-&gt;theme.frame_border_size = 4;
+-	config-&gt;theme.frame_border_color = 0xFF333333;
++	config-&gt;theme.input_border_size = 1;
++	config-&gt;theme.frame_border_size = 2;
++	config-&gt;theme.frame_border_color = 0xFFC4B8A8;
++	config-&gt;theme.focus = 0xFFB45309;
++	config-&gt;theme.focus_bg = 0xFFFFF7ED;
++	config-&gt;theme.highlight = 0xFF78716C;
++	config-&gt;theme.text_baseline_offset = 0;
+ 
+ 	/* Font defaults under [font]: sans, mono, serif, size. */
+ 	config-&gt;font_sans_path[0] = '\0';
+@@ -403,6 +405,14 @@ int write_config(const struct config *config)
+ 	fprintf(f, "frame_border_size = %u\n", config-&gt;theme.frame_border_size);
+ 	format_hex_color(config-&gt;theme.frame_border_color, c, sizeof(c));
+ 	fprintf(f, "frame_border_color = %s\n", c);
++	format_hex_color(config-&gt;theme.focus, c, sizeof(c));
++	fprintf(f, "focus = %s\n", c);
++	format_hex_color(config-&gt;theme.focus_bg, c, sizeof(c));
++	fprintf(f, "focus_bg = %s\n", c);
++	format_hex_color(config-&gt;theme.highlight, c, sizeof(c));
++	fprintf(f, "highlight = %s\n", c);
++	fprintf(f, "text_baseline_offset = %d\n",
++		config-&gt;theme.text_baseline_offset);
+ 
+ 	fprintf(f, "\n[font]\n");
+ 	if (config-&gt;font_sans_path[0])
+@@ -505,6 +515,14 @@ int parse_config(struct config *config)
+ 			} else if (strcmp(key, "frame_border_color") == 0) {
+ 				config-&gt;theme.frame_border_color =
+ 				    parse_hex_color(value);
++			} else if (strcmp(key, "focus") == 0) {
++				config-&gt;theme.focus = parse_hex_color(value);
++			} else if (strcmp(key, "focus_bg") == 0) {
++				config-&gt;theme.focus_bg = parse_hex_color(value);
++			} else if (strcmp(key, "highlight") == 0) {
++				config-&gt;theme.highlight = parse_hex_color(value);
++			} else if (strcmp(key, "text_baseline_offset") == 0) {
++				config-&gt;theme.text_baseline_offset = atoi(value);
+ 			}
+ 		} else if (strcmp(current_section, "font") == 0) {
+ 			if (strcmp(key, "sans") == 0) {
+diff --git a/config.h b/config.h
+index ef21432..a212bb7 100644
+--- a/config.h
++++ b/config.h
+@@ -30,6 +30,14 @@ typedef struct {
+ 	uint32_t button_border_size;
+ 	uint32_t input_border_size;
+ 	uint32_t frame_border_color;
++	/* Focused text-input ring + caret. */
++	uint32_t focus;
++	/* Focused text-input field fill. */
++	uint32_t focus_bg;
++	/* Accent: headers, links, selected chrome (replaces hard-coded fuchsia/blue). */
++	uint32_t highlight;
++	/* Global FreeType baseline tweak (px; added after per-widget baseline_offset). */
++	int text_baseline_offset;
+ } BGTK_Theme;
+ 
+ // Config structure
+diff --git a/drawing.c b/drawing.c
+index cb38042..c427532 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -3,6 +3,11 @@
+ #include &lt;string.h&gt;
+ #include &lt;stdbool.h&gt;
+ 
++#include &lt;ft2build.h&gt;
++#include FT_FREETYPE_H
++#include FT_OUTLINE_H
++#include FT_SYNTHESIS_H
++
+ #include "bgtk.h"
+ #include "internal.h"
+ 
+@@ -58,33 +63,41 @@ void draw_rect(struct BGTK_Context *ctx, uint32_t *pixels, int x, int y, int w,
+ 
+ void measure_text(FT_Face face, const char *text, int *out_width,
+ 		  int *out_height)
++{
++	measure_text_style(face, text, 0, out_width, out_height);
++}
++
++void measure_text_style(FT_Face face, const char *text, int style,
++			int *out_width, int *out_height)
+ {
+ 	if (!face || !text) {
+-		/* Degraded / no-font fallback: rough width from strlen */
+ 		int n = text ? (int)strlen(text) : 0;
+-		*out_width = n * 7;   /* ~7px per char at typical size */
++		*out_width = n * 7;
+ 		*out_height = 12;
++		if (style &amp; BGTK_TEXT_BOLD)
++			*out_width += n;
+ 		return;
+ 	}
+ 
+ 	int width = 0;
+-
+ 	for (const char *p = text; *p; p++) {
+-		if (FT_Load_Char(face, (unsigned char)*p, FT_LOAD_DEFAULT)) {
++		if (FT_Load_Char(face, (unsigned char)*p,
++				 FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP))
+ 			continue;
+-		}
+-
+-		width += face-&gt;glyph-&gt;advance.x;	// 26.6 units
++		if ((style &amp; BGTK_TEXT_BOLD) &amp;&amp;
++		    face-&gt;glyph-&gt;format == FT_GLYPH_FORMAT_OUTLINE)
++			FT_GlyphSlot_Embolden(face-&gt;glyph);
++		width += face-&gt;glyph-&gt;advance.x;
+ 	}
+-
+ 	width &gt;&gt;= 6;
++	/* Synthetic italic shear needs a little end padding. */
++	if (style &amp; BGTK_TEXT_ITALIC)
++		width += (face-&gt;size-&gt;metrics.height &gt;&gt; 6) / 4;
+ 
+ 	int ascent = face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
+ 	int descent = -face-&gt;size-&gt;metrics.descender &gt;&gt; 6;
+-	int height = ascent + descent;
+-
+ 	*out_width = width;
+-	*out_height = height;
++	*out_height = ascent + descent;
+ }
+ 
+ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+@@ -110,7 +123,12 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 	case BGTK_WIDGET_TEXT:
+ 		if (w-&gt;data.text.text) {
+ 			int tw = 0, th = 0;
+-			measure_text(ctx-&gt;ft_face, w-&gt;data.text.text, &amp;tw, &amp;th);
++			int st = w-&gt;data.text.style;
++			if (w-&gt;data.text.header_level &gt; 0 &amp;&amp;
++			    w-&gt;data.text.header_level &lt;= 3)
++				st |= BGTK_TEXT_BOLD;
++			measure_text_style(ctx-&gt;ft_face, w-&gt;data.text.text, st,
++					   &amp;tw, &amp;th);
+ 			int nw = tw + 2 * (w-&gt;padding + w-&gt;margin);
+ 			int nh = th + 2 * (w-&gt;padding + w-&gt;margin);
+ 			if (w-&gt;w &lt; nw)
+@@ -118,6 +136,26 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 			w-&gt;h = nh;
+ 		}
+ 		break;
++	case BGTK_WIDGET_RULE: {
++		int t = w-&gt;data.rule.thickness;
++		if (t &lt; 1)
++			t = 1;
++		if (w-&gt;data.rule.orientation == BGTK_LIST_VERTICAL) {
++			int nw = t + 2 * (w-&gt;padding + w-&gt;margin);
++			if (w-&gt;w &lt; nw)
++				w-&gt;w = nw;
++			/* Height usually set by parent; keep a minimal stub. */
++			if (w-&gt;h &lt; t + 2 * (w-&gt;padding + w-&gt;margin))
++				w-&gt;h = t + 2 * (w-&gt;padding + w-&gt;margin);
++		} else {
++			int nh = t + 2 * (w-&gt;padding + w-&gt;margin);
++			if (w-&gt;h &lt; nh)
++				w-&gt;h = nh;
++			if (w-&gt;w &lt; t + 2 * (w-&gt;padding + w-&gt;margin))
++				w-&gt;w = t + 2 * (w-&gt;padding + w-&gt;margin);
++		}
++		break;
++	}
+ 	case BGTK_WIDGET_BUTTON:
+ 		if (w-&gt;data.button.label) {
+ 			calculate_widget_size(ctx, w-&gt;data.button.label);
+@@ -207,32 +245,58 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 
+ void draw_text(struct BGTK_Context *ctx, uint32_t *pixels, const char *text,
+ 	       int x, int y, uint32_t color)
++{
++	draw_text_style(ctx, pixels, text, x, y, color, 0);
++}
++
++void draw_text_style(struct BGTK_Context *ctx, uint32_t *pixels, const char *text,
++		     int x, int y, uint32_t color, int style)
++{
++	draw_text_style_ex(ctx, pixels, text, x, y, color, style, 0);
++}
++
++void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
++			const char *text, int x, int y, uint32_t color,
++			int style, int baseline_offset)
+ {
+ 	if (!ctx-&gt;ft_face) {
+-		// Fallback to simple placeholder if font didn't load
+ 		draw_rect(ctx, pixels, x, y, 5, 5, color);
+ 		return;
+ 	}
+-	// Set font size for drawing context
+-	FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
++	FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0,
++			   ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14);
+ 
+ 	int pen_x = x;
+-	int pen_y = y + (ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6);
+-
++	/* y is top of the text box; FreeType pen is baseline. */
++	int pen_y = y + (ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6) +
++		    baseline_offset;
++	if (ctx-&gt;theme.text_baseline_offset)
++		pen_y += ctx-&gt;theme.text_baseline_offset;
+ 	int stride = ctx-&gt;width;
+-	for (const char *p = text; *p; p++) {
+-		FT_UInt index = FT_Get_Char_Index(ctx-&gt;ft_face, (unsigned char)*p);
++	/* ~12° synthetic italic shear (16.16 fixed). */
++	FT_Matrix italic = { .xx = 0x10000, .xy = 0x5000, .yx = 0, .yy = 0x10000 };
+ 
++	for (const char *p = text; *p; p++) {
++		FT_UInt index =
++			FT_Get_Char_Index(ctx-&gt;ft_face, (unsigned char)*p);
+ 		if (FT_Load_Glyph(ctx-&gt;ft_face, index,
+-				  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
++				  FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP |
++					  FT_LOAD_TARGET_LIGHT))
+ 			continue;
+-		}
+ 
+-		FT_Render_Glyph(ctx-&gt;ft_face-&gt;glyph, FT_RENDER_MODE_NORMAL);
++		if ((style &amp; BGTK_TEXT_BOLD) &amp;&amp;
++		    ctx-&gt;ft_face-&gt;glyph-&gt;format == FT_GLYPH_FORMAT_OUTLINE)
++			FT_GlyphSlot_Embolden(ctx-&gt;ft_face-&gt;glyph);
++		if ((style &amp; BGTK_TEXT_ITALIC) &amp;&amp;
++		    ctx-&gt;ft_face-&gt;glyph-&gt;format == FT_GLYPH_FORMAT_OUTLINE)
++			FT_Outline_Transform(&amp;ctx-&gt;ft_face-&gt;glyph-&gt;outline,
++					     &amp;italic);
++
++		if (FT_Render_Glyph(ctx-&gt;ft_face-&gt;glyph, FT_RENDER_MODE_NORMAL))
++			continue;
+ 
+ 		FT_GlyphSlot slot = ctx-&gt;ft_face-&gt;glyph;
+ 		FT_Bitmap *bitmap = &amp;slot-&gt;bitmap;
+-
+ 		int gx = pen_x + slot-&gt;bitmap_left;
+ 		int gy = pen_y - slot-&gt;bitmap_top;
+ 
+@@ -240,34 +304,28 @@ void draw_text(struct BGTK_Context *ctx, uint32_t *pixels, const char *text,
+ 			for (unsigned int col = 0; col &lt; bitmap-&gt;width; col++) {
+ 				uint8_t a =
+ 				    bitmap-&gt;buffer[row * bitmap-&gt;pitch + col];
+-				if (a == 0) {
++				if (a == 0)
++					continue;
++				int32_t dx = gx + (int)col;
++				int32_t dy = gy + (int)row;
++				if (dx &lt; 0 || dy &lt; 0 || dx &gt;= ctx-&gt;width ||
++				    dy &gt;= ctx-&gt;height)
+ 					continue;
+-				}
+-
+-				int32_t dx = gx + col;
+-				int32_t dy = gy + row;
+-
+-				// Blend
+ 				uint32_t dst = pixels[dy * stride + dx];
+ 				uint8_t inv = 255 - a;
+-
+ 				uint8_t r_dst = (dst &gt;&gt; 16) &amp; 0xFF;
+ 				uint8_t g_dst = (dst &gt;&gt; 8) &amp; 0xFF;
+ 				uint8_t b_dst = (dst) &amp; 0xFF;
+-
+ 				uint8_t r_src = (color &gt;&gt; 16) &amp; 0xFF;
+ 				uint8_t g_src = (color &gt;&gt; 8) &amp; 0xFF;
+ 				uint8_t b_src = (color) &amp; 0xFF;
+-
+ 				uint8_t r = (r_src * a + r_dst * inv) / 255;
+ 				uint8_t g = (g_src * a + g_dst * inv) / 255;
+ 				uint8_t b = (b_src * a + b_dst * inv) / 255;
+-
+ 				pixels[dy * stride + dx] =
+ 				    (0xFFu &lt;&lt; 24) | (r &lt;&lt; 16) | (g &lt;&lt; 8) | b;
+ 			}
+ 		}
+-
+ 		pen_x += slot-&gt;advance.x &gt;&gt; 6;
+ 	}
+ }
+@@ -400,32 +458,40 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	int level = w-&gt;data.text.header_level;
+ 	uint32_t color = ctx-&gt;theme.button_text;
+ 	int old_size = ctx-&gt;font_size;
++	int style = w-&gt;data.text.style;
+ 	bool is_header = (level &gt; 0 &amp;&amp; level &lt;= 3);
+-	bool is_fuchsia_line = (level == 10);
++	bool is_accent = (level == 10);
++	uint32_t accent = ctx-&gt;theme.highlight ? ctx-&gt;theme.highlight
++					      : BGTK_COLOR_FUCHSIA;
++
+ 	if (is_header) {
+-		color = BGTK_COLOR_FUCHSIA;
+-		ctx-&gt;font_size = ctx-&gt;font_size + (4 - level);  // h1 biggest
+-	} else if (is_fuchsia_line) {
+-		color = BGTK_COLOR_FUCHSIA;
++		color = accent;
++		style |= BGTK_TEXT_BOLD;
++		ctx-&gt;font_size = ctx-&gt;font_size + (4 - level);
++	} else if (is_accent) {
++		color = accent;
+ 	}
+ 
+ 	int content_x0 = w-&gt;x + w-&gt;margin + w-&gt;padding;
+ 	int content_y0 = w-&gt;y + w-&gt;margin + w-&gt;padding;
+ 	int content_w = w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
++	int content_h = w-&gt;h - 2 * (w-&gt;margin + w-&gt;padding);
+ 	int tw = 0, th = 0;
+-	measure_text(ctx-&gt;ft_face, w-&gt;data.text.text, &amp;tw, &amp;th);
++	measure_text_style(ctx-&gt;ft_face, w-&gt;data.text.text, style, &amp;tw, &amp;th);
+ 	int ax = text_align_offset(w-&gt;text_align, content_w, tw);
+ 	int tx = content_x0 + ax;
+ 	int ty = content_y0;
+-
+-	if (is_header) {
+-		// cheap bold effect via 1px offset
+-		draw_text(ctx, pixels, w-&gt;data.text.text, tx + 1, ty + 1, color);
++	if (content_h &gt; th) {
++		if (w-&gt;text_v_align == BGTK_VALIGN_CENTER)
++			ty += (content_h - th) / 2;
++		else if (w-&gt;text_v_align == BGTK_VALIGN_BOTTOM)
++			ty += content_h - th;
+ 	}
+-	draw_text(ctx, pixels, w-&gt;data.text.text, tx, ty, color);
+-	if (is_header) {
++
++	draw_text_style_ex(ctx, pixels, w-&gt;data.text.text, tx, ty, color, style,
++			   w-&gt;baseline_offset);
++	if (is_header)
+ 		ctx-&gt;font_size = old_size;
+-	}
+ }
+ 
+ static void draw_button(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+@@ -606,23 +672,27 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin,
+ 		  ctx-&gt;theme.background);
+ 
+-	uint32_t border = w-&gt;data.frame.border_color ? w-&gt;data.frame.border_color
+-						     : ctx-&gt;theme.frame_border_color;
+-
+-	// If the whole window is unfocused, dim
+-	// heavily.
+-	if (!ctx-&gt;window_focused) {
+-		border = ctx-&gt;theme.background;
+-	}
+-	// Draw frame border
++	/* border_w 0 = no border (used for HTML cells / borderless panels). */
+ 	int bw = w-&gt;data.frame.border_w;
+-	if (bw &lt; 1) {
+-		bw = 1;
++	if (bw &lt; 0)
++		bw = 0;
++
++	if (bw &gt; 0) {
++		uint32_t border =
++			w-&gt;data.frame.border_color ? w-&gt;data.frame.border_color
++						  : ctx-&gt;theme.frame_border_color;
++		if (!ctx-&gt;window_focused)
++			border = ctx-&gt;theme.background;
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
++			  w-&gt;w - 2 * w-&gt;margin, bw, border);
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin,
++			  w-&gt;y + w-&gt;h - w-&gt;margin - bw, w-&gt;w - 2 * w-&gt;margin, bw,
++			  border);
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, bw,
++			  w-&gt;h - 2 * w-&gt;margin, border);
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - w-&gt;margin - bw,
++			  w-&gt;y + w-&gt;margin, bw, w-&gt;h - 2 * w-&gt;margin, border);
+ 	}
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, w-&gt;w - 2 * w-&gt;margin, bw, border);	// Top
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;h - w-&gt;margin - bw, w-&gt;w - 2 * w-&gt;margin, bw, border);	// Bottom
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, bw, w-&gt;h - 2 * w-&gt;margin, border);	// Left
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - w-&gt;margin - bw, w-&gt;y + w-&gt;margin, bw, w-&gt;h - 2 * w-&gt;margin, border);	// Right
+ 
+ 	// Draw child widget inside the frame
+ 	if (w-&gt;data.frame.child) {
+@@ -640,9 +710,11 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 			    uint32_t *pixels)
+ {
+ 	int focused = ctx-&gt;focused_widget == w;
+-	/* Focused: cool-tint field + strong blue border. Unfocused: white + gray. */
+-	uint32_t field_bg = focused ? 0xFFE8F2FF : 0xFFFFFFFF;
+-	uint32_t border = focused ? 0xFF0066FF : 0xFF888888;
++	uint32_t focus = ctx-&gt;theme.focus ? ctx-&gt;theme.focus : 0xFF0066FF;
++	uint32_t focus_bg =
++		ctx-&gt;theme.focus_bg ? ctx-&gt;theme.focus_bg : 0xFFE8F2FF;
++	uint32_t field_bg = focused ? focus_bg : 0xFFFFFFFF;
++	uint32_t border = focused ? focus : 0xFF888888;
+ 	uint32_t text_color = ctx-&gt;theme.button_text ?
+ 		ctx-&gt;theme.button_text : 0xFF111111;
+ 
+@@ -688,11 +760,18 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	int content_w = inner_w - 2 * w-&gt;padding;
+ 	if (content_w &lt; 1)
+ 		content_w = 1;
++	int content_h = inner_h - 2 * w-&gt;padding;
++	if (content_h &lt; 1)
++		content_h = 1;
+ 	int tw = 0, th = 0;
+ 	measure_text(ctx-&gt;ft_face, full, &amp;tw, &amp;th);
+ 	int align_off = 0;
+ 	if (scroll_x == 0 &amp;&amp; tw &lt; content_w)
+ 		align_off = text_align_offset(w-&gt;text_align, content_w, tw);
++	/* Vertically center glyphs in the field (baseline was top-heavy). */
++	if (th &gt; 0 &amp;&amp; content_h &gt; th)
++		text_y += (content_h - th) / 2;
++	text_y += w-&gt;baseline_offset;
+ 
+ 	int draw_x = text_x - scroll_x + align_off;
+ 
+@@ -708,6 +787,8 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
+ 		int pen_x = draw_x;
+ 		int pen_y = text_y + (ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6);
++		if (ctx-&gt;theme.text_baseline_offset)
++			pen_y += ctx-&gt;theme.text_baseline_offset;
+ 		uint8_t r_src = (text_color &gt;&gt; 16) &amp; 0xFF;
+ 		uint8_t g_src = (text_color &gt;&gt; 8) &amp; 0xFF;
+ 		uint8_t b_src = text_color &amp; 0xFF;
+@@ -781,8 +862,33 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		if (cursor_x &gt; inner_x0 + inner_w - 2)
+ 			cursor_x = inner_x0 + inner_w - 2;
+ 
+-		/* 2px blue caret — clearer than a 1px black line on light fields. */
+-		draw_rect(ctx, pixels, cursor_x, inner_y0, 2, inner_h, 0xFF0066FF);
++		draw_rect(ctx, pixels, cursor_x, inner_y0, 2, inner_h, focus);
++	}
++}
++
++static void draw_rule(struct BGTK_Context *ctx, struct BGTK_Widget *w,
++		      uint32_t *pixels)
++{
++	int t = w-&gt;data.rule.thickness;
++	uint32_t color = w-&gt;data.rule.color ? w-&gt;data.rule.color
++					   : ctx-&gt;theme.frame_border_color;
++	int x0 = w-&gt;x + w-&gt;margin + w-&gt;padding;
++	int y0 = w-&gt;y + w-&gt;margin + w-&gt;padding;
++	int iw = w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
++	int ih = w-&gt;h - 2 * (w-&gt;margin + w-&gt;padding);
++
++	if (t &lt; 1)
++		t = 1;
++	if (iw &lt; 1 || ih &lt; 1)
++		return;
++	if (w-&gt;data.rule.orientation == BGTK_LIST_VERTICAL) {
++		if (t &gt; iw)
++			t = iw;
++		draw_rect(ctx, pixels, x0 + (iw - t) / 2, y0, t, ih, color);
++	} else {
++		if (t &gt; ih)
++			t = ih;
++		draw_rect(ctx, pixels, x0, y0 + (ih - t) / 2, iw, t, color);
+ 	}
+ }
+ 
+@@ -814,6 +920,9 @@ void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	case BGTK_WIDGET_TEXT_INPUT:
+ 		draw_text_input(ctx, w, pixels);
+ 		break;
++	case BGTK_WIDGET_RULE:
++		draw_rule(ctx, w, pixels);
++		break;
+ 	default:
+ 		puts("can't draw unknown widget");
+ 		break;
+diff --git a/html.c b/html.c
+index 0281f7d..9fb7cce 100644
+--- a/html.c
++++ b/html.c
+@@ -165,8 +165,7 @@ static struct BGTK_Widget *convert_p(struct BGTK_Context *ctx, xmlNode *node)
+ 	return w;
+ }
+ 
+-// &lt;b&gt;/&lt;strong&gt; -&gt; text widget with pseudo-bold (header_level 10 triggers
+-// the existing fuchsia/bold path in draw_text_widget).
++// &lt;b&gt;/&lt;strong&gt; -&gt; text with BGTK_TEXT_BOLD.
+ static struct BGTK_Widget *convert_bold(struct BGTK_Context *ctx, xmlNode *node)
+ {
+ 	char *txt = collect_text(node);
+@@ -174,14 +173,13 @@ static struct BGTK_Widget *convert_bold(struct BGTK_Context *ctx, xmlNode *node)
+ 		free(txt);
+ 		return NULL;
+ 	}
+-	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){0});
++	struct BGTK_Widget *w =
++		bgtk_text(ctx, txt, (BGTK_Options){.text_style = BGTK_TEXT_BOLD});
+ 	free(txt);
+-	if (w)
+-		w-&gt;data.text.header_level = 10; // fuchsia bold marker
+ 	return w;
+ }
+ 
+-// &lt;i&gt;/&lt;em&gt; -&gt; regular text (italic not supported yet; rendered as normal).
++// &lt;i&gt;/&lt;em&gt; -&gt; synthetic italic.
+ static struct BGTK_Widget *convert_italic(struct BGTK_Context *ctx,
+ 					  xmlNode *node)
+ {
+@@ -190,12 +188,13 @@ static struct BGTK_Widget *convert_italic(struct BGTK_Context *ctx,
+ 		free(txt);
+ 		return NULL;
+ 	}
+-	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){0});
++	struct BGTK_Widget *w = bgtk_text(
++		ctx, txt, (BGTK_Options){.text_style = BGTK_TEXT_ITALIC});
+ 	free(txt);
+ 	return w;
+ }
+ 
+-// &lt;a&gt; -&gt; text widget (styled like a link: header_level 10 = fuchsia).
++// &lt;a&gt; -&gt; accent (theme.highlight) via header_level 10.
+ static struct BGTK_Widget *convert_a(struct BGTK_Context *ctx, xmlNode *node)
+ {
+ 	char *txt = collect_text(node);
+@@ -206,7 +205,7 @@ static struct BGTK_Widget *convert_a(struct BGTK_Context *ctx, xmlNode *node)
+ 	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){0});
+ 	free(txt);
+ 	if (w)
+-		w-&gt;data.text.header_level = 10; // fuchsia = link color
++		w-&gt;data.text.header_level = 10;
+ 	return w;
+ }
+ 
+@@ -513,8 +512,8 @@ static struct BGTK_Widget *convert_list(struct BGTK_Context *ctx, xmlNode *node,
+ /* Table converter                                                     */
+ /* ------------------------------------------------------------------ */
+ 
+-// Convert a single &lt;td&gt;/&lt;th&gt; cell into a frame widget with a 1px border.
+-// For &lt;th&gt;, content gets bold styling.
++// Convert a single &lt;td&gt;/&lt;th&gt; cell. Borderless by default (settings-friendly).
++// For &lt;th&gt;, content gets bold styling. Text is vertically centered in the cell.
+ static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
+ 					xmlNode *node, int avail_w, int is_header)
+ {
+@@ -525,22 +524,23 @@ static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
+ 			free(txt);
+ 			txt = strdup(" ");
+ 		}
+-		content = bgtk_text(ctx, txt, (BGTK_Options){0});
++		content = bgtk_text(ctx, txt,
++			(BGTK_Options){.text_v_align = BGTK_VALIGN_CENTER});
+ 		free(txt);
+ 		if (!content)
+ 			return NULL;
+ 	}
+ 	if (is_header &amp;&amp; content-&gt;type == BGTK_WIDGET_TEXT)
+-		content-&gt;data.text.header_level = 10;
++		content-&gt;data.text.style |= BGTK_TEXT_BOLD;
++	if (content-&gt;type == BGTK_WIDGET_TEXT)
++		content-&gt;text_v_align = BGTK_VALIGN_CENTER;
+ 
+ 	int cell_pad = 4;
+ 	struct BGTK_Widget *frame = bgtk_frame(ctx, content,
+-		content-&gt;w + 2 * cell_pad + 2, content-&gt;h + 2 * cell_pad + 2,
++		content-&gt;w + 2 * cell_pad, content-&gt;h + 2 * cell_pad,
+ 		(BGTK_Options){.padding = cell_pad, .margin = 0});
+-	if (frame) {
+-		frame-&gt;data.frame.border_w = 1;
+-		frame-&gt;data.frame.border_color = BGTK_COLOR_BLACK;
+-	}
++	if (frame)
++		frame-&gt;data.frame.border_w = 0;
+ 	return frame;
+ }
+ 
+@@ -766,7 +766,7 @@ static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
+ 		return NULL;
+ 	}
+ 
+-	// Wrap in a scrollable frame so the page can scroll if content overflows.
++	// Scrollable page; outer frame is borderless (host UI supplies chrome).
+ 	struct BGTK_Widget **items = malloc(sizeof(struct BGTK_Widget *));
+ 	items[0] = content;
+ 	struct BGTK_Widget *scroll = bgtk_scrollable(ctx, items, 1,
+@@ -781,6 +781,8 @@ static struct BGTK_Widget *parse_doc(struct BGTK_Context *ctx, htmlDocPtr doc,
+ 
+ 	struct BGTK_Widget *frame = bgtk_frame(ctx, scroll, width, height,
+ 		(BGTK_Options){.padding = 0, .margin = 0});
++	if (frame)
++		frame-&gt;data.frame.border_w = 0;
+ 
+ 	xmlFreeDoc(doc);
+ 	return frame ? frame : scroll;
+diff --git a/internal.h b/internal.h
+index a65cba8..943be15 100644
+--- a/internal.h
++++ b/internal.h
+@@ -13,9 +13,18 @@ void draw_rect(struct BGTK_Context* ctx, uint32_t* pixels, int x, int y, int w,
+ 	       int h, uint32_t color);
+ void measure_text(FT_Face face, const char* text, int* out_width,
+ 		  int* out_height);
++/* style: BGTK_TEXT_BOLD | BGTK_TEXT_ITALIC */
++void measure_text_style(FT_Face face, const char *text, int style,
++			int *out_width, int *out_height);
+ void calculate_widget_size(struct BGTK_Context* ctx, struct BGTK_Widget* w);
+ void draw_text(struct BGTK_Context* ctx, uint32_t* pixels, const char* text,
+ 	       int x, int y, uint32_t color);
++void draw_text_style(struct BGTK_Context *ctx, uint32_t *pixels, const char *text,
++		     int x, int y, uint32_t color, int style);
++/* baseline_offset: extra pixels added to FreeType baseline (widget + theme). */
++void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
++			const char *text, int x, int y, uint32_t color,
++			int style, int baseline_offset);
+ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
+ 		 uint32_t* pixels);
+ int load_image(const char* path, uint32_t** out_pixels, int* out_w, int* out_h);
+diff --git a/test/headless.c b/test/headless.c
+index c5fc9f4..0ef5536 100644
+--- a/test/headless.c
++++ b/test/headless.c
+@@ -390,6 +390,63 @@ int main(void)
+ 	if (run_align_scene() != 0)
+ 		return 1;
+ 
++	/* 8. text style (bold/italic) + vertical/horizontal rules */
++	{
++		struct BGTK_Context *sctx = bgtk_init_mock(420, 160);
++		struct BGTK_Widget *items_l[2], *items_r[2], *row_i[3], *col_i[3];
++		struct BGTK_Widget *left, *right, *row, *col, *frame;
++		struct BGTK_Widget *vrule, *hrule;
++		BGTK_Options pad = {.padding = 4, .margin = 2};
++
++		if (!sctx) {
++			fprintf(stderr, "headless: style scene init failed\n");
++			return 1;
++		}
++		sctx-&gt;theme.highlight = 0xFF2A6F97;
++
++		items_l[0] = bgtk_text(sctx, "plain", pad);
++		items_l[1] = bgtk_text(sctx, "bold",
++			(BGTK_Options){.padding = 4, .margin = 2,
++				       .text_style = BGTK_TEXT_BOLD});
++		items_r[0] = bgtk_text(sctx, "italic",
++			(BGTK_Options){.padding = 4, .margin = 2,
++				       .text_style = BGTK_TEXT_ITALIC});
++		items_r[1] = bgtk_text(sctx, "bold+italic",
++			(BGTK_Options){.padding = 4, .margin = 2,
++				       .text_style = BGTK_TEXT_BOLD |
++						     BGTK_TEXT_ITALIC});
++		left = bgtk_list(sctx, items_l, 2,
++			(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++				       .margin = 2});
++		right = bgtk_list(sctx, items_r, 2,
++			(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++				       .margin = 2});
++		vrule = bgtk_rule(sctx, BGTK_LIST_VERTICAL, 1,
++				  (BGTK_Options){.margin = 6});
++		vrule-&gt;h = 80;
++		row_i[0] = left;
++		row_i[1] = vrule;
++		row_i[2] = right;
++		row = bgtk_list(sctx, row_i, 3,
++			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
++				       .margin = 4});
++		hrule = bgtk_rule(sctx, BGTK_LIST_HORIZONTAL, 1,
++				  (BGTK_Options){.margin = 4});
++		hrule-&gt;w = 380;
++		col_i[0] = row;
++		col_i[1] = hrule;
++		col_i[2] = bgtk_text(sctx, "rules + styles", pad);
++		col = bgtk_list(sctx, col_i, 3,
++			(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++				       .margin = 4});
++		frame = bgtk_frame(sctx, col, 420, 160,
++				   (BGTK_Options){.padding = 4});
++		sctx-&gt;root_widget = frame;
++		bgtk_draw_widgets(sctx);
++		take_screenshot(sctx, "headless_07_styles_rules.png");
++		bgtk_destroy_mock(sctx);
++	}
++
+ 	printf("headless test complete. PNG frames written.\n");
+ 	return 0;
+ }
+diff --git a/test/test_settings.c b/test/test_settings.c
+index 2cc8f63..efc03b6 100644
+--- a/test/test_settings.c
++++ b/test/test_settings.c
+@@ -21,6 +21,7 @@
+ /* Declarations from apps/settings.c (compiled with SETTINGS_TEST_MODE) */
+ extern void settings_build_ui(struct BGTK_Context *c, struct config *config,
+ 			       int width, int height);
++extern void settings_layout(void);
+ extern struct config *settings_get_config(void);
+ 
+ int main(void)
+@@ -52,9 +53,9 @@ int main(void)
+ 		click.type = EV_KEY;
+ 		click.code = BTN_LEFT;
+ 		click.value = 1;
+-		/* Screen pos of Apply (content scroll ~161,17; Apply ~4,190). */
++		/* Apply under preview; layout shifted by intro line + panel rule. */
+ 		click.x = 192;
+-		click.y = 225;
++		click.y = 255;
+ 		bgtk_inject_event(ctx, click);
+ 		click.value = 0;
+ 		if (!bgtk_inject_event(ctx, click)) {
+@@ -234,6 +235,21 @@ int main(void)
+ 	}
+ 	take_screenshot(ctx, "settings_05_back_to_bg.png");
+ 
++	/* 06: Window resize — chrome + page must reflow (was a no-op before). */
++	if (bgtk_resize_mock(ctx, 900, 640) != 0) {
++		fprintf(stderr, "test_settings: bgtk_resize_mock failed\n");
++		bgtk_destroy_mock(ctx);
++		return 1;
++	}
++	settings_layout();
++	if (ctx-&gt;root_widget-&gt;w != 900 || ctx-&gt;root_widget-&gt;h != 640) {
++		fprintf(stderr, "test_settings: root not resized (%dx%d)\n",
++			ctx-&gt;root_widget-&gt;w, ctx-&gt;root_widget-&gt;h);
++		bgtk_destroy_mock(ctx);
++		return 1;
++	}
++	take_screenshot(ctx, "settings_06_resized.png");
++
+ 	printf("test_settings complete. PNG files written.\n");
+ 	bgtk_destroy_mock(ctx);
+ 	return 0;
+diff --git a/test/test_theme_gallery.c b/test/test_theme_gallery.c
+new file mode 100644
+index 0000000..3669d37
+--- /dev/null
++++ b/test/test_theme_gallery.c
+@@ -0,0 +1,237 @@
++/* test/test_theme_gallery.c
++ *
++ * Headless gallery of settings-app screenshots under candidate themes
++ * (HN / default-theme brainstorm), including focus/highlight tokens.
++ *
++ * Build:  make test_theme_gallery
++ * Run:    ./test_theme_gallery
++ * Output: settings_theme_*.png
++ */
++
++#include &lt;stdio.h&gt;
++#include &lt;string.h&gt;
++#include &lt;linux/input.h&gt;
++
++#include "bgtk.h"
++#include "config.h"
++#include "html.h"
++#include "internal.h"
++
++extern void settings_build_ui(struct BGTK_Context *c, struct config *config,
++			      int width, int height);
++extern struct config *settings_get_config(void);
++
++struct theme_case {
++	const char *id;
++	const char *name;
++	BGTK_Theme theme;
++};
++
++#define SIDEBAR_X 70
++#define SIDEBAR_BTN_Y(n) (31 + (n) * 42)
++
++static void click_xy(struct BGTK_Context *ctx, int x, int y)
++{
++	struct InputEvent ev = {0};
++	ev.type = EV_KEY;
++	ev.code = BTN_LEFT;
++	ev.value = 1;
++	ev.x = x;
++	ev.y = y;
++	bgtk_inject_event(ctx, ev);
++	ev.value = 0;
++	bgtk_inject_event(ctx, ev);
++}
++
++static int render_case(const struct theme_case *tc, int width, int height)
++{
++	char path_bg[128];
++	char path_theme[128];
++	struct BGTK_Context *ctx;
++	struct config config;
++
++	ctx = bgtk_init_mock(width, height);
++	if (!ctx) {
++		fprintf(stderr, "test_theme_gallery: init_mock failed (%s)\n",
++			tc-&gt;id);
++		return -1;
++	}
++
++	init_config_defaults(&amp;config);
++	config.theme = tc-&gt;theme;
++	config.type = BG_COLOR;
++	config.color = tc-&gt;theme.background;
++	ctx-&gt;theme = tc-&gt;theme;
++
++	settings_build_ui(ctx, &amp;config, width, height);
++	bgtk_draw_widgets(ctx);
++	snprintf(path_bg, sizeof(path_bg), "settings_theme_%s_bg.png", tc-&gt;id);
++	if (take_screenshot(ctx, path_bg) != 0) {
++		fprintf(stderr, "test_theme_gallery: screenshot failed %s\n",
++			path_bg);
++		bgtk_destroy_mock(ctx);
++		return -1;
++	}
++
++	click_xy(ctx, SIDEBAR_X, SIDEBAR_BTN_Y(4));
++	bgtk_draw_widgets(ctx);
++	snprintf(path_theme, sizeof(path_theme), "settings_theme_%s_theme.png",
++		 tc-&gt;id);
++	if (take_screenshot(ctx, path_theme) != 0) {
++		fprintf(stderr, "test_theme_gallery: screenshot failed %s\n",
++			path_theme);
++		bgtk_destroy_mock(ctx);
++		return -1;
++	}
++
++	printf("  %s → %s, %s\n", tc-&gt;name, path_bg, path_theme);
++	bgtk_destroy_mock(ctx);
++	return 0;
++}
++
++int main(void)
++{
++	/* Full BGTK_Theme including focus / focus_bg / highlight. */
++	static const struct theme_case cases[] = {
++		{
++			.id = "00_paper",
++			.name = "Paper",
++			.theme = {
++				.background = 0xFFF4F1EA,
++				.button = 0xFFE8E2D6,
++				.button_text = 0xFF1C1917,
++				.frame_border_color = 0xFFC4B8A8,
++				.frame_border_size = 2,
++				.button_border_size = 1,
++				.input_border_size = 1,
++				.focus = 0xFFB45309,
++				.focus_bg = 0xFFFFF7ED,
++				.highlight = 0xFF78716C,
++			},
++		},
++		{
++			.id = "01_ink",
++			.name = "Ink",
++			.theme = {
++				.background = 0xFFFAFAF8,
++				.button = 0xFFF0F0EC,
++				.button_text = 0xFF111111,
++				.frame_border_color = 0xFF111111,
++				.frame_border_size = 1,
++				.button_border_size = 1,
++				.input_border_size = 1,
++				.focus = 0xFF111111,
++				.focus_bg = 0xFFEEEEEE,
++				.highlight = 0xFF333333,
++			},
++		},
++		{
++			.id = "02_slate",
++			.name = "Slate",
++			.theme = {
++				.background = 0xFFEEF1F4,
++				.button = 0xFFE2E7ED,
++				.button_text = 0xFF1A2332,
++				.frame_border_color = 0xFF9AA7B5,
++				.frame_border_size = 1,
++				.button_border_size = 1,
++				.input_border_size = 2,
++				.focus = 0xFF2563EB,
++				.focus_bg = 0xFFDBEAFE,
++				.highlight = 0xFF475569,
++			},
++		},
++		{
++			.id = "03_charcoal",
++			.name = "Charcoal",
++			.theme = {
++				.background = 0xFF1A1D23,
++				.button = 0xFF2A2F38,
++				.button_text = 0xFFE8EAED,
++				.frame_border_color = 0xFF3D4450,
++				.frame_border_size = 1,
++				.button_border_size = 1,
++				.input_border_size = 1,
++				.focus = 0xFF60A5FA,
++				.focus_bg = 0xFF1E293B,
++				.highlight = 0xFF3B4252,
++			},
++		},
++		{
++			.id = "04_frost",
++			.name = "Frost (Nord-ish)",
++			.theme = {
++				.background = 0xFFECEFF4,
++				.button = 0xFFE5E9F0,
++				.button_text = 0xFF2E3440,
++				.frame_border_color = 0xFFD8DEE9,
++				.frame_border_size = 1,
++				.button_border_size = 1,
++				.input_border_size = 1,
++				.focus = 0xFF5E81AC,
++				.focus_bg = 0xFFE5E9F0,
++				.highlight = 0xFF4C566A,
++			},
++		},
++		{
++			.id = "05_matcha",
++			.name = "Matcha",
++			.theme = {
++				.background = 0xFFF7F6F2,
++				.button = 0xFFDDE8DF,
++				.button_text = 0xFF1B2A1F,
++				.frame_border_color = 0xFFC5D0C7,
++				.frame_border_size = 1,
++				.button_border_size = 1,
++				.input_border_size = 1,
++				.focus = 0xFF3F6F4E,
++				.focus_bg = 0xFFE8F5E9,
++				.highlight = 0xFF5B7C65,
++			},
++		},
++		{
++			.id = "06_a11y",
++			.name = "High-contrast",
++			.theme = {
++				.background = 0xFFFFFFFF,
++				.button = 0xFFFFFFFF,
++				.button_text = 0xFF000000,
++				.frame_border_color = 0xFF000000,
++				.frame_border_size = 2,
++				.button_border_size = 2,
++				.input_border_size = 2,
++				.focus = 0xFF0000FF,
++				.focus_bg = 0xFFFFFF00,
++				.highlight = 0xFF000000,
++			},
++		},
++		{
++			.id = "07_default",
++			.name = "Default (Paper)",
++			.theme = {
++				.background = 0xFFF4F1EA,
++				.button = 0xFFE8E2D6,
++				.button_text = 0xFF1C1917,
++				.frame_border_color = 0xFFC4B8A8,
++				.frame_border_size = 2,
++				.button_border_size = 1,
++				.input_border_size = 1,
++				.focus = 0xFFB45309,
++				.focus_bg = 0xFFFFF7ED,
++				.highlight = 0xFF78716C,
++			},
++		},
++	};
++	const int n = (int)(sizeof(cases) / sizeof(cases[0]));
++	int i;
++	int width = 700;
++	int height = 520;
++
++	printf("test_theme_gallery: %d themes @ %dx%d\n", n, width, height);
++	for (i = 0; i &lt; n; i++) {
++		if (render_case(&amp;cases[i], width, height) != 0)
++			return 1;
++	}
++	printf("test_theme_gallery complete. PNG files written.\n");
++	return 0;
++}
+diff --git a/widgets.c b/widgets.c
+index 1fddd69..39fa023 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -433,6 +433,8 @@ static struct BGTK_Widget *widget_new(struct BGTK_Context *ctx,
+ 	widget-&gt;padding = options.padding;
+ 	widget-&gt;margin = options.margin;
+ 	widget-&gt;text_align = options.text_align;
++	widget-&gt;text_v_align = options.text_v_align;
++	widget-&gt;baseline_offset = options.baseline_offset;
+ 	widget-&gt;w = 0;
+ 	widget-&gt;h = 0;
+ 
+@@ -508,10 +510,11 @@ struct BGTK_Widget *bgtk_text(struct BGTK_Context *ctx, char *text,
+ 	sprintf(ptr, "%s", text);
+ 	widget-&gt;data.text.text = ptr;
+ 	widget-&gt;data.text.header_level = 0;
++	widget-&gt;data.text.style = options.text_style;
+ 
+ 	// Calculate size based on text
+-	measure_text(widget-&gt;ctx-&gt;ft_face, widget-&gt;data.text.text, &amp;widget-&gt;w,
+-		     &amp;widget-&gt;h);
++	measure_text_style(widget-&gt;ctx-&gt;ft_face, widget-&gt;data.text.text,
++			   widget-&gt;data.text.style, &amp;widget-&gt;w, &amp;widget-&gt;h);
+ 
+ 	// Add padding + margin to the text widget (outer size)
+ 	widget-&gt;w += 2 * (widget-&gt;padding + widget-&gt;margin);
+@@ -519,6 +522,36 @@ struct BGTK_Widget *bgtk_text(struct BGTK_Context *ctx, char *text,
+ 	return widget;
+ }
+ 
++static int rule_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
++{
++	(void)widget;
++	(void)ev;
++	return 0;
++}
++
++struct BGTK_Widget *bgtk_rule(struct BGTK_Context *ctx,
++			      enum BGTK_List_Orientation orientation,
++			      int thickness, BGTK_Options options)
++{
++	struct BGTK_Widget *w = widget_new(ctx, BGTK_WIDGET_RULE, options);
++	if (!w)
++		return NULL;
++	if (thickness &lt; 1)
++		thickness = 1;
++	w-&gt;data.rule.orientation = orientation;
++	w-&gt;data.rule.thickness = thickness;
++	w-&gt;data.rule.color = 0;
++	w-&gt;handle_event = rule_handle_event;
++	if (orientation == BGTK_LIST_VERTICAL) {
++		w-&gt;w = thickness + 2 * (w-&gt;padding + w-&gt;margin);
++		w-&gt;h = thickness + 2 * (w-&gt;padding + w-&gt;margin);
++	} else {
++		w-&gt;w = thickness + 2 * (w-&gt;padding + w-&gt;margin);
++		w-&gt;h = thickness + 2 * (w-&gt;padding + w-&gt;margin);
++	}
++	return w;
++}
++
+ struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,
+ 				struct BGTK_Widget *label,
+ 				BGTK_Callback callback, void *cb_data,
+</pre>

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 91126b6</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 91126b6
+parent <a href=commit-c4348f1.html>c4348f1</a> 
+author myr &lt;myr@terminal.pink&gt;
+date   2026-02-23T11:59:49-03:00
+
+    fixed keyboard events not being passed
+
+<a href=tree-91126b6.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/widgets.c b/widgets.c
+index c045d46..ee62c66 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -433,13 +433,8 @@ static int scrollable_handle_event(struct BGTK_Widget* widget,
+ 	    widget-&gt;data.scrollable.content_height, ev.type, ev.code, ev.value,
+ 	    ev.x, ev.y);
+ 
+-	// First check if the event is within the scrollable's bounds
+-	if (!(ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+-	      ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h))) {
+-		return 0;  // Event not in this widget
+-	}
+-
+ 	// Keyboard events don't have meaningful pointer coordinates.
++	// Forward them to children without bounds checking.
+ 	if (ev.type == EV_KEY &amp;&amp; ev.code &lt; BTN_MISC) {
+ 		for (int i = 0; i &lt; widget-&gt;data.scrollable.widget_count; i++) {
+ 			struct BGTK_Widget* child =
+@@ -450,7 +445,13 @@ static int scrollable_handle_event(struct BGTK_Widget* widget,
+ 		}
+ 	}
+ 
+-	// Pass event to child widgets first (if the pointer coordinates match)
++	// First check if the event is within the scrollable's bounds
++	if (!(ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
++	      ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h))) {
++		return 0;  // Event not in this widget
++	}
++
++	// Pass event to child widget if it exists
+ 	// Events are absolute screen coordinates, while children in the scrollable
+ 	// are positioned in scrollable CONTENT coordinates.
+ 	// Transform the event into content-space before forwarding.
+@@ -527,11 +528,6 @@ static int frame_handle_event(struct BGTK_Widget* widget,
+ 	    "ev{type=%d code=%d value=%d x=%d y=%d}\n",
+ 	    widget-&gt;type, widget-&gt;x, widget-&gt;y, widget-&gt;w, widget-&gt;h, ev.type,
+ 	    ev.code, ev.value, ev.x, ev.y);
+-	// First check if the event is within the frame's bounds
+-	if (!(ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
+-	      ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h))) {
+-		return 0;  // Event not in this widget
+-	}
+ 
+ 	// Keyboard events don't have meaningful pointer coordinates.
+ 	// Forward them to the child without bounds checking.
+@@ -542,6 +538,12 @@ static int frame_handle_event(struct BGTK_Widget* widget,
+ 		}
+ 	}
+ 
++	// First check if the event is within the frame's bounds
++	if (!(ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; (widget-&gt;x + widget-&gt;w) &amp;&amp;
++	      ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; (widget-&gt;y + widget-&gt;h))) {
++		return 0;  // Event not in this widget
++	}
++
+ 	// Pass event to child widget if it exists
+ 	if (widget-&gt;data.frame.child) {
+ 		// Events use absolute coordinates.
+</pre>

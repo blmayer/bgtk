@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk c4348f1</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit c4348f1
+parent <a href=commit-02721db.html>02721db</a> 
+author myr &lt;myr@terminal.pink&gt;
+date   2026-02-21T08:41:54-03:00
+
+    fix for event handling (WIP)
+
+<a href=tree-c4348f1.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 2dfd457..5313e5d 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -133,3 +133,6 @@ BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux syste
+ This is a toolkit for the BGCE display server. It works by directly writing to
+ a graphical buffer, this library lets developers create user interfaces easily.
+ 
++## Current task
++
++It seems the image viewer is not handling keyboard input: when i click on the text input it focuses, but typing does nothing, can you fix?
+diff --git a/widgets.c b/widgets.c
+index 0689b8c..c045d46 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -533,6 +533,15 @@ static int frame_handle_event(struct BGTK_Widget* widget,
+ 		return 0;  // Event not in this widget
+ 	}
+ 
++	// Keyboard events don't have meaningful pointer coordinates.
++	// Forward them to the child without bounds checking.
++	if (ev.type == EV_KEY) {
++		if (widget-&gt;data.frame.child) {
++			return widget-&gt;data.frame.child-&gt;handle_event(
++			    widget-&gt;data.frame.child, ev);
++		}
++	}
++
+ 	// Pass event to child widget if it exists
+ 	if (widget-&gt;data.frame.child) {
+ 		// Events use absolute coordinates.
+@@ -548,6 +557,7 @@ static int frame_handle_event(struct BGTK_Widget* widget,
+ 		}
+ 	}
+ 
++
+ 	// If clicked inside the frame but not on the child, focus the frame.
+ 	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
+ 		bgtk_set_focus(widget-&gt;ctx, widget);
+</pre>

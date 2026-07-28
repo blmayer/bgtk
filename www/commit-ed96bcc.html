@@ -1,0 +1,1768 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk ed96bcc</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit ed96bcc
+parent <a href=commit-b98636d.html>b98636d</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-08T19:43:26-03:00
+
+    feat: UTF-8 text, frame chrome spacing, layout fixes.
+
+    Decode UTF-8 to codepoints for measure/draw and gemini wrap so accents
+    and bullets render correctly. Apply theme margin/padding on terminal and
+    gemini frames; fix gemini URL-bar clip and settings sidebar/rule overlap.
+
+<a href=tree-ed96bcc.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/gemini_browser.c b/apps/gemini_browser.c
+index 9af968f..235a4b0 100644
+--- a/apps/gemini_browser.c
++++ b/apps/gemini_browser.c
+@@ -1,5 +1,6 @@
+ #include &lt;bgce.h&gt;
+ #include &lt;bgtk.h&gt;
++#include "internal.h"
+ #include &lt;ctype.h&gt;
+ #include &lt;errno.h&gt;
+ #include &lt;linux/input.h&gt;
+@@ -34,61 +35,97 @@ static BGTK_Options line_opts(void)
+ 	return (BGTK_Options){.padding = 1, .margin = 1};
+ }
+ 
+-static int theme_pad(void)
++/* Theme chrome — same geometry as terminal:
++ * frame draws [margin][border][padding][content]… */
++static void gemini_chrome(int *pad, int *mar, int *bw)
+ {
+-	return (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 6;
++	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 6;
++	int m = (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin : 4;
++	int b = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
++
++	if (b &lt; 1)
++		b = 1;
++	if (pad)
++		*pad = p;
++	if (mar)
++		*mar = m;
++	if (bw)
++		*bw = b;
+ }
+ 
+-static int theme_mar(void)
++/*
++ * Vertical list height overhead beyond sum of children (matches bgtk_list /
++ * draw_list): inter-item 2*M*(n-1) + outer 2*(M+P).
++ * With n=2: 2*M + 2*(M+P) = 4*M + 2*P.
++ */
++static int list_v_overhead(int n, int list_m, int list_p)
+ {
+-	return (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin : 4;
++	if (n &lt; 1)
++		return 2 * (list_m + list_p);
++	return 2 * list_m * (n - 1) + 2 * (list_m + list_p);
+ }
+ 
+-/* Outer chrome inset: frame border+pad + list pad/margin. */
+-static int chrome_inset(void)
+-{
+-	int pad = theme_pad();
+-	int mar = theme_mar();
+-	int half = mar &gt; 1 ? mar / 2 : 1;
+-	int bw = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
+-	if (bw &lt; 1)
+-		bw = 1;
+-	return 2 * (pad + bw + half);
+-}
+-
+-/* Size scroll + URL bar to the current window using theme spacing. */
++/* Size scroll + URL bar so they fit inside the frame content box. */
+ static void gemini_layout_chrome(void)
+ {
+-	int inset, usable_w, ah, scroll_h, half;
++	int pad, mar, bw, box_w, box_h, list_m, list_p, field_pad;
++	int usable_w, ah, scroll_h, over;
+ 
+ 	if (!ctx || !content_scroll || !addr_input)
+ 		return;
+ 
+-	half = theme_mar() &gt; 1 ? theme_mar() / 2 : 1;
+-	inset = chrome_inset();
+-	usable_w = ctx-&gt;width - inset;
+-	if (usable_w &lt; 80)
+-		usable_w = 80;
+-
+-	addr_input-&gt;padding = theme_pad() &gt; 2 ? theme_pad() / 2 : 2;
+-	addr_input-&gt;margin = half;
+-	content_scroll-&gt;padding = half;
+-	content_scroll-&gt;margin = half;
++	gemini_chrome(&amp;pad, &amp;mar, &amp;bw);
++	/* Inner box the frame assigns to its child (main_list). */
++	box_w = ctx-&gt;width - 2 * (mar + bw + pad);
++	box_h = ctx-&gt;height - 2 * (mar + bw + pad);
++	if (box_w &lt; 80)
++		box_w = 80;
++	if (box_h &lt; 80)
++		box_h = 80;
++
++	/*
++	 * Zero list chrome: page + URL bar stack flush inside the frame box.
++	 * (Any list.margin is 4*M overhead for 2 children and was clipping
++	 * the URL bar when under-subtracted.)
++	 */
++	list_m = 0;
++	list_p = 0;
++	field_pad = pad &gt; 2 ? pad / 2 : 2;
++
++	addr_input-&gt;padding = field_pad;
++	addr_input-&gt;margin = 0;
++	content_scroll-&gt;padding = pad &gt; 2 ? pad / 2 : 2;
++	content_scroll-&gt;margin = 0;
+ 	if (main_list) {
+-		main_list-&gt;padding = half;
+-		main_list-&gt;margin = half;
++		main_list-&gt;padding = list_p;
++		main_list-&gt;margin = list_m;
++		main_list-&gt;w = box_w;
++		main_list-&gt;h = box_h;
+ 	}
+ 	if (root_frame) {
+-		root_frame-&gt;padding = theme_pad();
+-		root_frame-&gt;margin = 0;
++		root_frame-&gt;padding = pad;
++		root_frame-&gt;margin = mar;
+ 		root_frame-&gt;w = ctx-&gt;width;
+ 		root_frame-&gt;h = ctx-&gt;height;
+ 	}
+ 
+-	ah = addr_input-&gt;h &gt; 0 ? addr_input-&gt;h : 28;
+-	scroll_h = ctx-&gt;height - ah - inset;
+-	if (scroll_h &lt; 80)
+-		scroll_h = 80;
++	/* Child width inside list = box − 2*(list_m+list_p). */
++	usable_w = box_w - 2 * (list_m + list_p);
++	if (usable_w &lt; 40)
++		usable_w = 40;
++
++	/* Recompute addr height after padding change (outer size). */
++	{
++		int text_h = ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size + 4 : 18;
++		addr_input-&gt;h = text_h + 2 * (addr_input-&gt;padding + addr_input-&gt;margin);
++		if (addr_input-&gt;h &lt; 28)
++			addr_input-&gt;h = 28;
++	}
++	ah = addr_input-&gt;h;
++	over = list_v_overhead(2, list_m, list_p);
++	scroll_h = box_h - ah - over;
++	if (scroll_h &lt; 40)
++		scroll_h = 40;
+ 
+ 	content_scroll-&gt;w = usable_w;
+ 	content_scroll-&gt;h = scroll_h;
+@@ -475,36 +512,61 @@ static int gemini_link_handler(struct BGTK_Widget *w, struct InputEvent ev)
+ /* Simple word-wrap for long paragraphs and link labels. Returns malloc'ed array of lines (caller frees). */
+ static char **wrap_text(FT_Face face, const char *text, int max_width, int *nlines)
+ {
+-	*nlines = 0;
+-	if (!face || !text || !*text || max_width &lt; 20) return NULL;
+ 	char **lines = NULL;
+ 	int n = 0, cap = 0;
+-	int len = strlen(text);
++	int len;
+ 	int i = 0;
++
++	*nlines = 0;
++	if (!face || !text || !*text || max_width &lt; 20)
++		return NULL;
++	len = (int)strlen(text);
+ 	while (i &lt; len) {
+ 		int j = i;
+ 		int last_space = -1;
+ 		int w = 0;
+-		for (; j &lt; len; j++) {
+-			unsigned char ch = (unsigned char)text[j];
+-			if (FT_Load_Char(face, ch, FT_LOAD_DEFAULT) == 0)
++
++		while (j &lt; len) {
++			const char *cp = text + j;
++			size_t left = (size_t)(len - j);
++			const char *start = cp;
++			uint32_t ch = bgtk_utf8_next_n(&amp;cp, &amp;left);
++			int nbytes = (int)(cp - start);
++
++			if (nbytes &lt; 1)
++				break;
++			if (FT_Load_Char(face, (FT_ULong)ch, FT_LOAD_DEFAULT) == 0)
+ 				w += face-&gt;glyph-&gt;advance.x &gt;&gt; 6;
+-			if (w &gt; max_width &amp;&amp; j &gt; i) break;
+-			if (isspace(ch)) last_space = j;
++			if (w &gt; max_width &amp;&amp; j &gt; i)
++				break;
++			/* Space for break: only ASCII whitespace (common gemtext). */
++			if (ch &lt; 128 &amp;&amp; isspace((unsigned char)ch))
++				last_space = j;
++			j += nbytes;
+ 		}
+-		int end = (j &gt;= len) ? len : (last_space &gt; i ? last_space : j);
+-		int lnlen = end - i;
+-		char *ln = malloc(lnlen + 1);
+-		memcpy(ln, text + i, lnlen);
+-		ln[lnlen] = 0;
+-		while (lnlen &gt; 0 &amp;&amp; isspace((unsigned char)ln[lnlen-1])) ln[--lnlen] = 0;
+-		if (n &gt;= cap) {
+-			cap = cap ? cap * 2 : 8;
+-			lines = realloc(lines, cap * sizeof(char *));
++		{
++			int end = (j &gt;= len) ? len : (last_space &gt; i ? last_space : j);
++			int lnlen = end - i;
++			char *ln = malloc((size_t)lnlen + 1);
++
++			if (!ln)
++				break;
++			memcpy(ln, text + i, (size_t)lnlen);
++			ln[lnlen] = 0;
++			while (lnlen &gt; 0 &amp;&amp;
++			       isspace((unsigned char)ln[lnlen - 1]))
++				ln[--lnlen] = 0;
++			if (n &gt;= cap) {
++				cap = cap ? cap * 2 : 8;
++				lines = realloc(lines, (size_t)cap * sizeof(char *));
++				if (!lines)
++					break;
++			}
++			lines[n++] = ln;
++			i = end;
++			while (i &lt; len &amp;&amp; isspace((unsigned char)text[i]))
++				i++;
+ 		}
+-		lines[n++] = ln;
+-		i = end;
+-		while (i &lt; len &amp;&amp; isspace((unsigned char)text[i])) i++;
+ 	}
+ 	*nlines = n;
+ 	return lines;
+@@ -626,6 +688,7 @@ static void rebuild_content_from_gemtext(const char *body)
+ 		} else if (!strncmp(line, "&gt; ", 2)) {
+ 			snprintf(vis, sizeof(vis), "%s", line);
+ 		} else if (!strncmp(line, "* ", 2)) {
++			/* U+2022 bullet (UTF-8); draw_text is codepoint-aware. */
+ 			snprintf(vis, sizeof(vis), "\xe2\x80\xa2 %s", line + 2);
+ 			item_color = 10;
+ 		} else {
+@@ -899,9 +962,6 @@ int main(void)
+ 	int conn_fd;
+ 	struct BufferRequest req;
+ 	void *buffer;
+-	int usable_w;
+-	int reserved;
+-	int scroll_h;
+ 	struct BGTK_Widget *main_items[2];
+ 	struct BGTK_Widget *frame;
+ 	struct BGTK_Widget *loading;
+@@ -953,33 +1013,22 @@ int main(void)
+ 		 (void *)ctx-&gt;ft_face_serif);
+ 
+ 	{
+-		int pad = theme_pad();
+-		int mar = theme_mar();
+-		int half = mar &gt; 1 ? mar / 2 : 1;
+-		int addr_pad = pad &gt; 2 ? pad / 2 : 2;
+-
+-		usable_w = width - chrome_inset();
+-		if (usable_w &lt; 80)
+-			usable_w = 80;
+-
+-		/* Full-width URL bar; Enter navigates (no Go button). */
+-		addr_input = bgtk_text_input(ctx, current_url, usable_w, 0,
+-					     (BGTK_Options){.padding = addr_pad,
+-							    .margin = half});
++		int pad, mar, bw;
++
++		gemini_chrome(&amp;pad, &amp;mar, &amp;bw);
++
++		/* Build shell; gemini_layout_chrome sizes children to the frame box. */
++		addr_input = bgtk_text_input(ctx, current_url, 200, 0,
++					     (BGTK_Options){
++						     .padding = pad &gt; 2 ? pad / 2 : 2,
++						     .margin = 0});
+ 		addr_input-&gt;data.text_input.on_enter = addr_on_enter;
+ 
+ 		content_scroll = bgtk_scrollable(
+ 			ctx, NULL, 0,
+-			(BGTK_Options){.padding = half, .margin = half});
+-
+-		reserved = (addr_input ? addr_input-&gt;h : 28) + chrome_inset();
+-		scroll_h = height - reserved;
+-		if (scroll_h &lt; 80)
+-			scroll_h = 80;
+-		content_scroll-&gt;w = usable_w;
+-		content_scroll-&gt;h = scroll_h;
++			(BGTK_Options){.padding = pad &gt; 2 ? pad / 2 : 2,
++				       .margin = 0});
+ 
+-		/* Placeholder so the window is visible before the network fetch. */
+ 		loading = bgtk_text(ctx, "Loading…", line_opts());
+ 		loading_items = calloc(1, sizeof(*loading_items));
+ 		if (loading_items) {
+@@ -993,12 +1042,15 @@ int main(void)
+ 		main_list = bgtk_list(ctx, main_items, 2,
+ 				      (BGTK_Options){
+ 					      .orientation = BGTK_LIST_VERTICAL,
+-					      .padding = half,
+-					      .margin = half});
++					      .padding = 0,
++					      .margin = 0});
+ 
++		/* Same as terminal: margin outside border, pad inside. */
+ 		frame = bgtk_frame(ctx, main_list, width, height,
+-				   (BGTK_Options){.padding = pad, .margin = 0});
++				   (BGTK_Options){.padding = pad,
++						  .margin = mar});
+ 		root_frame = frame;
++		gemini_layout_chrome();
+ 	}
+ 
+ 	ctx-&gt;root_widget = frame;
+diff --git a/apps/settings.c b/apps/settings.c
+index 8597c13..017889e 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -49,6 +49,7 @@ static struct BGTK_Widget *root_frame;
+ 
+ static int current_page = 0;
+ #define NUM_PAGES 5
++#define SIDEBAR_W 140
+ 
+ static const char *page_names[NUM_PAGES] = {
+ 	"Background", "Cursor", "Shortcuts", "Font", "Theme"
+@@ -1354,9 +1355,18 @@ static void rebuild_content(void)
+ 	if (current_page == 3 &amp;&amp; !font_list_cache)
+ 		font_list_count = scan_fonts(&amp;font_list_cache);
+ 
+-	int rule_w = panel_rule ? panel_rule-&gt;w : 0;
+-	int panel_w = app_w - (sidebar ? sidebar-&gt;w : 140) - rule_w - 16;
+-	int panel_h = app_h - 16;
++	int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 6;
++	int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 4;
++	int fbw = (int)ctx-&gt;theme.frame_border_size;
++	int chrome, rule_w, panel_w, panel_h;
++
++	if (fbw &lt; 0)
++		fbw = 0;
++	chrome = 2 * (fbw + pad);
++	rule_w = panel_rule ? panel_rule-&gt;w : (1 + mar);
++	panel_w = app_w - (sidebar ? sidebar-&gt;w : SIDEBAR_W) - rule_w - chrome -
++		  mar;
++	panel_h = app_h - chrome;
+ 	if (panel_w &lt; 80)
+ 		panel_w = 80;
+ 	if (panel_h &lt; 40)
+@@ -1515,21 +1525,48 @@ static void rebuild_content(void)
+ /* Sidebar: rebuild with highlight on selected page                    */
+ /* ------------------------------------------------------------------ */
+ 
++/* Scroll/list chrome eats width; buttons must fit inside the offscreen
++ * scroll buffer or the right border is clipped under the panel rule. */
++static void sidebar_spacing(int *pad, int *mar, int *scroll_pad, int *btn_w)
++{
++	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 6;
++	int m = (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin / 2 : 2;
++	int sp = p &gt; 1 ? p / 2 : 1;
++	/* child.x = scroll.mar+scroll.pad; button.x = list.mar+list.pad */
++	int left = m + sp + m; /* scroll mar + pad + list mar (list pad 0) */
++	int bw = SIDEBAR_W - 2 * left;
++
++	if (bw &lt; 40)
++		bw = 40;
++	if (pad)
++		*pad = p;
++	if (mar)
++		*mar = m;
++	if (scroll_pad)
++		*scroll_pad = sp;
++	if (btn_w)
++		*btn_w = bw;
++}
++
+ /* Selected nav: highlight fill only (no "&gt; " prefix). */
+-static struct BGTK_Widget *make_nav_button(int i, int sidebar_w)
++static struct BGTK_Widget *make_nav_button(int i, int btn_w)
+ {
+ 	int selected = (i == current_page);
+-	int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 6;
+-	int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin / 2 : 2;
++	int pad, mar, bw;
+ 	BGTK_Options to = {.padding = 2};
++	struct BGTK_Widget *lbl;
++	struct BGTK_Widget *btn;
++
++	sidebar_spacing(&amp;pad, &amp;mar, NULL, &amp;bw);
++	if (btn_w &gt; 0)
++		bw = btn_w;
+ 	if (selected)
+ 		to.text_style = BGTK_TEXT_BOLD;
+-	struct BGTK_Widget *lbl =
+-		bgtk_text(ctx, (char *)page_names[i], to);
+-	struct BGTK_Widget *btn = bgtk_button(ctx, lbl, page_cb,
+-		(void *)(intptr_t)i,
+-		(BGTK_Options){.padding = pad / 2 + 2, .margin = mar});
+-	btn-&gt;w = sidebar_w - 2 * mar;
++	lbl = bgtk_text(ctx, (char *)page_names[i], to);
++	/* margin 0: width is the full hit/draw box; spacing is list/scroll. */
++	btn = bgtk_button(ctx, lbl, page_cb, (void *)(intptr_t)i,
++			  (BGTK_Options){.padding = pad / 2 + 2, .margin = 0});
++	btn-&gt;w = bw;
+ 	if (selected) {
+ 		uint32_t hi = ctx-&gt;theme.highlight ? ctx-&gt;theme.highlight
+ 						   : 0xFF505060;
+@@ -1540,15 +1577,20 @@ static struct BGTK_Widget *make_nav_button(int i, int sidebar_w)
+ 
+ static void rebuild_sidebar(void)
+ {
+-	int sidebar_w = 140;
+-	int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin / 2 : 2;
+-	struct BGTK_Widget **btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
++	int mar, btn_w;
++	struct BGTK_Widget **btns;
++	int i;
+ 
+-	for (int i = 0; i &lt; NUM_PAGES; i++)
+-		btns[i] = make_nav_button(i, sidebar_w);
++	sidebar_spacing(NULL, &amp;mar, NULL, &amp;btn_w);
++	btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
++	if (!btns)
++		return;
++	for (i = 0; i &lt; NUM_PAGES; i++)
++		btns[i] = make_nav_button(i, btn_w);
+ 
+ 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
+-		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = mar});
++		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++			       .margin = mar, .padding = 0});
+ 	free(btns);
+ 
+ 	/* Replace the scrollable's content */
+@@ -1558,24 +1600,29 @@ static void rebuild_sidebar(void)
+ 
+ static struct BGTK_Widget *build_sidebar(void)
+ {
+-	int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 6;
+-	int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin / 2 : 2;
+-	int bw = (int)ctx-&gt;theme.frame_border_size;
+-	int sidebar_w = 140;
+-	struct BGTK_Widget **btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
++	int pad, mar, scroll_pad, btn_w;
++	int bw = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
++	struct BGTK_Widget **btns;
++	struct BGTK_Widget *scroll;
++	int i;
+ 
++	sidebar_spacing(&amp;pad, &amp;mar, &amp;scroll_pad, &amp;btn_w);
+ 	if (bw &lt; 0)
+ 		bw = 0;
+-	for (int i = 0; i &lt; NUM_PAGES; i++)
+-		btns[i] = make_nav_button(i, sidebar_w);
++	btns = malloc(NUM_PAGES * sizeof(struct BGTK_Widget *));
++	if (!btns)
++		return NULL;
++	for (i = 0; i &lt; NUM_PAGES; i++)
++		btns[i] = make_nav_button(i, btn_w);
+ 
+ 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
+-		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .margin = mar});
++		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++			       .margin = mar, .padding = 0});
+ 	free(btns);
+ 
+-	struct BGTK_Widget *scroll = bgtk_scrollable(ctx, &amp;sidebar_list, 1,
+-		(BGTK_Options){.padding = pad / 2, .margin = mar});
+-	scroll-&gt;w = sidebar_w;
++	scroll = bgtk_scrollable(ctx, &amp;sidebar_list, 1,
++		(BGTK_Options){.padding = scroll_pad, .margin = mar});
++	scroll-&gt;w = SIDEBAR_W;
+ 	scroll-&gt;h = app_h - 2 * (bw + pad);
+ 
+ 	return scroll;
+@@ -1607,8 +1654,16 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
+ 		chrome = 2 * (bw + pad);
+ 
+ 		sidebar = build_sidebar();
++		/* Thin divider: margin only on the content side so it does
++		 * not sit on top of sidebar button borders. */
+ 		panel_rule = bgtk_rule(ctx, BGTK_LIST_VERTICAL, 1,
+-				       (BGTK_Options){.margin = mar, .padding = 0});
++				       (BGTK_Options){.margin = 0, .padding = 0});
++		/* Extra left gap via rule outer width (visual gutter). */
++		{
++			int gutter = mar &gt; 0 ? mar : 4;
++			panel_rule-&gt;w = 1 + gutter; /* 1px line + space after sidebar */
++			panel_rule-&gt;data.rule.thickness = 1;
++		}
+ 		panel_rule-&gt;h = app_h - chrome;
+ 
+ 		int panel_w = app_w - sidebar-&gt;w - panel_rule-&gt;w - chrome - mar;
+@@ -1624,9 +1679,10 @@ void settings_build_ui(struct BGTK_Context *c, struct config *config,
+ 		content_panel-&gt;data.frame.border_w = 0;
+ 
+ 		struct BGTK_Widget *cols[3] = { sidebar, panel_rule, content_panel };
++		/* Zero list margin so column gap comes from rule gutter only. */
+ 		struct BGTK_Widget *row = bgtk_list(ctx, cols, 3,
+ 			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
+-				       .margin = mar});
++				       .margin = 0, .padding = 0});
+ 
+ 		/* Outer frame: thick gold border + even theme padding inset. */
+ 		root_frame = bgtk_frame(ctx, row, app_w, app_h,
+diff --git a/apps/terminal.c b/apps/terminal.c
+index c47a2c1..cb8cee5 100644
+--- a/apps/terminal.c
++++ b/apps/terminal.c
+@@ -130,24 +130,51 @@ static void pty_set_winsize(int master_fd, int cols, int rows)
+ 		bgtk_log_errno("TIOCSWINSZ master %dx%d", cols, rows);
+ }
+ 
+-static int term_chrome_pad(struct BGTK_Context *ctx)
++/* Theme spacing: frame draws [margin][border][padding][child]… */
++static void term_chrome(struct BGTK_Context *ctx, int *pad, int *mar, int *bw)
+ {
+-	return (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 0;
++	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 6;
++	int m = (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin : 4;
++	int b = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
++
++	if (b &lt; 0)
++		b = 0;
++	if (pad)
++		*pad = p;
++	if (mar)
++		*mar = m;
++	if (bw)
++		*bw = b;
+ }
+ 
+-/* Rebuild image surface + cell grid for a new window size. */
+-static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
+-			       struct BGTK_Widget *img, struct BGTK_Widget *frame,
+-			       int master_fd, int *inner_w, int *inner_h)
++static int term_inner_size(struct BGTK_Context *ctx, int win_w, int win_h,
++			   int *out_w, int *out_h)
+ {
+-	int bw = ctx-&gt;theme.frame_border_size;
+-	int pad = term_chrome_pad(ctx);
+-	int iw = ctx-&gt;width - 2 * (bw + pad);
+-	int ih = ctx-&gt;height - 2 * (bw + pad);
++	int pad, mar, bw, iw, ih;
++
++	term_chrome(ctx, &amp;pad, &amp;mar, &amp;bw);
++	iw = win_w - 2 * (mar + bw + pad);
++	ih = win_h - 2 * (mar + bw + pad);
+ 	if (iw &lt; 1)
+ 		iw = 1;
+ 	if (ih &lt; 1)
+ 		ih = 1;
++	if (out_w)
++		*out_w = iw;
++	if (out_h)
++		*out_h = ih;
++	return 0;
++}
++
++/* Rebuild image surface + cell grid for a new window size. */
++static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
++			       struct BGTK_Widget *img, struct BGTK_Widget *frame,
++			       int master_fd, int *inner_w, int *inner_h)
++{
++	int pad, mar, bw, iw, ih;
++
++	term_chrome(ctx, &amp;pad, &amp;mar, &amp;bw);
++	term_inner_size(ctx, ctx-&gt;width, ctx-&gt;height, &amp;iw, &amp;ih);
+ 
+ 	term_measure_cell(ts, ctx);
+ 	int cols = iw / ts-&gt;cell_w;
+@@ -173,12 +200,14 @@ static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
+ 	img-&gt;data.image.img_h = ih;
+ 	img-&gt;w = iw;
+ 	img-&gt;h = ih;
++	img-&gt;padding = 0;
++	img-&gt;margin = 0;
+ 
+ 	if (frame) {
+ 		frame-&gt;w = ctx-&gt;width;
+ 		frame-&gt;h = ctx-&gt;height;
+ 		frame-&gt;padding = pad;
+-		frame-&gt;margin = 0;
++		frame-&gt;margin = mar;
+ 	}
+ 
+ 	*inner_w = iw;
+@@ -187,8 +216,9 @@ static int terminal_apply_size(struct BGTK_Context *ctx, struct Term_State *ts,
+ 	if (master_fd &gt;= 0)
+ 		pty_set_winsize(master_fd, cols, rows);
+ 
+-	bgtk_log("terminal size window=%dx%d inner=%dx%d grid=%dx%d cell=%dx%d",
+-		 ctx-&gt;width, ctx-&gt;height, iw, ih, cols, rows,
++	bgtk_log("terminal size window=%dx%d inner=%dx%d grid=%dx%d "
++		 "pad=%d mar=%d bw=%d cell=%dx%d",
++		 ctx-&gt;width, ctx-&gt;height, iw, ih, cols, rows, pad, mar, bw,
+ 		 ts-&gt;cell_w, ts-&gt;cell_h);
+ 	return 0;
+ }
+@@ -227,28 +257,25 @@ int main(void)
+ 	}
+ 
+ 	struct Term_State tmp_ts = {0};
++	int pad, mar, bw, inner_w, inner_h, cols, rows;
++
+ 	tmp_ts.cols = tmp_ts.rows = 1;
+ 	term_measure_cell(&amp;tmp_ts, ctx);
+ 
+-	int bw = ctx-&gt;theme.frame_border_size;
+-	int pad = term_chrome_pad(ctx);
+-	int inner_w = width - 2 * (bw + pad);
+-	int inner_h = height - 2 * (bw + pad);
+-	if (inner_w &lt; 1)
+-		inner_w = 1;
+-	if (inner_h &lt; 1)
+-		inner_h = 1;
+-	int cols = inner_w / tmp_ts.cell_w;
+-	int rows = inner_h / tmp_ts.cell_h;
++	term_chrome(ctx, &amp;pad, &amp;mar, &amp;bw);
++	term_inner_size(ctx, width, height, &amp;inner_w, &amp;inner_h);
++	cols = inner_w / tmp_ts.cell_w;
++	rows = inner_h / tmp_ts.cell_h;
+ 	if (cols &lt; 1)
+ 		cols = 1;
+ 	if (rows &lt; 1)
+ 		rows = 1;
+ 	{
+ 		FT_Face mono = bgtk_font_face(ctx, BGTK_FONT_MONO);
+-		bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d pad=%d mono='%s' fixed=%d family='%s'",
++		bgtk_log("cell=%dx%d grid=%dx%d inner=%dx%d pad=%d mar=%d bw=%d "
++			 "mono='%s' fixed=%d family='%s'",
+ 			 tmp_ts.cell_w, tmp_ts.cell_h, cols, rows, inner_w,
+-			 inner_h, pad,
++			 inner_h, pad, mar, bw,
+ 			 ctx-&gt;font_mono_path[0] ? ctx-&gt;font_mono_path
+ 						: "(none)",
+ 			 mono &amp;&amp; FT_IS_FIXED_WIDTH(mono) ? 1 : 0,
+@@ -264,7 +291,8 @@ int main(void)
+ 	ts-&gt;cell_h = tmp_ts.cell_h;
+ 
+ 	struct BGTK_Widget *img = bgtk_image(ctx, NULL, inner_w, inner_h,
+-					     (BGTK_Options){0});
++					     (BGTK_Options){.padding = 0,
++							    .margin = 0});
+ 	img-&gt;data.image.pixels = calloc((size_t)inner_w * inner_h,
+ 					sizeof(uint32_t));
+ 	if (!img-&gt;data.image.pixels) {
+@@ -273,9 +301,10 @@ int main(void)
+ 	}
+ 	img-&gt;data.image.img_w = inner_w;
+ 	img-&gt;data.image.img_h = inner_h;
++	/* Root frame: margin outside border, padding between border and cells. */
+ 	struct BGTK_Widget *frame = bgtk_frame(ctx, img, width, height,
+ 					       (BGTK_Options){.padding = pad,
+-							      .margin = 0});
++							      .margin = mar});
+ 	ctx-&gt;root_widget = frame;
+ 
+ 	int master_fd;
+diff --git a/drawing.c b/drawing.c
+index 5d81057..2416085 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -22,6 +22,98 @@ static uint32_t pack_argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b)
+ 	       (uint32_t)b;
+ }
+ 
++/* ------------------------------------------------------------------ */
++/* UTF-8 decode (no allocation; FreeType wants Unicode codepoints)    */
++/* ------------------------------------------------------------------ */
++
++uint32_t bgtk_utf8_next_n(const char **s, size_t *nleft)
++{
++	const unsigned char *p;
++	size_t n;
++	uint32_t c;
++
++	if (!s || !*s || !nleft || *nleft == 0)
++		return 0;
++	p = (const unsigned char *)*s;
++	n = *nleft;
++	c = p[0];
++
++	/* ASCII */
++	if (c &lt; 0x80) {
++		*s = (const char *)(p + 1);
++		*nleft = n - 1;
++		return c;
++	}
++
++	/* 2-byte: 110xxxxx 10xxxxxx */
++	if ((c &amp; 0xE0) == 0xC0) {
++		if (n &lt; 2 || (p[1] &amp; 0xC0) != 0x80)
++			goto bad;
++		c = ((c &amp; 0x1Fu) &lt;&lt; 6) | (p[1] &amp; 0x3Fu);
++		if (c &lt; 0x80)
++			goto bad; /* overlong */
++		*s = (const char *)(p + 2);
++		*nleft = n - 2;
++		return c;
++	}
++
++	/* 3-byte: 1110xxxx 10xxxxxx 10xxxxxx */
++	if ((c &amp; 0xF0) == 0xE0) {
++		if (n &lt; 3 || (p[1] &amp; 0xC0) != 0x80 || (p[2] &amp; 0xC0) != 0x80)
++			goto bad;
++		c = ((c &amp; 0x0Fu) &lt;&lt; 12) | ((p[1] &amp; 0x3Fu) &lt;&lt; 6) | (p[2] &amp; 0x3Fu);
++		if (c &lt; 0x800 || (c &gt;= 0xD800 &amp;&amp; c &lt;= 0xDFFF))
++			goto bad; /* overlong / surrogate */
++		*s = (const char *)(p + 3);
++		*nleft = n - 3;
++		return c;
++	}
++
++	/* 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx */
++	if ((c &amp; 0xF8) == 0xF0) {
++		if (n &lt; 4 || (p[1] &amp; 0xC0) != 0x80 || (p[2] &amp; 0xC0) != 0x80 ||
++		    (p[3] &amp; 0xC0) != 0x80)
++			goto bad;
++		c = ((c &amp; 0x07u) &lt;&lt; 18) | ((p[1] &amp; 0x3Fu) &lt;&lt; 12) |
++		    ((p[2] &amp; 0x3Fu) &lt;&lt; 6) | (p[3] &amp; 0x3Fu);
++		if (c &lt; 0x10000 || c &gt; 0x10FFFF)
++			goto bad;
++		*s = (const char *)(p + 4);
++		*nleft = n - 4;
++		return c;
++	}
++
++bad:
++	/* Skip one byte; render replacement if caller cares. */
++	*s = (const char *)(p + 1);
++	*nleft = n - 1;
++	return 0xFFFD;
++}
++
++uint32_t bgtk_utf8_next(const char **s)
++{
++	size_t n;
++
++	if (!s || !*s || !**s)
++		return 0;
++	/* Bound by remaining string length (safe for untrusted input). */
++	n = strlen(*s);
++	return bgtk_utf8_next_n(s, &amp;n);
++}
++
++static int load_cp(FT_Face face, uint32_t cp, int style)
++{
++	if (!face)
++		return -1;
++	if (FT_Load_Char(face, (FT_ULong)cp,
++			 FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP))
++		return -1;
++	if ((style &amp; BGTK_TEXT_BOLD) &amp;&amp;
++	    face-&gt;glyph-&gt;format == FT_GLYPH_FORMAT_OUTLINE)
++		FT_GlyphSlot_Embolden(face-&gt;glyph);
++	return 0;
++}
++
+ // Loads an image file into a pixel buffer as 0xAARRGGBB uint32 pixels.
+ // stbi gives RGBA bytes; casting those to uint32 is wrong (R/B swap on LE).
+ // Returns 0 on success, -1 on failure.
+@@ -106,34 +198,83 @@ void measure_text(FT_Face face, const char *text, int *out_width,
+ void measure_text_style(FT_Face face, const char *text, int style,
+ 			int *out_width, int *out_height)
+ {
+-	if (!face || !text) {
+-		int n = text ? (int)strlen(text) : 0;
+-		*out_width = n * 7;
+-		*out_height = 12;
+-		if (style &amp; BGTK_TEXT_BOLD)
+-			*out_width += n;
++	int width = 0;
++	int ncp = 0;
++	const char *p;
++
++	if (!text) {
++		if (out_width)
++			*out_width = 0;
++		if (out_height)
++			*out_height = 12;
+ 		return;
+ 	}
++	{
++		size_t left = strlen(text);
++
++		if (!face) {
++			/* Crude: count codepoints for fallback width. */
++			p = text;
++			while (left &gt; 0) {
++				if (!bgtk_utf8_next_n(&amp;p, &amp;left))
++					break;
++				ncp++;
++			}
++			if (out_width)
++				*out_width = ncp * 7 +
++					     ((style &amp; BGTK_TEXT_BOLD) ? ncp : 0);
++			if (out_height)
++				*out_height = 12;
++			return;
++		}
+ 
+-	int width = 0;
+-	for (const char *p = text; *p; p++) {
+-		if (FT_Load_Char(face, (unsigned char)*p,
+-				 FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP))
+-			continue;
+-		if ((style &amp; BGTK_TEXT_BOLD) &amp;&amp;
+-		    face-&gt;glyph-&gt;format == FT_GLYPH_FORMAT_OUTLINE)
+-			FT_GlyphSlot_Embolden(face-&gt;glyph);
+-		width += face-&gt;glyph-&gt;advance.x;
++		p = text;
++		while (left &gt; 0) {
++			uint32_t cp = bgtk_utf8_next_n(&amp;p, &amp;left);
++
++			if (!cp)
++				break;
++			if (load_cp(face, cp, style) == 0)
++				width += face-&gt;glyph-&gt;advance.x;
++			ncp++;
++		}
+ 	}
+ 	width &gt;&gt;= 6;
+ 	/* Synthetic italic shear needs a little end padding. */
+ 	if (style &amp; BGTK_TEXT_ITALIC)
+ 		width += (face-&gt;size-&gt;metrics.height &gt;&gt; 6) / 4;
+ 
+-	int ascent = face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
+-	int descent = -face-&gt;size-&gt;metrics.descender &gt;&gt; 6;
+-	*out_width = width;
+-	*out_height = ascent + descent;
++	if (out_width)
++		*out_width = width;
++	if (out_height) {
++		int ascent = face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
++		int descent = -face-&gt;size-&gt;metrics.descender &gt;&gt; 6;
++		*out_height = ascent + descent;
++	}
++}
++
++int measure_text_prefix(FT_Face face, const char *text, int nbytes)
++{
++	int width = 0;
++	const char *p;
++	size_t left;
++
++	if (!text || nbytes &lt;= 0)
++		return 0;
++	if (!face)
++		return nbytes * 7;
++
++	p = text;
++	left = (size_t)nbytes;
++	while (left &gt; 0 &amp;&amp; *p) {
++		uint32_t cp = bgtk_utf8_next_n(&amp;p, &amp;left);
++		if (!cp)
++			break;
++		if (FT_Load_Char(face, (FT_ULong)cp,
++				 FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP) == 0)
++			width += face-&gt;glyph-&gt;advance.x;
++	}
++	return width &gt;&gt; 6;
+ }
+ 
+ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+@@ -230,12 +371,15 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 		w-&gt;data.scrollable.content_height = cy;
+ 		break;
+ 	}
+-	case BGTK_WIDGET_LIST:
+-		w-&gt;data.list_widget.content_width = 0;
+-		w-&gt;data.list_widget.content_height = 0;
++	case BGTK_WIDGET_LIST: {
+ 		int max_width = 0;
+ 		int max_height = 0;
+-		for (int i = 0; i &lt; w-&gt;data.list_widget.widget_count; i++) {
++		int inset = 2 * (w-&gt;margin + w-&gt;padding);
++		int n = w-&gt;data.list_widget.widget_count;
++
++		w-&gt;data.list_widget.content_width = 0;
++		w-&gt;data.list_widget.content_height = 0;
++		for (int i = 0; i &lt; n; i++) {
+ 			struct BGTK_Widget *child =
+ 			    w-&gt;data.list_widget.items[i];
+ 			calculate_widget_size(ctx, child);
+@@ -243,36 +387,36 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 			    BGTK_LIST_VERTICAL) {
+ 				w-&gt;data.list_widget.content_height +=
+ 				    child-&gt;h + 2 * w-&gt;margin;
+-				if (child-&gt;w &gt; max_width) {
++				if (child-&gt;w &gt; max_width)
+ 					max_width = child-&gt;w;
+-				}
+-			} else {	// BGTK_LIST_HORIZONTAL
++			} else {
+ 				w-&gt;data.list_widget.content_width +=
+ 				    child-&gt;w + 2 * w-&gt;margin;
+-				if (child-&gt;h &gt; max_height) {
++				if (child-&gt;h &gt; max_height)
+ 					max_height = child-&gt;h;
+-				}
+ 			}
+ 		}
+-
+-		// Subtract the last margin
+-		if (w-&gt;data.list_widget.widget_count &gt; 0) {
++		if (n &gt; 0) {
+ 			if (w-&gt;data.list_widget.orientation ==
+-			    BGTK_LIST_VERTICAL) {
++			    BGTK_LIST_VERTICAL)
+ 				w-&gt;data.list_widget.content_height -=
+ 				    2 * w-&gt;margin;
+-			} else {
++			else
+ 				w-&gt;data.list_widget.content_width -=
+ 				    2 * w-&gt;margin;
+-			}
+ 		}
+-		// Use max dimensions for the other axis
++		/* Intrinsic outer size: content + outer pad/margin inset. */
+ 		if (w-&gt;data.list_widget.orientation == BGTK_LIST_VERTICAL) {
+ 			w-&gt;data.list_widget.content_width = max_width;
++			w-&gt;w = max_width + inset;
++			w-&gt;h = w-&gt;data.list_widget.content_height + inset;
+ 		} else {
+ 			w-&gt;data.list_widget.content_height = max_height;
++			w-&gt;h = max_height + inset;
++			w-&gt;w = w-&gt;data.list_widget.content_width + inset;
+ 		}
+ 		break;
++	}
+ 	case BGTK_WIDGET_IMAGE:
+ 	case BGTK_WIDGET_TEXT_INPUT:
+ 		// Text input is a fixed-size widget; its size is set by
+@@ -307,6 +451,13 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
+ 			const char *text, int x, int y, uint32_t color,
+ 			int style, int baseline_offset)
+ {
++	int pen_x, pen_y, stride;
++	FT_Matrix italic;
++	size_t left;
++	const char *p;
++
++	if (!text || !*text)
++		return;
+ 	if (!ctx-&gt;ft_face) {
+ 		draw_rect(ctx, pixels, x, y, 5, 5, color);
+ 		return;
+@@ -314,19 +465,30 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
+ 	FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0,
+ 			   ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14);
+ 
+-	int pen_x = x;
++	pen_x = x;
+ 	/* y is top of the text box; FreeType pen is baseline. */
+-	int pen_y = y + (ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6) +
+-		    baseline_offset;
++	pen_y = y + (ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6) +
++		baseline_offset;
+ 	if (ctx-&gt;theme.text_baseline_offset)
+ 		pen_y += ctx-&gt;theme.text_baseline_offset;
+-	int stride = ctx-&gt;width;
++	stride = ctx-&gt;width;
+ 	/* ~12° synthetic italic shear (16.16 fixed). */
+-	FT_Matrix italic = { .xx = 0x10000, .xy = 0x5000, .yx = 0, .yy = 0x10000 };
+-
+-	for (const char *p = text; *p; p++) {
+-		FT_UInt index =
+-			FT_Get_Char_Index(ctx-&gt;ft_face, (unsigned char)*p);
++	italic = (FT_Matrix){ .xx = 0x10000, .xy = 0x5000, .yx = 0, .yy = 0x10000 };
++
++	left = strlen(text);
++	p = text;
++
++	while (left &gt; 0) {
++		uint32_t cp = bgtk_utf8_next_n(&amp;p, &amp;left);
++		FT_UInt index;
++		FT_GlyphSlot slot;
++		FT_Bitmap *bitmap;
++		int gx, gy;
++		unsigned int row, col;
++
++		if (!cp)
++			break;
++		index = FT_Get_Char_Index(ctx-&gt;ft_face, (FT_ULong)cp);
+ 		if (FT_Load_Glyph(ctx-&gt;ft_face, index,
+ 				  FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP |
+ 					  FT_LOAD_TARGET_LIGHT))
+@@ -343,33 +505,38 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
+ 		if (FT_Render_Glyph(ctx-&gt;ft_face-&gt;glyph, FT_RENDER_MODE_NORMAL))
+ 			continue;
+ 
+-		FT_GlyphSlot slot = ctx-&gt;ft_face-&gt;glyph;
+-		FT_Bitmap *bitmap = &amp;slot-&gt;bitmap;
+-		int gx = pen_x + slot-&gt;bitmap_left;
+-		int gy = pen_y - slot-&gt;bitmap_top;
++		slot = ctx-&gt;ft_face-&gt;glyph;
++		bitmap = &amp;slot-&gt;bitmap;
++		gx = pen_x + slot-&gt;bitmap_left;
++		gy = pen_y - slot-&gt;bitmap_top;
+ 
+-		for (unsigned int row = 0; row &lt; bitmap-&gt;rows; row++) {
+-			for (unsigned int col = 0; col &lt; bitmap-&gt;width; col++) {
++		for (row = 0; row &lt; bitmap-&gt;rows; row++) {
++			for (col = 0; col &lt; bitmap-&gt;width; col++) {
+ 				uint8_t a =
+ 				    bitmap-&gt;buffer[row * bitmap-&gt;pitch + col];
++				int32_t dx, dy;
++				uint32_t dst;
++				uint8_t inv, r_dst, g_dst, b_dst;
++				uint8_t r_src, g_src, b_src, r, g, b;
++
+ 				if (a == 0)
+ 					continue;
+-				int32_t dx = gx + (int)col;
+-				int32_t dy = gy + (int)row;
++				dx = gx + (int)col;
++				dy = gy + (int)row;
+ 				if (dx &lt; 0 || dy &lt; 0 || dx &gt;= ctx-&gt;width ||
+ 				    dy &gt;= ctx-&gt;height)
+ 					continue;
+-				uint32_t dst = pixels[dy * stride + dx];
+-				uint8_t inv = 255 - a;
+-				uint8_t r_dst = (dst &gt;&gt; 16) &amp; 0xFF;
+-				uint8_t g_dst = (dst &gt;&gt; 8) &amp; 0xFF;
+-				uint8_t b_dst = (dst) &amp; 0xFF;
+-				uint8_t r_src = (color &gt;&gt; 16) &amp; 0xFF;
+-				uint8_t g_src = (color &gt;&gt; 8) &amp; 0xFF;
+-				uint8_t b_src = (color) &amp; 0xFF;
+-				uint8_t r = (r_src * a + r_dst * inv) / 255;
+-				uint8_t g = (g_src * a + g_dst * inv) / 255;
+-				uint8_t b = (b_src * a + b_dst * inv) / 255;
++				dst = pixels[dy * stride + dx];
++				inv = 255 - a;
++				r_dst = (dst &gt;&gt; 16) &amp; 0xFF;
++				g_dst = (dst &gt;&gt; 8) &amp; 0xFF;
++				b_dst = (dst) &amp; 0xFF;
++				r_src = (color &gt;&gt; 16) &amp; 0xFF;
++				g_src = (color &gt;&gt; 8) &amp; 0xFF;
++				b_src = (color) &amp; 0xFF;
++				r = (r_src * a + r_dst * inv) / 255;
++				g = (g_src * a + g_dst * inv) / 255;
++				b = (b_src * a + b_dst * inv) / 255;
+ 				pixels[dy * stride + dx] =
+ 				    (0xFFu &lt;&lt; 24) | (r &lt;&lt; 16) | (g &lt;&lt; 8) | b;
+ 			}
+@@ -909,17 +1076,29 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		uint8_t g_src = (text_color &gt;&gt; 8) &amp; 0xFF;
+ 		uint8_t b_src = text_color &amp; 0xFF;
+ 
+-		for (const char *p = full; *p; p++) {
+-			FT_UInt index = FT_Get_Char_Index(ctx-&gt;ft_face, (unsigned char)*p);
++		{
++		size_t left = strlen(full);
++		const char *p = full;
++
++		while (left &gt; 0) {
++			uint32_t cp = bgtk_utf8_next_n(&amp;p, &amp;left);
++			FT_UInt index;
++			FT_GlyphSlot slot;
++			FT_Bitmap *bitmap;
++			int gx, gy;
++
++			if (!cp)
++				break;
++			index = FT_Get_Char_Index(ctx-&gt;ft_face, (FT_ULong)cp);
+ 			if (FT_Load_Glyph(ctx-&gt;ft_face, index,
+ 					  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT))
+ 				continue;
+ 			FT_Render_Glyph(ctx-&gt;ft_face-&gt;glyph, FT_RENDER_MODE_NORMAL);
+ 
+-			FT_GlyphSlot slot = ctx-&gt;ft_face-&gt;glyph;
+-			FT_Bitmap *bitmap = &amp;slot-&gt;bitmap;
+-			int gx = pen_x + slot-&gt;bitmap_left;
+-			int gy = pen_y - slot-&gt;bitmap_top;
++			slot = ctx-&gt;ft_face-&gt;glyph;
++			bitmap = &amp;slot-&gt;bitmap;
++			gx = pen_x + slot-&gt;bitmap_left;
++			gy = pen_y - slot-&gt;bitmap_top;
+ 
+ 			if (gx + (int)bitmap-&gt;width &lt;= inner_x0) {
+ 				pen_x += slot-&gt;advance.x &gt;&gt; 6;
+@@ -934,41 +1113,37 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 					continue;
+ 				for (unsigned int col = 0; col &lt; bitmap-&gt;width; col++) {
+ 					int32_t dx = gx + (int)col;
++					uint8_t a, inv, r_dst, g_dst, b_dst, r, g, b;
++					uint32_t dst;
++
+ 					if (dx &lt; inner_x0 || dx &gt;= inner_x0 + inner_w)
+ 						continue;
+-
+-					uint8_t a =
+-					    bitmap-&gt;buffer[row * bitmap-&gt;pitch + col];
++					a = bitmap-&gt;buffer[row * bitmap-&gt;pitch + col];
+ 					if (a == 0)
+ 						continue;
+-
+-					uint32_t dst = pixels[dy * stride + dx];
+-					uint8_t inv = 255 - a;
+-					uint8_t r_dst = (dst &gt;&gt; 16) &amp; 0xFF;
+-					uint8_t g_dst = (dst &gt;&gt; 8) &amp; 0xFF;
+-					uint8_t b_dst = dst &amp; 0xFF;
+-					uint8_t r = (r_src * a + r_dst * inv) / 255;
+-					uint8_t g = (g_src * a + g_dst * inv) / 255;
+-					uint8_t b = (b_src * a + b_dst * inv) / 255;
++					dst = pixels[dy * stride + dx];
++					inv = 255 - a;
++					r_dst = (dst &gt;&gt; 16) &amp; 0xFF;
++					g_dst = (dst &gt;&gt; 8) &amp; 0xFF;
++					b_dst = dst &amp; 0xFF;
++					r = (r_src * a + r_dst * inv) / 255;
++					g = (g_src * a + g_dst * inv) / 255;
++					b = (b_src * a + b_dst * inv) / 255;
+ 					pixels[dy * stride + dx] =
+ 					    (0xFFu &lt;&lt; 24) | (r &lt;&lt; 16) | (g &lt;&lt; 8) | b;
+ 				}
+ 			}
+ 			pen_x += slot-&gt;advance.x &gt;&gt; 6;
+ 		}
++		} /* UTF-8 walk */
+ 	}
+ 
+ 	if (focused) {
+ 		int cursor_x = text_x - scroll_x + align_off;
+ 		if (ctx-&gt;ft_face &amp;&amp; w-&gt;data.text_input.text) {
+-			for (uint32_t i = 0; i &lt; w-&gt;data.text_input.cursor_pos; i++) {
+-				FT_UInt index = FT_Get_Char_Index(
+-					ctx-&gt;ft_face,
+-					(unsigned char)w-&gt;data.text_input.text[i]);
+-				if (FT_Load_Glyph(ctx-&gt;ft_face, index, FT_LOAD_DEFAULT))
+-					continue;
+-				cursor_x += ctx-&gt;ft_face-&gt;glyph-&gt;advance.x &gt;&gt; 6;
+-			}
++			cursor_x += measure_text_prefix(
++				ctx-&gt;ft_face, w-&gt;data.text_input.text,
++				(int)w-&gt;data.text_input.cursor_pos);
+ 		} else {
+ 			cursor_x += (int)w-&gt;data.text_input.cursor_pos * 7;
+ 		}
+diff --git a/internal.h b/internal.h
+index 943be15..914a639 100644
+--- a/internal.h
++++ b/internal.h
+@@ -11,11 +11,21 @@
+ void clear_buffer(struct BGTK_Context* ctx);
+ void draw_rect(struct BGTK_Context* ctx, uint32_t* pixels, int x, int y, int w,
+ 	       int h, uint32_t color);
++
++/* UTF-8: decode one codepoint from *s (NUL-terminated or bounded).
++ * Advances *s past the sequence. Invalid bytes → U+FFFD and skip 1 byte.
++ * Returns 0 only when *s is empty / n==0. */
++uint32_t bgtk_utf8_next(const char **s);
++/* Same for a byte-limited prefix (e.g. text input cursor). */
++uint32_t bgtk_utf8_next_n(const char **s, size_t *nleft);
++
+ void measure_text(FT_Face face, const char* text, int* out_width,
+ 		  int* out_height);
+ /* style: BGTK_TEXT_BOLD | BGTK_TEXT_ITALIC */
+ void measure_text_style(FT_Face face, const char *text, int style,
+ 			int *out_width, int *out_height);
++/* Pixel width of the first nbytes of text (UTF-8 aware; does not split chars). */
++int measure_text_prefix(FT_Face face, const char *text, int nbytes);
+ void calculate_widget_size(struct BGTK_Context* ctx, struct BGTK_Widget* w);
+ void draw_text(struct BGTK_Context* ctx, uint32_t* pixels, const char* text,
+ 	       int x, int y, uint32_t color);
+diff --git a/test/test_gemini_browser.c b/test/test_gemini_browser.c
+index ab99edb..552a6c8 100644
+--- a/test/test_gemini_browser.c
++++ b/test/test_gemini_browser.c
+@@ -24,6 +24,7 @@
+ #include &lt;tls.h&gt;
+ 
+ #include "bgtk.h"
++#include "internal.h"
+ 
+ static struct BGTK_Context *ctx = NULL;
+ static struct BGTK_Widget *content_scroll = NULL;
+@@ -42,25 +43,29 @@ static BGTK_Options line_opts(void)
+ 	return (BGTK_Options){.padding = 1, .margin = 1};
+ }
+ 
+-static int theme_pad(void)
++/* Theme chrome — same geometry as terminal:
++ * frame draws [margin][border][padding][content]… */
++static void gemini_chrome(int *pad, int *mar, int *bw)
+ {
+-	return (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 6;
++	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 6;
++	int m = (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin : 4;
++	int b = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
++
++	if (b &lt; 1)
++		b = 1;
++	if (pad)
++		*pad = p;
++	if (mar)
++		*mar = m;
++	if (bw)
++		*bw = b;
+ }
+ 
+-static int theme_mar(void)
++static int list_v_overhead(int n, int list_m, int list_p)
+ {
+-	return (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) ? ctx-&gt;theme.margin : 4;
+-}
+-
+-static int chrome_inset(void)
+-{
+-	int pad = theme_pad();
+-	int mar = theme_mar();
+-	int half = mar &gt; 1 ? mar / 2 : 1;
+-	int bw = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
+-	if (bw &lt; 1)
+-		bw = 1;
+-	return 2 * (pad + bw + half);
++	if (n &lt; 1)
++		return 2 * (list_m + list_p);
++	return 2 * list_m * (n - 1) + 2 * (list_m + list_p);
+ }
+ 
+ static void content_scroll_invalidate_tmp(void)
+@@ -78,33 +83,51 @@ static void rebuild_content_from_gemtext(const char *body);
+ 
+ static void gemini_layout_chrome(void)
+ {
+-	int inset, usable_w, ah, scroll_h, half;
++	int pad, mar, bw, box_w, box_h, list_m, list_p, field_pad;
++	int usable_w, ah, scroll_h, over;
+ 
+ 	if (!ctx || !content_scroll || !addr_input)
+ 		return;
+-	half = theme_mar() &gt; 1 ? theme_mar() / 2 : 1;
+-	inset = chrome_inset();
+-	usable_w = ctx-&gt;width - inset;
+-	if (usable_w &lt; 80)
+-		usable_w = 80;
+-	addr_input-&gt;padding = theme_pad() &gt; 2 ? theme_pad() / 2 : 2;
+-	addr_input-&gt;margin = half;
+-	content_scroll-&gt;padding = half;
+-	content_scroll-&gt;margin = half;
++	gemini_chrome(&amp;pad, &amp;mar, &amp;bw);
++	box_w = ctx-&gt;width - 2 * (mar + bw + pad);
++	box_h = ctx-&gt;height - 2 * (mar + bw + pad);
++	if (box_w &lt; 80)
++		box_w = 80;
++	if (box_h &lt; 80)
++		box_h = 80;
++	list_m = 0;
++	list_p = 0;
++	field_pad = pad &gt; 2 ? pad / 2 : 2;
++	addr_input-&gt;padding = field_pad;
++	addr_input-&gt;margin = 0;
++	content_scroll-&gt;padding = pad &gt; 2 ? pad / 2 : 2;
++	content_scroll-&gt;margin = 0;
+ 	if (main_list) {
+-		main_list-&gt;padding = half;
+-		main_list-&gt;margin = half;
++		main_list-&gt;padding = list_p;
++		main_list-&gt;margin = list_m;
++		main_list-&gt;w = box_w;
++		main_list-&gt;h = box_h;
+ 	}
+ 	if (root_frame) {
+-		root_frame-&gt;padding = theme_pad();
+-		root_frame-&gt;margin = 0;
++		root_frame-&gt;padding = pad;
++		root_frame-&gt;margin = mar;
+ 		root_frame-&gt;w = ctx-&gt;width;
+ 		root_frame-&gt;h = ctx-&gt;height;
+ 	}
+-	ah = addr_input-&gt;h &gt; 0 ? addr_input-&gt;h : 28;
+-	scroll_h = ctx-&gt;height - ah - inset;
+-	if (scroll_h &lt; 80)
+-		scroll_h = 80;
++	usable_w = box_w - 2 * (list_m + list_p);
++	if (usable_w &lt; 40)
++		usable_w = 40;
++	{
++		int text_h = ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size + 4 : 18;
++		addr_input-&gt;h = text_h + 2 * (addr_input-&gt;padding + addr_input-&gt;margin);
++		if (addr_input-&gt;h &lt; 28)
++			addr_input-&gt;h = 28;
++	}
++	ah = addr_input-&gt;h;
++	over = list_v_overhead(2, list_m, list_p);
++	scroll_h = box_h - ah - over;
++	if (scroll_h &lt; 40)
++		scroll_h = 40;
+ 	content_scroll-&gt;w = usable_w;
+ 	content_scroll-&gt;h = scroll_h;
+ 	addr_input-&gt;w = usable_w;
+@@ -371,39 +394,63 @@ static void resolve_url(const char *base, const char *rel, char *out, size_t out
+ 	snprintf(out, outlen, "gemini://%s%s%s", bhost, portpart, norm);
+ }
+ 
+-/* Simple word-wrap for long paragraphs and link labels. Returns malloc'ed array of lines (caller frees). */
++/* Simple word-wrap (UTF-8 aware). Returns malloc'ed array of lines. */
+ static char **wrap_text(FT_Face face, const char *text, int max_width, int *nlines)
+ {
+-	*nlines = 0;
+-	if (!face || !text || !*text || max_width &lt; 20) return NULL;
+ 	char **lines = NULL;
+ 	int n = 0, cap = 0;
+-	int len = strlen(text);
++	int len;
+ 	int i = 0;
++
++	*nlines = 0;
++	if (!face || !text || !*text || max_width &lt; 20)
++		return NULL;
++	len = (int)strlen(text);
+ 	while (i &lt; len) {
+ 		int j = i;
+ 		int last_space = -1;
+ 		int w = 0;
+-		for (; j &lt; len; j++) {
+-			unsigned char ch = (unsigned char)text[j];
+-			if (FT_Load_Char(face, ch, FT_LOAD_DEFAULT) == 0)
++
++		while (j &lt; len) {
++			const char *cp = text + j;
++			size_t left = (size_t)(len - j);
++			const char *start = cp;
++			uint32_t ch = bgtk_utf8_next_n(&amp;cp, &amp;left);
++			int nbytes = (int)(cp - start);
++
++			if (nbytes &lt; 1)
++				break;
++			if (FT_Load_Char(face, (FT_ULong)ch, FT_LOAD_DEFAULT) == 0)
+ 				w += face-&gt;glyph-&gt;advance.x &gt;&gt; 6;
+-			if (w &gt; max_width &amp;&amp; j &gt; i) break;
+-			if (isspace(ch)) last_space = j;
++			if (w &gt; max_width &amp;&amp; j &gt; i)
++				break;
++			if (ch &lt; 128 &amp;&amp; isspace((unsigned char)ch))
++				last_space = j;
++			j += nbytes;
+ 		}
+-		int end = (j &gt;= len) ? len : (last_space &gt; i ? last_space : j);
+-		int lnlen = end - i;
+-		char *ln = malloc(lnlen + 1);
+-		memcpy(ln, text + i, lnlen);
+-		ln[lnlen] = 0;
+-		while (lnlen &gt; 0 &amp;&amp; isspace((unsigned char)ln[lnlen-1])) ln[--lnlen] = 0;
+-		if (n &gt;= cap) {
+-			cap = cap ? cap * 2 : 8;
+-			lines = realloc(lines, cap * sizeof(char *));
++		{
++			int end = (j &gt;= len) ? len : (last_space &gt; i ? last_space : j);
++			int lnlen = end - i;
++			char *ln = malloc((size_t)lnlen + 1);
++
++			if (!ln)
++				break;
++			memcpy(ln, text + i, (size_t)lnlen);
++			ln[lnlen] = 0;
++			while (lnlen &gt; 0 &amp;&amp;
++			       isspace((unsigned char)ln[lnlen - 1]))
++				ln[--lnlen] = 0;
++			if (n &gt;= cap) {
++				cap = cap ? cap * 2 : 8;
++				lines = realloc(lines, (size_t)cap * sizeof(char *));
++				if (!lines)
++					break;
++			}
++			lines[n++] = ln;
++			i = end;
++			while (i &lt; len &amp;&amp; isspace((unsigned char)text[i]))
++				i++;
+ 		}
+-		lines[n++] = ln;
+-		i = end;
+-		while (i &lt; len &amp;&amp; isspace((unsigned char)text[i])) i++;
+ 	}
+ 	*nlines = n;
+ 	return lines;
+@@ -497,11 +544,12 @@ static void rebuild_content_from_gemtext(const char *body)
+ 		} else if (!strncmp(line, "### ", 4)) {
+ 			snprintf(vis, sizeof(vis), "%s", line + 4);
+ 			header_level = 3;
+-		} else if (!strncmp(line, "&gt; ", 2) || !strncmp(line, "* ", 2)) {
+-			snprintf(vis, sizeof(vis), "%s", line[0]=='*' ? "\xe2\x80\xa2 " : "");
+-			if (line[0]=='*') strncat(vis, line+2, sizeof(vis)-strlen(vis)-1);
+-			else strncat(vis, line, sizeof(vis)-strlen(vis)-1);
+-			if (line[0]=='*') item_color = 10;
++		} else if (!strncmp(line, "* ", 2)) {
++			/* U+2022 bullet (UTF-8). */
++			snprintf(vis, sizeof(vis), "\xe2\x80\xa2 %s", line + 2);
++			item_color = 10;
++		} else if (!strncmp(line, "&gt; ", 2)) {
++			snprintf(vis, sizeof(vis), "%s", line);
+ 		} else {
+ 			snprintf(vis, sizeof(vis), "%s", line);
+ 		}
+@@ -683,7 +731,7 @@ int main(void)
+ 
+ 	int width = 640;
+ 	int height = 500;
+-	int pad, mar, half, usable_w, reserved, scroll_h;
++	int pad, mar, bw;
+ 	struct BGTK_Widget *main_items[2];
+ 	struct BGTK_Widget *frame;
+ 
+@@ -693,41 +741,28 @@ int main(void)
+ 		return 1;
+ 	}
+ 
+-	pad = theme_pad();
+-	mar = theme_mar();
+-	half = mar &gt; 1 ? mar / 2 : 1;
+-	usable_w = width - chrome_inset();
+-	if (usable_w &lt; 80)
+-		usable_w = 80;
+-
+-	/* Full-width URL bar; Enter navigates. */
+-	addr_input = bgtk_text_input(ctx, "gemini://geminiprotocol.net/",
+-				     usable_w, 0,
+-				     (BGTK_Options){
+-					     .padding = pad &gt; 2 ? pad / 2 : 2,
+-					     .margin = half});
++	gemini_chrome(&amp;pad, &amp;mar, &amp;bw);
++	addr_input = bgtk_text_input(
++		ctx, "gemini://geminiprotocol.net/", 200, 0,
++		(BGTK_Options){.padding = pad &gt; 2 ? pad / 2 : 2, .margin = 0});
+ 	addr_input-&gt;data.text_input.on_enter = demo_addr_on_enter;
+ 
+ 	content_scroll = bgtk_scrollable(
+-		ctx, NULL, 0, (BGTK_Options){.padding = half, .margin = half});
+-	reserved = (addr_input-&gt;h &gt; 0 ? addr_input-&gt;h : 28) + chrome_inset();
+-	scroll_h = height - reserved;
+-	if (scroll_h &lt; 80)
+-		scroll_h = 80;
+-	content_scroll-&gt;w = usable_w;
+-	content_scroll-&gt;h = scroll_h;
++		ctx, NULL, 0,
++		(BGTK_Options){.padding = pad &gt; 2 ? pad / 2 : 2, .margin = 0});
+ 
+ 	main_items[0] = content_scroll;
+ 	main_items[1] = addr_input;
+ 	main_list = bgtk_list(ctx, main_items, 2,
+ 			      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+-					     .padding = half,
+-					     .margin = half});
++					     .padding = 0,
++					     .margin = 0});
+ 
+ 	frame = bgtk_frame(ctx, main_list, width, height,
+-			   (BGTK_Options){.padding = pad, .margin = 0});
++			   (BGTK_Options){.padding = pad, .margin = mar});
+ 	root_frame = frame;
+ 	ctx-&gt;root_widget = frame;
++	gemini_layout_chrome();
+ 
+ 	/* === Real capsule load === */
+ 	load_real_url("gemini://geminiprotocol.net/");
+@@ -779,9 +814,10 @@ int main(void)
+ 
+ 	/* Wheel scroll: force a short viewport so content is taller. */
+ 	{
+-		int before, after;
++		int before, after, full_h;
+ 		struct InputEvent w = {0};
+ 
++		full_h = content_scroll-&gt;h;
+ 		content_scroll-&gt;h = 180;
+ 		if (content_scroll-&gt;data.scrollable.tmp) {
+ 			free(content_scroll-&gt;data.scrollable.tmp);
+@@ -835,7 +871,7 @@ int main(void)
+ 		}
+ 		take_screenshot(ctx, "gemini_browser_00b_scrolled.png");
+ 		/* Restore full height for the rest of the suite. */
+-		content_scroll-&gt;h = scroll_h;
++		content_scroll-&gt;h = full_h &gt; 0 ? full_h : content_scroll-&gt;h;
+ 		if (content_scroll-&gt;data.scrollable.tmp) {
+ 			free(content_scroll-&gt;data.scrollable.tmp);
+ 			content_scroll-&gt;data.scrollable.tmp = NULL;
+diff --git a/test/test_settings.c b/test/test_settings.c
+index 50195ca..fbbffc1 100644
+--- a/test/test_settings.c
++++ b/test/test_settings.c
+@@ -102,7 +102,7 @@ int main(void)
+ 		click.value = 1;
+ 		/* Apply sits under the aspect-correct preview (fills leftover). */
+ 		click.x = 220;
+-		click.y = 430;
++		click.y = 400;
+ 		bgtk_inject_event(ctx, click);
+ 		click.value = 0;
+ 		if (!bgtk_inject_event(ctx, click)) {
+@@ -319,8 +319,8 @@ int main(void)
+ 		click.code = BTN_LEFT;
+ 		click.value = 1;
+ 		/* First theme color field (Background) under Goldie chrome. */
+-		click.x = 360;
+-		click.y = 42;
++		click.x = 420;
++		click.y = 48;
+ 		bgtk_inject_event(ctx, click);
+ 		click.value = 0;
+ 		bgtk_inject_event(ctx, click);
+diff --git a/test/test_terminal.c b/test/test_terminal.c
+index 0984cc7..d0f1790 100644
+--- a/test/test_terminal.c
++++ b/test/test_terminal.c
+@@ -134,49 +134,75 @@ int main(void)
+ 		return 1;
+ 	}
+ 
+-	/* Measure cell size so we know terminal dimensions */
++	/* Measure cell size; content area is inside frame border + theme pad/mar. */
+ 	struct Term_State tmp = {0};
++	int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 6;
++	int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 4;
++	int bw = (int)ctx-&gt;theme.frame_border_size;
++	int inner_w, inner_h, cols, rows;
++	struct BGTK_Widget *img, *frame;
++
++	if (bw &lt; 0)
++		bw = 0;
+ 	tmp.cols = tmp.rows = 1;
+ 	term_measure_cell(&amp;tmp, ctx);
+ 
+-	int cols = width / tmp.cell_w;
+-	int rows = height / tmp.cell_h;
+-	if (cols &lt; 1) cols = 1;
+-	if (rows &lt; 1) rows = 1;
+-
+-	printf("Cell: %dx%d  Grid: %dx%d\n", tmp.cell_w, tmp.cell_h, cols, rows);
++	inner_w = width - 2 * (mar + bw + pad);
++	inner_h = height - 2 * (mar + bw + pad);
++	if (inner_w &lt; 1)
++		inner_w = 1;
++	if (inner_h &lt; 1)
++		inner_h = 1;
++	cols = inner_w / tmp.cell_w;
++	rows = inner_h / tmp.cell_h;
++	if (cols &lt; 1)
++		cols = 1;
++	if (rows &lt; 1)
++		rows = 1;
++
++	printf("Cell: %dx%d  Grid: %dx%d  chrome pad=%d mar=%d bw=%d inner=%dx%d\n",
++	       tmp.cell_w, tmp.cell_h, cols, rows, pad, mar, bw, inner_w,
++	       inner_h);
+ 
+ 	struct Term_State *ts = term_create(cols, rows);
+-	if (!ts) return 1;
++	if (!ts)
++		return 1;
+ 	ts-&gt;cell_w = tmp.cell_w;
+ 	ts-&gt;cell_h = tmp.cell_h;
+ 
+-	/* Image widget as drawing surface */
+-	struct BGTK_Widget *img = bgtk_image(ctx, NULL, width, height,
+-					     (BGTK_Options){0});
+-	img-&gt;data.image.pixels = calloc((size_t)width * height, sizeof(uint32_t));
+-	img-&gt;data.image.img_w = width;
+-	img-&gt;data.image.img_h = height;
+-	ctx-&gt;root_widget = img;
++	/* Image is the cell surface; frame applies theme margin/padding/border. */
++	img = bgtk_image(ctx, NULL, inner_w, inner_h,
++			 (BGTK_Options){.padding = 0, .margin = 0});
++	img-&gt;data.image.pixels =
++		calloc((size_t)inner_w * (size_t)inner_h, sizeof(uint32_t));
++	if (!img-&gt;data.image.pixels) {
++		bgtk_log_errno("test_terminal calloc");
++		return 1;
++	}
++	img-&gt;data.image.img_w = inner_w;
++	img-&gt;data.image.img_h = inner_h;
++	frame = bgtk_frame(ctx, img, width, height,
++			   (BGTK_Options){.padding = pad, .margin = mar});
++	ctx-&gt;root_widget = frame;
+ 
+ 	/* --- Test 1: plain text ---------------------------------------- */
+ 	term_feed(ts, "Hello, BGTK Terminal!\r\n", -1);
+-	snap(ctx, img, ts, width, height, "term_00_text.png");
++	snap(ctx, img, ts, inner_w, inner_h, "term_00_text.png");
+ 
+ 	/* --- Test 2: ANSI colours -------------------------------------- */
+ 	term_feed(ts, "\033[31mred \033[32mgreen \033[34mblue \033[0mnormal\r\n", -1);
+ 	term_feed(ts, "\033[1;33mbold yellow \033[0m\r\n", -1);
+-	snap(ctx, img, ts, width, height, "term_01_colors.png");
++	snap(ctx, img, ts, inner_w, inner_h, "term_01_colors.png");
+ 
+ 	/* --- Test 3: cursor movement ----------------------------------- */
+ 	term_feed(ts, "\033[10;5HPositioned here\r\n", -1);
+-	snap(ctx, img, ts, width, height, "term_02_cursor.png");
++	snap(ctx, img, ts, inner_w, inner_h, "term_02_cursor.png");
+ 
+ 	/* --- Test 4: erase --------------------------------------------- */
+ 	term_feed(ts, "\033[2J\033[H", -1);  /* clear screen, home */
+ 	term_feed(ts, "Screen cleared!\r\n", -1);
+ 	term_feed(ts, "\033[44m\033[37m Blue background white text \033[0m\r\n", -1);
+-	snap(ctx, img, ts, width, height, "term_03_erase.png");
++	snap(ctx, img, ts, inner_w, inner_h, "term_03_erase.png");
+ 
+ 	/* --- Test 5: scroll -------------------------------------------- */
+ 	term_feed(ts, "\033[2J\033[H", -1);
+@@ -185,7 +211,7 @@ int main(void)
+ 		int n = snprintf(line, sizeof(line), "Line %d\r\n", i + 1);
+ 		term_feed(ts, line, n);
+ 	}
+-	snap(ctx, img, ts, width, height, "term_04_scroll.png");
++	snap(ctx, img, ts, inner_w, inner_h, "term_04_scroll.png");
+ 
+ 	/* --- Test 5b: scrollback view (mouse-wheel / PageUp equivalent) */
+ 	{
+@@ -206,14 +232,14 @@ int main(void)
+ 				before_off, ts-&gt;view_off, ts-&gt;sb_len);
+ 			return 1;
+ 		}
+-		snap(ctx, img, ts, width, height, "term_04b_scrollback.png");
++		snap(ctx, img, ts, inner_w, inner_h, "term_04b_scrollback.png");
+ 		if (!term_view_to_bottom(ts) || ts-&gt;view_off != 0) {
+ 			fprintf(stderr,
+ 				"test_terminal: view_to_bottom failed off=%d\n",
+ 				ts-&gt;view_off);
+ 			return 1;
+ 		}
+-		snap(ctx, img, ts, width, height, "term_04c_scrollback_bottom.png");
++		snap(ctx, img, ts, inner_w, inner_h, "term_04c_scrollback_bottom.png");
+ 	}
+ 
+ 	/* --- Test 6: colour matrix ------------------------------------- */
+@@ -226,14 +252,14 @@ int main(void)
+ 		}
+ 		term_feed(ts, "\033[0m\r\n", -1);
+ 	}
+-	snap(ctx, img, ts, width, height, "term_05_matrix.png");
++	snap(ctx, img, ts, inner_w, inner_h, "term_05_matrix.png");
+ 
+ 	/* --- Test 7: erase in line ------------------------------------- */
+ 	term_feed(ts, "\033[2J\033[H", -1);
+ 	term_feed(ts, "AAAAAAAAAA\r\n", -1);
+ 	term_feed(ts, "BBBBBBBBBB\033[5D\033[K\r\n", -1); /* erase last 5 */
+ 	term_feed(ts, "CCCCCCCCCC\r\n", -1);
+-	snap(ctx, img, ts, width, height, "term_06_erase_line.png");
++	snap(ctx, img, ts, inner_w, inner_h, "term_06_erase_line.png");
+ 
+ 	/* --- Test 8: bold/bright colors -------------------------------- */
+ 	term_feed(ts, "\033[2J\033[H", -1);
+@@ -244,7 +270,7 @@ int main(void)
+ 		snprintf(seq, sizeof(seq), "\033[1;%dm Bold%d \033[0m\r\n", 30 + i, i);
+ 		term_feed(ts, seq, -1);
+ 	}
+-	snap(ctx, img, ts, width, height, "term_07_bold.png");
++	snap(ctx, img, ts, inner_w, inner_h, "term_07_bold.png");
+ 
+ 	/* --- Test 8b: resize grid (window resize path) ----------------- */
+ 	term_feed(ts, "\033[2J\033[Hresized ok\r\n", -1);
+@@ -253,7 +279,7 @@ int main(void)
+ 		bgtk_log("test_terminal: term_resize failed");
+ 		return 1;
+ 	}
+-	snap(ctx, img, ts, width, height, "term_07b_resized.png");
++	snap(ctx, img, ts, inner_w, inner_h, "term_07b_resized.png");
+ 	/* restore full grid for the PTY test */
+ 	if (term_resize(ts, cols, rows) != 0) {
+ 		bgtk_log("test_terminal: term_resize restore failed");
+@@ -283,7 +309,7 @@ int main(void)
+ 				ssize_t n = read(master_fd, buf, sizeof(buf));
+ 				if (n &gt; 0) term_feed(ts, buf, (int)n);
+ 			}
+-			snap(ctx, img, ts, width, height, "term_08_shell_prompt.png");
++			snap(ctx, img, ts, inner_w, inner_h, "term_08_shell_prompt.png");
+ 
+ 			/* Send a real command (as if the user typed it and pressed enter) */
+ 			const char *cmd = "echo '=== REAL SHELL OUTPUT ==='\n";
+@@ -304,7 +330,7 @@ int main(void)
+ 				}
+ 			}
+ 
+-			snap(ctx, img, ts, width, height, "term_09_real_command.png");
++			snap(ctx, img, ts, inner_w, inner_h, "term_09_real_command.png");
+ 
+ 			/* Verify the result text is present in the cell grid */
+ 			int found = 0;
+diff --git a/widgets.c b/widgets.c
+index aa45d6c..f8dc8ed 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -74,20 +74,10 @@ void bgtk_set_focus(struct BGTK_Context *ctx, struct BGTK_Widget *widget)
+ 	bgtk_draw_widgets(ctx);
+ }
+ 
+-// Returns pixel width of text[0..len-1]
++/* Pixel width of text[0..len-1] (byte length; UTF-8 aware). */
+ static int measure_prefix_width(FT_Face face, const char *text, int len)
+ {
+-	if (!face || !text || len &lt;= 0) {
+-		return len &gt; 0 ? len * 7 : 0;  /* crude fallback */
+-	}
+-	int width = 0;
+-	for (int i = 0; i &lt; len &amp;&amp; text[i]; i++) {
+-		if (FT_Load_Char(face, (unsigned char)text[i], FT_LOAD_DEFAULT)) {
+-			continue;
+-		}
+-		width += face-&gt;glyph-&gt;advance.x;
+-	}
+-	return width &gt;&gt; 6;
++	return measure_text_prefix(face, text, len);
+ }
+ 
+ static void
+@@ -728,9 +718,12 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
+ 	widget-&gt;data.list_widget.widget_count = widget_count;
+ 	widget-&gt;data.list_widget.orientation = options.orientation;
+ 
+-	// Calculate content dimensions based on orientation
++	/* Content size matches draw_list:
++	 * first child at (margin+padding), gaps of 2*margin, outer inset
++	 * margin+padding on the far side. */
+ 	int max_width = 0;
+ 	int max_height = 0;
++	int inset = 2 * (widget-&gt;margin + widget-&gt;padding);
+ 	for (int i = 0; i &lt; widget_count; i++) {
+ 		widget-&gt;data.list_widget.items[i] = items[i];
+ 		if (options.orientation == BGTK_LIST_VERTICAL) {
+@@ -746,7 +739,7 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
+ 		}
+ 	}
+ 
+-	// Remove the last margin (no margin after the last widget)
++	// Remove the last inter-item margin (no gap after the last widget)
+ 	if (widget_count &gt; 0) {
+ 		if (options.orientation == BGTK_LIST_VERTICAL) {
+ 			widget-&gt;h -= 2 * widget-&gt;margin;
+@@ -754,11 +747,13 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
+ 			widget-&gt;w -= 2 * widget-&gt;margin;
+ 		}
+ 	}
+-	// Use max dimensions for the other axis
++	// Outer pad+margin on both sides + max child on the cross axis
+ 	if (options.orientation == BGTK_LIST_VERTICAL) {
+-		widget-&gt;w = max_width;
++		widget-&gt;w = max_width + inset;
++		widget-&gt;h += inset;
+ 	} else {
+-		widget-&gt;h = max_height;
++		widget-&gt;h = max_height + inset;
++		widget-&gt;w += inset;
+ 	}
+ 
+ 	// Override the default event handler with list-specific one
+</pre>

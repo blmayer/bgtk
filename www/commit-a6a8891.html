@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk a6a8891</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit a6a8891
+parent <a href=commit-6b0e110.html>6b0e110</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-08T11:43:00-03:00
+
+    fix: replace usleep with nanosleep for portable TLS wait.
+
+    Avoids implicit-declaration errors when usleep is not exposed under
+    strict feature-test macros; same change in gemini and terminal tests.
+
+<a href=tree-a6a8891.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/gemini_browser.c b/apps/gemini_browser.c
+index d71fa8c..fa76d04 100644
+--- a/apps/gemini_browser.c
++++ b/apps/gemini_browser.c
+@@ -7,6 +7,7 @@
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
++#include &lt;time.h&gt;
+ #include &lt;tls.h&gt;
+ #include &lt;unistd.h&gt;
+ 
+@@ -41,12 +42,13 @@ static ssize_t gemini_tls_read(struct tls *t, void *buf, size_t len)
+ 	for (;;) {
+ 		ssize_t n = tls_read(t, buf, len);
+ 		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
++			struct timespec ts = { .tv_sec = 0, .tv_nsec = 5 * 1000 * 1000 };
+ 			if (waited &gt;= GEMINI_IO_TIMEOUT_MS) {
+ 				bgtk_log("tls_read timed out after %dms (want=%zd)",
+ 					 waited, n);
+ 				return -1;
+ 			}
+-			usleep(5000);
++			nanosleep(&amp;ts, NULL);
+ 			waited += 5;
+ 			continue;
+ 		}
+@@ -63,12 +65,13 @@ static ssize_t gemini_tls_write(struct tls *t, const void *buf, size_t len)
+ 	while (left &gt; 0) {
+ 		ssize_t n = tls_write(t, p, left);
+ 		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
++			struct timespec ts = { .tv_sec = 0, .tv_nsec = 5 * 1000 * 1000 };
+ 			if (waited &gt;= GEMINI_IO_TIMEOUT_MS) {
+ 				bgtk_log("tls_write timed out after %dms (want=%zd)",
+ 					 waited, n);
+ 				return -1;
+ 			}
+-			usleep(5000);
++			nanosleep(&amp;ts, NULL);
+ 			waited += 5;
+ 			continue;
+ 		}
+diff --git a/test/test_gemini_browser.c b/test/test_gemini_browser.c
+index 4b17c8b..64c7950 100644
+--- a/test/test_gemini_browser.c
++++ b/test/test_gemini_browser.c
+@@ -17,6 +17,7 @@
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
++#include &lt;time.h&gt;
+ #include &lt;unistd.h&gt;
+ #include &lt;linux/input.h&gt;
+ #include &lt;ctype.h&gt;
+@@ -48,9 +49,10 @@ static ssize_t test_tls_read(struct tls *t, void *buf, size_t len)
+ 	for (;;) {
+ 		ssize_t n = tls_read(t, buf, len);
+ 		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
++			struct timespec ts = { .tv_sec = 0, .tv_nsec = 5 * 1000 * 1000 };
+ 			if (waited &gt;= 15000)
+ 				return -1;
+-			usleep(5000);
++			nanosleep(&amp;ts, NULL);
+ 			waited += 5;
+ 			continue;
+ 		}
+@@ -66,9 +68,10 @@ static ssize_t test_tls_write(struct tls *t, const void *buf, size_t len)
+ 	while (left &gt; 0) {
+ 		ssize_t n = tls_write(t, p, left);
+ 		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
++			struct timespec ts = { .tv_sec = 0, .tv_nsec = 5 * 1000 * 1000 };
+ 			if (waited &gt;= 15000)
+ 				return -1;
+-			usleep(5000);
++			nanosleep(&amp;ts, NULL);
+ 			waited += 5;
+ 			continue;
+ 		}
+diff --git a/test/test_terminal.c b/test/test_terminal.c
+index ae6e192..583022b 100644
+--- a/test/test_terminal.c
++++ b/test/test_terminal.c
+@@ -13,6 +13,7 @@
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
++#include &lt;time.h&gt;
+ #include &lt;unistd.h&gt;
+ #include &lt;poll.h&gt;
+ #include &lt;fcntl.h&gt;
+@@ -244,7 +245,10 @@ int main(void)
+ 			ts-&gt;pty_fd = master_fd;
+ 
+ 			/* Wait for initial shell prompt */
+-			usleep(200 * 1000);
++			{
++				struct timespec ts_wait = { .tv_sec = 0, .tv_nsec = 200 * 1000 * 1000 };
++				nanosleep(&amp;ts_wait, NULL);
++			}
+ 			{
+ 				char buf[4096];
+ 				ssize_t n = read(master_fd, buf, sizeof(buf));
+</pre>

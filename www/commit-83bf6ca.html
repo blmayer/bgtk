@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 83bf6ca</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 83bf6ca
+parent <a href=commit-5be1125.html>5be1125</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-06T15:18:29-03:00
+
+    docs: publish download link and regenerate site snapshot instructions.
+
+    Add www/bgtk.tar.gz download section to the project site and README,
+    matching BGCE, and export-ignore rules so the tarball stays lean.
+
+<a href=tree-83bf6ca.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/.gitattributes b/.gitattributes
+new file mode 100644
+index 0000000..c89f6a7
+--- /dev/null
++++ b/.gitattributes
+@@ -0,0 +1,5 @@
++# Keep source snapshots out of themselves / reduce download size
++www/bgtk.tar.gz export-ignore
++.tai export-ignore
++.codebase-memory/ export-ignore
++.DS_Store export-ignore
+diff --git a/README.md b/README.md
+index 2f7d639..d06e3a8 100644
+--- a/README.md
++++ b/README.md
+@@ -125,6 +125,34 @@ Each process writes a dedicated log under `~/.cache/bgtk/` (or `$XDG_CACHE_HOME/
+ Apps call `bgtk_log_open("app_name")` at startup; use `bgtk_log()` / `bgtk_log_errno()` for diagnostics.
+ 
+ 
++## Download
++
++A source snapshot is published with the project site:
++
++- **[bgtk.tar.gz](https://terminal.pink/bgtk/bgtk.tar.gz)** — current tree (no git history)
++
++```bash
++curl -fsSL -o bgtk.tar.gz https://terminal.pink/bgtk/bgtk.tar.gz
++tar xzf bgtk.tar.gz
++cd bgtk
++```
++
++Or clone the repository if you prefer full history:
++
++```bash
++git clone https://terminal.pink/bgtk
++cd bgtk
++```
++
++Regenerate the site snapshot after tagging a release (or anytime):
++
++```bash
++git archive --worktree-attributes --format=tar.gz --prefix=bgtk/ -o www/bgtk.tar.gz HEAD
++```
++
++(`www/bgtk.tar.gz` is omitted from the archive via `.gitattributes`.)
++
++
+ ## Building
+ 
+ Requirements:
+diff --git a/www/index.html b/www/index.html
+index 8ba0f0a..df02f1a 100644
+--- a/www/index.html
++++ b/www/index.html
+@@ -36,46 +36,67 @@ To keep track of the develoment check the commit log
+ on the &lt;a href=feed.xml&gt;feed&lt;/a&gt;.
+ 
+ 
++&lt;b&gt;Download&lt;/b&gt;
++
++Source snapshot (no git history):
++
++	&lt;a href=bgtk.tar.gz&gt;bgtk.tar.gz&lt;/a&gt;
++
++	curl -fsSL -o bgtk.tar.gz https://terminal.pink/bgtk/bgtk.tar.gz
++	tar xzf bgtk.tar.gz
++	cd bgtk
++
++Or clone the repository:
++
++	git clone https://terminal.pink/bgtk
++	cd bgtk
++
++
+ &lt;b&gt;Configuration&lt;/b&gt;
+ 
+ BGTK is configured via ~/.config/bgtk.conf.
+ Colors use #RRGGBB or #RRGGBBAA format.
+-Example with all options and their defaults:
++Example with all options and their defaults
++(also used when the file is missing):
+ 
+ 	[background]
+ 	type = color
+-	color = #AAAAAA
++	color = #E8E8E8
+ 	# Or use an image:
+ 	# type = image
+ 	# path = /path/to/wallpaper.png
+ 	# mode = tiled
+ 
+ 	[theme]
+-	background = #AAAAAA
+-	button = #888888
+-	button_text = #000000
++	background = #E8E8E8
++	button = #D0D0D0
++	button_text = #111111
+ 	button_border_size = 1
+-	input_border_size = 1
++	input_border_size = 2
+ 	frame_border_size = 4
+-	frame_border_color = #FFFFFF
++	frame_border_color = #333333
+ 
+ 	[font]
+-	path = /usr/share/fonts/.../DejaVuSans.ttf
+-	size = 12
++	path = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
++	size = 14
++
++Per-app logs go under ~/.cache/bgtk/&amp;lt;app&amp;gt;.log
++(or $XDG_CACHE_HOME/bgtk/), not the BGCE log.
+ 
+ 
+ &lt;b&gt;Build Instructions&lt;/b&gt;
+ 
+ First make sure all dependencies are met:
+ - freetype2
+-- bgce
++- libxml2
++- bgce (for real apps; not needed for headless tests)
+ 
+ Then run:
+ 
+-	git clone https://terminal.pink/bgtk
+-	cd bgtk
+-	make
+-	./app   # run sample app
++	make CC=cc
++	make install
++	# or headless UI tests without a compositor:
++	make headless &amp;&amp; ./headless
+ 
+ 
+ &lt;b&gt;Goals&lt;/b&gt;
+</pre>

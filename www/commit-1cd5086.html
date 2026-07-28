@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 1cd5086</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 1cd5086
+parent <a href=commit-bcbc32c.html>bcbc32c</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-06-20T09:40:22-03:00
+
+    Added HTML-to-widget parser (html.c/html.h)
+
+    Parsed HTML files or inline strings into real BGTK widget trees using
+    libxml2. Users describe their UI in standard HTML and get native widgets
+    back, with event handling and layout working through the existing
+    widget tree traversal.
+    
+    Supported tags:
+      h1-h6, p, b/strong, i/em, a, span, button, input[text],
+      input[checkbox], select/option, img, ul/ol/li, table/tr/td/th,
+      div, section, body and other generic containers.
+    
+    Key details:
+    - bgtk_html_parse() loads from file, bgtk_html_parse_inline() from string
+    - Block elements stacked vertically, inline siblings grouped into horiz rows
+    - Tables aligned column widths and row heights with 1px black cell borders
+    - onclick/onchange callbacks left NULL for user wiring in C code
+    - width, height, padding, margin readable from HTML attributes
+    - Content wrapped in scrollable frame for overflow
+    - Added per-frame border_color field so table cells override theme color
+    - Added header dependency tracking in Makefile for .h changes
+    - Added test_html headless target for visual verification
+
+<a href=tree-1cd5086.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/Makefile b/Makefile
+index c891176..444d1f8 100644
+--- a/Makefile
++++ b/Makefile
+@@ -137,6 +137,13 @@ test_gemini_browser: $(TEST_GEMINI_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
+ test_html: $(TEST_HTML_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
+ 	$(CC) $(HEADLESS_CFLAGS) -o $@ $^ $(HEADLESS_LDFLAGS)
+ 
++# Header dependencies so touching a .h triggers recompilation.
++CORE_HEADERS = bgtk.h internal.h config.h
++$(LIB_OBJS): $(CORE_HEADERS)
++html.o: html.h
++$(TEST_HTML_OBJ): html.h bgtk.h
++$(HEADLESS_OBJ): bgtk.h
++
+ %.o: %.c
+ 	$(CC) $(CFLAGS) -c -o $@ $&lt;
+ 
+diff --git a/bgtk.h b/bgtk.h
+index 1946d36..29765ea 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -285,6 +285,7 @@ struct BGTK_Widget {
+ 		struct {
+ 			struct BGTK_Widget* child;
+ 			int border_w;
++			uint32_t border_color; // 0 = use theme default
+ 		} frame;
+ 		struct {
+ 			char* text;
+diff --git a/drawing.c b/drawing.c
+index 611cbdc..f247c30 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -571,7 +571,8 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin,
+ 		  ctx-&gt;theme.background);
+ 
+-	uint32_t border = ctx-&gt;theme.frame_border_color;
++	uint32_t border = w-&gt;data.frame.border_color ? w-&gt;data.frame.border_color
++						     : ctx-&gt;theme.frame_border_color;
+ 
+ 	// If the whole window is unfocused, dim
+ 	// heavily.
+diff --git a/html.c b/html.c
+index 99d2b1c..1ec0828 100644
+--- a/html.c
++++ b/html.c
+@@ -509,6 +509,186 @@ static struct BGTK_Widget *convert_list(struct BGTK_Context *ctx, xmlNode *node,
+ 	return list;
+ }
+ 
++/* ------------------------------------------------------------------ */
++/* Table converter                                                     */
++/* ------------------------------------------------------------------ */
++
++// Convert a single &lt;td&gt;/&lt;th&gt; cell into a frame widget with a 1px border.
++// For &lt;th&gt;, content gets bold styling.
++static struct BGTK_Widget *convert_cell(struct BGTK_Context *ctx,
++					xmlNode *node, int avail_w, int is_header)
++{
++	struct BGTK_Widget *content = convert_container(ctx, node, avail_w);
++	if (!content) {
++		char *txt = collect_text(node);
++		if (!txt || !*txt) {
++			free(txt);
++			txt = strdup(" ");
++		}
++		content = bgtk_text(ctx, txt, (BGTK_Options){0});
++		free(txt);
++		if (!content)
++			return NULL;
++	}
++	if (is_header &amp;&amp; content-&gt;type == BGTK_WIDGET_TEXT)
++		content-&gt;data.text.header_level = 10;
++
++	int cell_pad = 4;
++	struct BGTK_Widget *frame = bgtk_frame(ctx, content,
++		content-&gt;w + 2 * cell_pad + 2, content-&gt;h + 2 * cell_pad + 2,
++		(BGTK_Options){.padding = cell_pad, .margin = 0});
++	if (frame) {
++		frame-&gt;data.frame.border_w = 1;
++		frame-&gt;data.frame.border_color = BGTK_COLOR_BLACK;
++	}
++	return frame;
++}
++
++// Collect all &lt;tr&gt; rows from a &lt;table&gt;, including those inside &lt;thead&gt;/&lt;tbody&gt;/&lt;tfoot&gt;.
++static int collect_rows(xmlNode *table, xmlNode ***out, int *out_count)
++{
++	int cap = 16, count = 0;
++	xmlNode **rows = calloc(cap, sizeof(xmlNode *));
++	if (!rows)
++		return -1;
++
++	for (xmlNode *child = table-&gt;children; child; child = child-&gt;next) {
++		if (child-&gt;type != XML_ELEMENT_NODE)
++			continue;
++		const char *n = (const char *)child-&gt;name;
++		if (strcmp(n, "tr") == 0) {
++			if (count &gt;= cap) { cap *= 2; rows = realloc(rows, cap * sizeof(xmlNode *)); }
++			rows[count++] = child;
++		} else if (strcmp(n, "thead") == 0 || strcmp(n, "tbody") == 0 || strcmp(n, "tfoot") == 0) {
++			for (xmlNode *gc = child-&gt;children; gc; gc = gc-&gt;next) {
++				if (gc-&gt;type == XML_ELEMENT_NODE &amp;&amp; strcmp((const char *)gc-&gt;name, "tr") == 0) {
++					if (count &gt;= cap) { cap *= 2; rows = realloc(rows, cap * sizeof(xmlNode *)); }
++					rows[count++] = gc;
++				}
++			}
++		}
++	}
++	*out = rows;
++	*out_count = count;
++	return 0;
++}
++
++// &lt;table&gt; -&gt; vertical list of horizontal rows with aligned column widths.
++static struct BGTK_Widget *convert_table(struct BGTK_Context *ctx,
++					 xmlNode *node, int avail_w)
++{
++	xmlNode **tr_nodes = NULL;
++	int num_rows = 0;
++	if (collect_rows(node, &amp;tr_nodes, &amp;num_rows) &lt; 0 || num_rows == 0) {
++		free(tr_nodes);
++		return NULL;
++	}
++
++	// Find the max column count across all rows.
++	int max_cols = 0;
++	for (int r = 0; r &lt; num_rows; r++) {
++		int cols = 0;
++		for (xmlNode *c = tr_nodes[r]-&gt;children; c; c = c-&gt;next)
++			if (c-&gt;type == XML_ELEMENT_NODE &amp;&amp;
++			    (strcmp((const char *)c-&gt;name, "td") == 0 ||
++			     strcmp((const char *)c-&gt;name, "th") == 0))
++				cols++;
++		if (cols &gt; max_cols)
++			max_cols = cols;
++	}
++	if (max_cols == 0) {
++		free(tr_nodes);
++		return NULL;
++	}
++
++	// Build a 2D array of cell widgets (num_rows x max_cols).
++	struct BGTK_Widget ***cells = calloc(num_rows, sizeof(struct BGTK_Widget **));
++	int *row_cols = calloc(num_rows, sizeof(int));
++	for (int r = 0; r &lt; num_rows; r++) {
++		cells[r] = calloc(max_cols, sizeof(struct BGTK_Widget *));
++		int col = 0;
++		for (xmlNode *c = tr_nodes[r]-&gt;children; c; c = c-&gt;next) {
++			if (c-&gt;type != XML_ELEMENT_NODE)
++				continue;
++			const char *tn = (const char *)c-&gt;name;
++			if (strcmp(tn, "td") != 0 &amp;&amp; strcmp(tn, "th") != 0)
++				continue;
++			if (col &gt;= max_cols)
++				break;
++			cells[r][col] = convert_cell(ctx, c, avail_w / max_cols,
++						     strcmp(tn, "th") == 0);
++			col++;
++		}
++		row_cols[r] = col;
++	}
++
++	// Compute max width per column and max height per row.
++	int *col_widths = calloc(max_cols, sizeof(int));
++	int *row_heights = calloc(num_rows, sizeof(int));
++	for (int r = 0; r &lt; num_rows; r++) {
++		for (int c = 0; c &lt; row_cols[r]; c++) {
++			if (!cells[r][c])
++				continue;
++			if (cells[r][c]-&gt;w &gt; col_widths[c])
++				col_widths[c] = cells[r][c]-&gt;w;
++			if (cells[r][c]-&gt;h &gt; row_heights[r])
++				row_heights[r] = cells[r][c]-&gt;h;
++		}
++	}
++
++	// Equalize: every cell in a column gets the same width,
++	// every cell in a row gets the same height.
++	for (int r = 0; r &lt; num_rows; r++) {
++		for (int c = 0; c &lt; row_cols[r]; c++) {
++			if (!cells[r][c])
++				continue;
++			cells[r][c]-&gt;w = col_widths[c];
++			cells[r][c]-&gt;h = row_heights[r];
++		}
++	}
++	free(row_heights);
++
++	// Build horizontal list per row, then vertical list of rows.
++	struct BGTK_Widget **rows = calloc(num_rows, sizeof(struct BGTK_Widget *));
++	int valid_rows = 0;
++	for (int r = 0; r &lt; num_rows; r++) {
++		if (row_cols[r] == 0)
++			continue;
++		rows[valid_rows] = bgtk_list(ctx, cells[r], row_cols[r],
++			(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .margin = 0});
++		if (rows[valid_rows])
++			valid_rows++;
++	}
++
++	struct BGTK_Widget *table = NULL;
++	if (valid_rows &gt; 0) {
++		// Inner list: zero margin so rows share borders.
++		BGTK_Options inner = {.orientation = BGTK_LIST_VERTICAL, .margin = 0};
++		struct BGTK_Widget *grid = bgtk_list(ctx, rows, valid_rows, inner);
++		if (grid) {
++			// Wrap in a frame for outer margin (like block-level HTML).
++			int tm = attr_int(node, "margin", 8);
++			table = bgtk_frame(ctx, grid,
++				grid-&gt;w + 2 * tm, grid-&gt;h + 2 * tm,
++				(BGTK_Options){.padding = 0, .margin = tm});
++			if (table) {
++				table-&gt;data.frame.border_w = 0;
++				table-&gt;data.frame.border_color = 0;
++			}
++		}
++	}
++
++	// Cleanup temp arrays (widget pointers are owned by the tree now).
++	for (int r = 0; r &lt; num_rows; r++)
++		free(cells[r]);
++	free(cells);
++	free(row_cols);
++	free(col_widths);
++	free(rows);
++	free(tr_nodes);
++	return table;
++}
++
+ /* ------------------------------------------------------------------ */
+ /* Main node dispatcher                                                */
+ /* ------------------------------------------------------------------ */
+@@ -548,6 +728,7 @@ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
+ 	if (strcmp(tag, "img") == 0)    return convert_img(ctx, node);
+ 	if (strcmp(tag, "ul") == 0)     return convert_list(ctx, node, avail_w, 0);
+ 	if (strcmp(tag, "ol") == 0)     return convert_list(ctx, node, avail_w, 1);
++	if (strcmp(tag, "table") == 0)  return convert_table(ctx, node, avail_w);
+ 
+ 	// Generic containers: div, section, article, body, html, header, nav, footer, form, ...
+ 	return convert_container(ctx, node, avail_w);
+diff --git a/test/test_html.c b/test/test_html.c
+index db384d9..6371395 100644
+--- a/test/test_html.c
++++ b/test/test_html.c
+@@ -37,6 +37,14 @@ static const char *SAMPLE_HTML =
+ 	"  &lt;option&gt;Option B&lt;/option&gt;"
+ 	"  &lt;option&gt;Option C&lt;/option&gt;"
+ 	"&lt;/select&gt;"
++	"&lt;table&gt;"
++	"  &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Name&lt;/th&gt;&lt;th&gt;Age&lt;/th&gt;&lt;th&gt;City&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;"
++	"  &lt;tbody&gt;"
++	"    &lt;tr&gt;&lt;td&gt;Alice&lt;/td&gt;&lt;td&gt;30&lt;/td&gt;&lt;td&gt;New York&lt;/td&gt;&lt;/tr&gt;"
++	"    &lt;tr&gt;&lt;td&gt;Bob&lt;/td&gt;&lt;td&gt;25&lt;/td&gt;&lt;td&gt;London&lt;/td&gt;&lt;/tr&gt;"
++	"    &lt;tr&gt;&lt;td&gt;Charlie&lt;/td&gt;&lt;td&gt;35&lt;/td&gt;&lt;td&gt;Tokyo&lt;/td&gt;&lt;/tr&gt;"
++	"  &lt;/tbody&gt;"
++	"&lt;/table&gt;"
+ 	"&lt;/body&gt;&lt;/html&gt;";
+ 
+ int main(void)
+</pre>

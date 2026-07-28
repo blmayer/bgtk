@@ -1,0 +1,1542 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 3362e7a</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 3362e7a
+parent <a href=commit-e8ee141.html>e8ee141</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-15T19:27:29-03:00
+
+    feat: HTML pre/anchors, Labyrinth shortcuts and startup UX
+
+    Add pre/code/br, multi-line mono text, and &lt;a href&gt; wiring with
+    relative URL resolve. Labyrinth Ctrl+L/R (and home shortcuts table)
+    with address bar focused at startup. Refresh www/bgtk.tar.gz.
+
+<a href=tree-3362e7a.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/labyrinth.c b/apps/labyrinth.c
+index 6c8702d..0552720 100644
+--- a/apps/labyrinth.c
++++ b/apps/labyrinth.c
+@@ -18,7 +18,7 @@
+  *      ↓
+  *   [js]     run scripts / bind events                (placeholder)
+  *      ↓
+- *   [wire]   &lt;a href&gt; → navigate()                  (placeholder)
++ *   [wire]   &lt;a href&gt; on text widgets → navigate()  ← implemented
+  *
+  * Keys (gemini-like): Ctrl+L focus URL · Ctrl+R reload · b back ·
+  *   H home · j/k/Page* scroll · Esc blur URL then quit · q quit.
+@@ -142,13 +142,201 @@ static void labyrinth_js_boot(struct BGTK_Widget *page, const char *html)
+ 	/* TODO: ECMAScript engine, DOM bindings, event loop on input. */
+ }
+ 
+-/* Wire &lt;a href&gt; navigation onto link widgets (no-op until HTML stores href). */
++static void navigate(const char *url, int push);
++
++/* Resolve rel against base (http/https/file/about). Fragments-only keep base. */
++static void resolve_page_url(const char *base, const char *rel, char *out,
++			     size_t outlen)
++{
++	char scheme[16] = {0};
++	char host[256] = {0};
++	char path[512] = {0};
++	const char *p, *he;
++	char dir[512], full[1024], norm[1024];
++	char *tmp, *save, *seg;
++	char *segs[64];
++	int nseg = 0, i;
++
++	if (!out || outlen &lt; 2)
++		return;
++	out[0] = '\0';
++	if (!rel || !*rel) {
++		snprintf(out, outlen, "%s", base ? base : "");
++		return;
++	}
++	/* Absolute schemes / about: */
++	if (strstr(rel, "://") || !strncmp(rel, "about:", 6) ||
++	    !strncmp(rel, "file:", 5) || !strncmp(rel, "data:", 5)) {
++		snprintf(out, outlen, "%s", rel);
++		return;
++	}
++	/* Same-document fragment */
++	if (rel[0] == '#') {
++		snprintf(out, outlen, "%s", base ? base : rel);
++		return;
++	}
++	if (!base || !*base) {
++		snprintf(out, outlen, "%s", rel);
++		return;
++	}
++
++	/* Parse base into scheme://host/path */
++	p = base;
++	if (!strncmp(p, "https://", 8)) {
++		snprintf(scheme, sizeof(scheme), "https");
++		p += 8;
++	} else if (!strncmp(p, "http://", 7)) {
++		snprintf(scheme, sizeof(scheme), "http");
++		p += 7;
++	} else if (!strncmp(p, "file://", 7)) {
++		snprintf(scheme, sizeof(scheme), "file");
++		p += 7;
++		/* file has no host; rest is path */
++		snprintf(path, sizeof(path), "%s", p[0] ? p : "/");
++		host[0] = '\0';
++		goto have_base;
++	} else if (!strncmp(p, "about:", 6)) {
++		/* Relative from about: → treat as absolute path on about */
++		if (rel[0] == '/')
++			snprintf(out, outlen, "about:%s", rel + 1);
++		else
++			snprintf(out, outlen, "about:%s", rel);
++		return;
++	} else {
++		snprintf(out, outlen, "%s", rel);
++		return;
++	}
++	he = strchr(p, '/');
++	if (he) {
++		size_t hl = (size_t)(he - p);
++		if (hl &gt;= sizeof(host))
++			hl = sizeof(host) - 1;
++		memcpy(host, p, hl);
++		host[hl] = '\0';
++		snprintf(path, sizeof(path), "%s", he);
++	} else {
++		snprintf(host, sizeof(host), "%s", p);
++		snprintf(path, sizeof(path), "/");
++	}
++
++have_base:
++	if (rel[0] == '/') {
++		/* Absolute path on same origin */
++		if (scheme[0] &amp;&amp; host[0])
++			snprintf(out, outlen, "%s://%s%s", scheme, host, rel);
++		else if (scheme[0])
++			snprintf(out, outlen, "%s://%s", scheme, rel);
++		else
++			snprintf(out, outlen, "%s", rel);
++		return;
++	}
++
++	/* Directory of base path + relative */
++	snprintf(dir, sizeof(dir), "%s", path[0] ? path : "/");
++	{
++		char *ls = strrchr(dir, '/');
++		if (ls)
++			*(ls + 1) = '\0';
++		else
++			snprintf(dir, sizeof(dir), "/");
++	}
++	snprintf(full, sizeof(full), "%s%s", dir, rel);
++
++	tmp = strdup(full);
++	if (!tmp) {
++		snprintf(out, outlen, "%s", full);
++		return;
++	}
++	save = NULL;
++	seg = strtok_r(tmp, "/", &amp;save);
++	while (seg &amp;&amp; nseg &lt; 64) {
++		if (!strcmp(seg, ".") || !*seg) {
++			/* skip */
++		} else if (!strcmp(seg, "..")) {
++			if (nseg &gt; 0)
++				nseg--;
++		} else {
++			segs[nseg++] = seg;
++		}
++		seg = strtok_r(NULL, "/", &amp;save);
++	}
++	norm[0] = '/';
++	norm[1] = '\0';
++	for (i = 0; i &lt; nseg; i++) {
++		if (i)
++			strcat(norm, "/");
++		strcat(norm, segs[i]);
++	}
++	free(tmp);
++
++	if (scheme[0] &amp;&amp; host[0])
++		snprintf(out, outlen, "%s://%s%s", scheme, host, norm);
++	else if (scheme[0] &amp;&amp; !strcmp(scheme, "file"))
++		snprintf(out, outlen, "file://%s", norm);
++	else
++		snprintf(out, outlen, "%s", norm);
++}
++
++static int labyrinth_link_click(struct BGTK_Widget *w, struct InputEvent ev)
++{
++	if (!w || w-&gt;type != BGTK_WIDGET_TEXT)
++		return 0;
++	if (ev.code != BTN_LEFT || ev.value != 1)
++		return 0;
++	if (!bgtk_widget_hit(w, ev.x, ev.y))
++		return 0;
++	if (!w-&gt;data.text.href || !w-&gt;data.text.href[0])
++		return 0;
++	navigate(w-&gt;data.text.href, 1);
++	return 1;
++}
++
++static void labyrinth_wire_links_walk(struct BGTK_Widget *w)
++{
++	int i;
++
++	if (!w)
++		return;
++	if (w-&gt;type == BGTK_WIDGET_TEXT &amp;&amp; w-&gt;data.text.href &amp;&amp;
++	    w-&gt;data.text.href[0]) {
++		char resolved[768];
++
++		resolve_page_url(current_url, w-&gt;data.text.href, resolved,
++				 sizeof(resolved));
++		if (resolved[0] &amp;&amp; strcmp(resolved, w-&gt;data.text.href) != 0) {
++			free(w-&gt;data.text.href);
++			w-&gt;data.text.href = strdup(resolved);
++		}
++		w-&gt;handle_event = labyrinth_link_click;
++	}
++	switch (w-&gt;type) {
++	case BGTK_WIDGET_SCROLLABLE:
++		for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++)
++			labyrinth_wire_links_walk(w-&gt;data.scrollable.items[i]);
++		break;
++	case BGTK_WIDGET_LIST:
++		for (i = 0; i &lt; w-&gt;data.list_widget.widget_count; i++)
++			labyrinth_wire_links_walk(w-&gt;data.list_widget.items[i]);
++		break;
++	case BGTK_WIDGET_FRAME:
++		labyrinth_wire_links_walk(w-&gt;data.frame.child);
++		break;
++	case BGTK_WIDGET_BUTTON:
++		labyrinth_wire_links_walk(w-&gt;data.button.label);
++		break;
++	case BGTK_WIDGET_LABEL:
++		labyrinth_wire_links_walk(w-&gt;data.label.text);
++		break;
++	default:
++		break;
++	}
++}
++
++/* Wire &lt;a href&gt; navigation onto link text widgets. */
+ static void labyrinth_wire_links(struct BGTK_Widget *page, const char *html)
+ {
+-	(void)page;
+ 	(void)html;
+-	/* TODO: extend html.c to attach href on &lt;a&gt; widgets; walk tree and
+-	 * set handle_event → navigate(href). */
++	labyrinth_wire_links_walk(page);
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -277,7 +465,6 @@ static void hist_push(const char *url)
+ 	hist_n++;
+ }
+ 
+-#ifndef LABYRINTH_TEST_MODE
+ static int hist_back(char *out, size_t n)
+ {
+ 	if (hist_n &lt; 1)
+@@ -286,7 +473,6 @@ static int hist_back(char *out, size_t n)
+ 	snprintf(out, n, "%s", hist[hist_n]);
+ 	return 1;
+ }
+-#endif
+ 
+ /* ------------------------------------------------------------------ */
+ /* Built-in pages &amp; fetch                                             */
+@@ -295,23 +481,30 @@ static int hist_back(char *out, size_t n)
+ static const char *HOME_HTML =
+ 	"&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;title&gt;Labyrinth&lt;/title&gt;&lt;/head&gt;&lt;body&gt;"
+ 	"&lt;h1&gt;Labyrinth&lt;/h1&gt;"
+-	"&lt;p&gt;A simple web browser for BGTK. Pages are HTML → widgets "
+-	"with basic CSS (color, background, font-weight, text-align, …). "
+-	"JavaScript is not run yet.&lt;/p&gt;"
+-	"&lt;h2&gt;Try&lt;/h2&gt;"
++	"&lt;p&gt;Type a URL in the bar below and press &lt;b&gt;Enter&lt;/b&gt;.&lt;/p&gt;"
++	"&lt;h2&gt;Shortcuts&lt;/h2&gt;"
++	"&lt;table&gt;"
++	"&lt;tr&gt;&lt;th&gt;Key&lt;/th&gt;&lt;th&gt;Action&lt;/th&gt;&lt;/tr&gt;"
++	"&lt;tr&gt;&lt;td&gt;&lt;code&gt;Ctrl+L&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Focus address bar&lt;/td&gt;&lt;/tr&gt;"
++	"&lt;tr&gt;&lt;td&gt;&lt;code&gt;Ctrl+R&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Reload page&lt;/td&gt;&lt;/tr&gt;"
++	"&lt;tr&gt;&lt;td&gt;&lt;code&gt;Enter&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Go to URL in bar&lt;/td&gt;&lt;/tr&gt;"
++	"&lt;tr&gt;&lt;td&gt;&lt;code&gt;Esc&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Blur bar (again to quit)&lt;/td&gt;&lt;/tr&gt;"
++	"&lt;tr&gt;&lt;td&gt;&lt;code&gt;b&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Back&lt;/td&gt;&lt;/tr&gt;"
++	"&lt;tr&gt;&lt;td&gt;&lt;code&gt;H&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Home&lt;/td&gt;&lt;/tr&gt;"
++	"&lt;tr&gt;&lt;td&gt;&lt;code&gt;j&lt;/code&gt; / &lt;code&gt;k&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Scroll down / up&lt;/td&gt;&lt;/tr&gt;"
++	"&lt;tr&gt;&lt;td&gt;&lt;code&gt;Shift+wheel&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Horizontal scroll&lt;/td&gt;&lt;/tr&gt;"
++	"&lt;tr&gt;&lt;td&gt;&lt;code&gt;q&lt;/code&gt; / &lt;code&gt;Ctrl+C&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Quit&lt;/td&gt;&lt;/tr&gt;"
++	"&lt;/table&gt;"
++	"&lt;h2&gt;URLs&lt;/h2&gt;"
+ 	"&lt;ul&gt;"
+-	"&lt;li&gt;Type a URL in the bar below and press Enter&lt;/li&gt;"
+ 	"&lt;li&gt;&lt;code&gt;about:home&lt;/code&gt; — this page&lt;/li&gt;"
+ 	"&lt;li&gt;&lt;code&gt;about:blank&lt;/code&gt; — empty document&lt;/li&gt;"
+ 	"&lt;li&gt;&lt;code&gt;file:///path/to/page.html&lt;/code&gt; — local file&lt;/li&gt;"
+-	"&lt;li&gt;&lt;code&gt;http://example.com/&lt;/code&gt; — plain HTTP&lt;/li&gt;"
+-	"&lt;li&gt;&lt;code&gt;https://example.com/&lt;/code&gt; — HTTPS (libtls)&lt;/li&gt;"
++	"&lt;li&gt;&lt;code&gt;http://…&lt;/code&gt; / &lt;code&gt;https://…&lt;/code&gt; — web (libtls)&lt;/li&gt;"
+ 	"&lt;/ul&gt;"
+-	"&lt;h2&gt;Roadmap&lt;/h2&gt;"
+-	"&lt;p&gt;&lt;b&gt;CSS&lt;/b&gt; stylesheets and cascade · &lt;b&gt;JS&lt;/b&gt; scripts and events · "
+-	"clickable &lt;code&gt;&amp;lt;a href&amp;gt;&lt;/code&gt;.&lt;/p&gt;"
+-	"&lt;p&gt;HTTPS uses &lt;b&gt;libtls&lt;/b&gt;. Keys: Ctrl+L URL · Ctrl+R reload · b back · "
+-	"H home · j/k scroll · &lt;b&gt;Shift+wheel&lt;/b&gt; horizontal scroll · Esc / q quit.&lt;/p&gt;"
++	"&lt;p&gt;Try "
++	"&lt;a href=\"about:blank\"&gt;about:blank&lt;/a&gt; · "
++	"&lt;a href=\"https://example.com/\"&gt;example.com&lt;/a&gt;.&lt;/p&gt;"
+ 	"&lt;/body&gt;&lt;/html&gt;";
+ 
+ static const char *BLANK_HTML =
+@@ -864,14 +1057,28 @@ static void load_url(const char *url)
+ static void navigate(const char *url, int push)
+ {
+ 	char full[768];
++	char resolved[768];
+ 
+ 	if (!url || !url[0])
+ 		return;
+-	/* Bare host → http:// */
+-	if (strncmp(url, "http://", 7) != 0 &amp;&amp;
+-	    strncmp(url, "https://", 8) != 0 &amp;&amp;
+-	    strncmp(url, "file://", 7) != 0 &amp;&amp;
+-	    strncmp(url, "about:", 6) != 0) {
++	if (strncmp(url, "http://", 7) == 0 ||
++	    strncmp(url, "https://", 8) == 0 ||
++	    strncmp(url, "file://", 7) == 0 ||
++	    strncmp(url, "about:", 6) == 0) {
++		/* absolute — fall through */
++	} else if (current_url[0] &amp;&amp;
++		   (url[0] == '/' || strchr(url, ':') == NULL)) {
++		/* Relative path/file against current page (link wiring). */
++		resolve_page_url(current_url, url, resolved, sizeof(resolved));
++		if (strstr(resolved, "://") || !strncmp(resolved, "about:", 6) ||
++		    !strncmp(resolved, "file:", 5)) {
++			url = resolved;
++		} else {
++			snprintf(full, sizeof(full), "http://%s", url);
++			url = full;
++		}
++	} else {
++		/* Bare host typed in the URL bar → http:// */
+ 		snprintf(full, sizeof(full), "http://%s", url);
+ 		url = full;
+ 	}
+@@ -887,20 +1094,8 @@ static void addr_on_enter(void)
+ 	navigate(addr_input-&gt;data.text_input.text, 1);
+ }
+ 
+-#ifndef LABYRINTH_TEST_MODE
+-static void labyrinth_on_resize(void)
+-{
+-	labyrinth_layout_chrome();
+-	if (last_html)
+-		load_html_string(last_html);
+-	else if (content_host &amp;&amp; content_host-&gt;data.frame.child) {
+-		content_host-&gt;data.frame.child-&gt;w = content_w;
+-		content_host-&gt;data.frame.child-&gt;h = content_h;
+-	}
+-}
+-
+ /* ------------------------------------------------------------------ */
+-/* Focus helpers                                                      */
++/* Focus / app keys (Ctrl+L, Ctrl+R, …)                               */
+ /* ------------------------------------------------------------------ */
+ 
+ static struct BGTK_Widget *content_scroll_widget(void)
+@@ -920,14 +1115,108 @@ static struct BGTK_Widget *content_scroll_widget(void)
+ 	return NULL;
+ }
+ 
+-#endif
++/* Focus the URL bar and select all (browser-style Ctrl+L). */
++static void focus_addr_bar(void)
++{
++	int len;
++
++	if (!ctx || !addr_input)
++		return;
++	bgtk_set_focus(ctx, addr_input);
++	len = addr_input-&gt;data.text_input.text
++		      ? (int)strlen(addr_input-&gt;data.text_input.text)
++		      : 0;
++	addr_input-&gt;data.text_input.cursor_pos = (uint32_t)len;
++	addr_input-&gt;data.text_input.selection_start = 0;
++	addr_input-&gt;data.text_input.selection_end = len;
++	addr_input-&gt;data.text_input.scroll_x = 0;
++}
++
++/*
++ * App-level shortcuts. Call after bgtk_update_modifiers.
++ * Returns: 0 = not handled, 1 = handled (redraw), 2 = quit app.
++ */
++static int labyrinth_app_key(struct InputEvent ev)
++{
++	int addr_focus, mods, scroll_key;
++	char prev[768];
++	struct BGTK_Widget *sc;
++
++	if (!ctx || ev.type != EV_KEY || (ev.value != 1 &amp;&amp; ev.value != 2))
++		return 0;
++
++	addr_focus = (ctx-&gt;focused_widget == addr_input);
++	mods = bgtk_mods_from_ctx(ctx);
++	scroll_key = 0;
++
++	/* Ctrl+L (or bare o): focus address bar */
++	if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp; ev.code == KEY_L) ||
++	    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++	     !(mods &amp; BGTK_MOD_SHIFT) &amp;&amp; ev.code == KEY_O)) {
++		focus_addr_bar();
++		return 1;
++	}
++	/* Ctrl+R (or bare r when not typing URL): reload */
++	if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp; ev.code == KEY_R) ||
++	    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++	     !(mods &amp; BGTK_MOD_SHIFT) &amp;&amp; ev.code == KEY_R)) {
++		load_url(current_url);
++		return 1;
++	}
++	if (ev.code == KEY_ESC) {
++		if (addr_focus) {
++			sc = content_scroll_widget();
++			bgtk_set_focus(ctx, sc ? sc : content_host);
++			return 1;
++		}
++		return 2; /* quit */
++	}
++	if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp; ev.code == KEY_C) ||
++	    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp; ev.code == KEY_Q))
++		return 2;
++	if (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp; ev.code == KEY_B) {
++		if (hist_back(prev, sizeof(prev)))
++			load_url(prev);
++		return 1;
++	}
++	if (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++	    !(mods &amp; BGTK_MOD_SHIFT) &amp;&amp; ev.code == KEY_H) {
++		navigate("about:home", 1);
++		return 1;
++	}
++	if (ev.code == KEY_PAGEUP || ev.code == KEY_PAGEDOWN)
++		scroll_key = 1;
++	else if (!addr_focus &amp;&amp;
++		 (ev.code == KEY_UP || ev.code == KEY_DOWN ||
++		  ev.code == KEY_HOME || ev.code == KEY_END ||
++		  ev.code == KEY_SPACE || ev.code == KEY_J ||
++		  ev.code == KEY_K))
++		scroll_key = 1;
++	if (scroll_key) {
++		sc = content_scroll_widget();
++		if (sc &amp;&amp; sc-&gt;handle_event &amp;&amp; sc-&gt;handle_event(sc, ev))
++			return 1;
++		return 0;
++	}
++	return 0;
++}
++
++#ifndef LABYRINTH_TEST_MODE
++static void labyrinth_on_resize(void)
++{
++	labyrinth_layout_chrome();
++	if (last_html)
++		load_html_string(last_html);
++	else if (content_host &amp;&amp; content_host-&gt;data.frame.child) {
++		content_host-&gt;data.frame.child-&gt;w = content_w;
++		content_host-&gt;data.frame.child-&gt;h = content_h;
++	}
++}
+ 
+ /* ------------------------------------------------------------------ */
+ /* Main                                                               */
+ /* ------------------------------------------------------------------ */
+ 
+-#ifndef LABYRINTH_TEST_MODE
+-
+ int main(void)
+ {
+ 	int width = 720, height = 520;
+@@ -997,13 +1286,10 @@ int main(void)
+ 	ctx-&gt;root_widget = root_frame;
+ 	labyrinth_layout_chrome();
+ 
+-	{
+-		struct BGTK_Widget *sc = content_scroll_widget();
+-
+-		bgtk_set_focus(ctx, sc ? sc : content_host);
+-	}
+-	bgtk_draw_widgets(ctx);
++	/* Home + shortcut list; start ready to type a URL. */
+ 	load_url(current_url);
++	focus_addr_bar();
++	bgtk_draw_widgets(ctx);
+ 
+ 	bgtk_log("entering main loop %dx%d url=%s", width, height, current_url);
+ 	while (1) {
+@@ -1032,85 +1318,15 @@ int main(void)
+ 
+ 			bgtk_update_modifiers(ctx, *ev);
+ 
+-			if (ev-&gt;type == EV_KEY &amp;&amp;
+-			    (ev-&gt;value == 1 || ev-&gt;value == 2)) {
+-				int addr_focus =
+-					(ctx-&gt;focused_widget == addr_input);
+-				int mods = bgtk_mods_from_ctx(ctx);
+-				int scroll_key = 0;
+-				char prev[768];
+-				struct BGTK_Widget *sc;
+-
+-				if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp;
+-				     ev-&gt;code == KEY_L) ||
+-				    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
+-				     !(mods &amp; BGTK_MOD_SHIFT) &amp;&amp;
+-				     ev-&gt;code == KEY_O)) {
+-					bgtk_set_focus(ctx, addr_input);
+-					res = 1;
+-					break;
+-				}
+-				if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp;
+-				     ev-&gt;code == KEY_R) ||
+-				    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
+-				     !(mods &amp; BGTK_MOD_SHIFT) &amp;&amp;
+-				     ev-&gt;code == KEY_R)) {
+-					load_url(current_url);
+-					res = 1;
+-					break;
+-				}
+-				if (ev-&gt;code == KEY_ESC) {
+-					if (addr_focus) {
+-						sc = content_scroll_widget();
+-						bgtk_set_focus(
+-							ctx,
+-							sc ? sc : content_host);
+-						res = 1;
+-						break;
+-					}
+-					quit_reason = "Esc";
+-					goto done;
+-				}
+-				if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp;
+-				     ev-&gt;code == KEY_C) ||
+-				    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
+-				     ev-&gt;code == KEY_Q)) {
++			{
++				int app = labyrinth_app_key(*ev);
++
++				if (app == 2) {
+ 					quit_reason = "quit key";
+ 					goto done;
+ 				}
+-				if (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
+-				    ev-&gt;code == KEY_B) {
+-					if (hist_back(prev, sizeof(prev)))
+-						load_url(prev);
+-					res = 1;
+-					break;
+-				}
+-				if (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
+-				    !(mods &amp; BGTK_MOD_SHIFT) &amp;&amp;
+-				    ev-&gt;code == KEY_H) {
+-					navigate("about:home", 1);
++				if (app == 1)
+ 					res = 1;
+-					break;
+-				}
+-				if (ev-&gt;code == KEY_PAGEUP ||
+-				    ev-&gt;code == KEY_PAGEDOWN)
+-					scroll_key = 1;
+-				else if (!addr_focus &amp;&amp;
+-					 (ev-&gt;code == KEY_UP ||
+-					  ev-&gt;code == KEY_DOWN ||
+-					  ev-&gt;code == KEY_HOME ||
+-					  ev-&gt;code == KEY_END ||
+-					  ev-&gt;code == KEY_SPACE ||
+-					  ev-&gt;code == KEY_J ||
+-					  ev-&gt;code == KEY_K))
+-					scroll_key = 1;
+-				if (scroll_key) {
+-					sc = content_scroll_widget();
+-					if (sc &amp;&amp; sc-&gt;handle_event &amp;&amp;
+-					    sc-&gt;handle_event(sc, *ev))
+-						res = 1;
+-					break;
+-				}
+ 			}
+ 
+ 			if (!res)
+@@ -1149,6 +1365,10 @@ void labyrinth_test_init(struct BGTK_Context *c, int w, int h);
+ void labyrinth_test_load(const char *url);
+ void labyrinth_test_load_html(const char *html);
+ const char *labyrinth_test_url(void);
++/* Inject app key after mods updated; returns 0/1/2 like labyrinth_app_key. */
++int labyrinth_test_app_key(struct InputEvent ev);
++struct BGTK_Widget *labyrinth_test_addr(void);
++void labyrinth_test_focus_addr(void);
+ 
+ void labyrinth_test_init(struct BGTK_Context *c, int w, int h)
+ {
+@@ -1198,4 +1418,22 @@ const char *labyrinth_test_url(void)
+ {
+ 	return current_url;
+ }
++
++int labyrinth_test_app_key(struct InputEvent ev)
++{
++	if (!ctx)
++		return 0;
++	bgtk_update_modifiers(ctx, ev);
++	return labyrinth_app_key(ev);
++}
++
++struct BGTK_Widget *labyrinth_test_addr(void)
++{
++	return addr_input;
++}
++
++void labyrinth_test_focus_addr(void)
++{
++	focus_addr_bar();
++}
+ #endif
+diff --git a/bgtk.c b/bgtk.c
+index 83e3a29..7cf24e1 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -953,6 +953,7 @@ static void destroy_widget(struct BGTK_Widget *w)
+ 		break;
+ 	case BGTK_WIDGET_TEXT:
+ 		free(w-&gt;data.text.text);
++		free(w-&gt;data.text.href);
+ 		break;
+ 	case BGTK_WIDGET_TEXT_INPUT:
+ 		free(w-&gt;data.text_input.text);
+diff --git a/bgtk.h b/bgtk.h
+index 5cbc688..a7e3e3c 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -360,6 +360,10 @@ struct BGTK_Widget {
+ 			char* text;
+ 			int header_level;  // 0=normal, 1/2/3 headers; 10=accent line
+ 			int style;         // BGTK_TEXT_BOLD | BGTK_TEXT_ITALIC
++			/* Optional owned link target for HTML &lt;a href&gt;. */
++			char *href;
++			/* BGTK_FONT_SANS/MONO/SERIF — which face to measure/draw. */
++			int font_role;
+ 		} text;
+ 		struct {
+ 			enum BGTK_List_Orientation orientation;
+diff --git a/drawing.c b/drawing.c
+index be59f36..50be71a 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -198,9 +198,11 @@ void measure_text(FT_Face face, const char *text, int *out_width,
+ void measure_text_style(FT_Face face, const char *text, int style,
+ 			int *out_width, int *out_height)
+ {
+-	int width = 0;
+-	int ncp = 0;
++	int max_w = 0;
++	int line_w = 0;
++	int nlines = 1;
+ 	const char *p;
++	size_t left;
+ 
+ 	if (!text) {
+ 		if (out_width)
+@@ -209,24 +211,9 @@ void measure_text_style(FT_Face face, const char *text, int style,
+ 			*out_height = 12;
+ 		return;
+ 	}
+-	{
+-		size_t left = strlen(text);
+-
+-		if (!face) {
+-			/* Crude: count codepoints for fallback width. */
+-			p = text;
+-			while (left &gt; 0) {
+-				if (!bgtk_utf8_next_n(&amp;p, &amp;left))
+-					break;
+-				ncp++;
+-			}
+-			if (out_width)
+-				*out_width = ncp * 7 +
+-					     ((style &amp; BGTK_TEXT_BOLD) ? ncp : 0);
+-			if (out_height)
+-				*out_height = 12;
+-			return;
+-		}
++	left = strlen(text);
++	if (!face) {
++		int ncp = 0, line_ncp = 0;
+ 
+ 		p = text;
+ 		while (left &gt; 0) {
+@@ -234,22 +221,62 @@ void measure_text_style(FT_Face face, const char *text, int style,
+ 
+ 			if (!cp)
+ 				break;
+-			if (load_cp(face, cp, style) == 0)
+-				width += face-&gt;glyph-&gt;advance.x;
+-			ncp++;
++			if (cp == '\n') {
++				if (line_ncp &gt; ncp)
++					ncp = line_ncp;
++				line_ncp = 0;
++				nlines++;
++				continue;
++			}
++			if (cp == '\r')
++				continue;
++			line_ncp++;
+ 		}
++		if (line_ncp &gt; ncp)
++			ncp = line_ncp;
++		if (out_width)
++			*out_width = ncp * 7 +
++				     ((style &amp; BGTK_TEXT_BOLD) ? ncp : 0);
++		if (out_height)
++			*out_height = 12 * (nlines &gt; 0 ? nlines : 1);
++		return;
+ 	}
+-	width &gt;&gt;= 6;
++
++	p = text;
++	while (left &gt; 0) {
++		uint32_t cp = bgtk_utf8_next_n(&amp;p, &amp;left);
++
++		if (!cp)
++			break;
++		if (cp == '\n') {
++			if (line_w &gt; max_w)
++				max_w = line_w;
++			line_w = 0;
++			nlines++;
++			continue;
++		}
++		if (cp == '\r')
++			continue;
++		if (load_cp(face, cp, style) == 0)
++			line_w += face-&gt;glyph-&gt;advance.x;
++	}
++	if (line_w &gt; max_w)
++		max_w = line_w;
++	max_w &gt;&gt;= 6;
+ 	/* Synthetic italic shear needs a little end padding. */
+ 	if (style &amp; BGTK_TEXT_ITALIC)
+-		width += (face-&gt;size-&gt;metrics.height &gt;&gt; 6) / 4;
++		max_w += (face-&gt;size-&gt;metrics.height &gt;&gt; 6) / 4;
+ 
+ 	if (out_width)
+-		*out_width = width;
++		*out_width = max_w;
+ 	if (out_height) {
+ 		int ascent = face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
+ 		int descent = -face-&gt;size-&gt;metrics.descender &gt;&gt; 6;
+-		*out_height = ascent + descent;
++		int lh = ascent + descent;
++
++		if (lh &lt; 1)
++			lh = 12;
++		*out_height = lh * (nlines &gt; 0 ? nlines : 1);
+ 	}
+ }
+ 
+@@ -301,11 +328,18 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 		if (w-&gt;data.text.text) {
+ 			int tw = 0, th = 0;
+ 			int st = w-&gt;data.text.style;
++			FT_Face face = bgtk_font_face(ctx, w-&gt;data.text.font_role);
++
+ 			if (w-&gt;data.text.header_level &gt; 0 &amp;&amp;
+ 			    w-&gt;data.text.header_level &lt;= 3)
+ 				st |= BGTK_TEXT_BOLD;
+-			measure_text_style(ctx-&gt;ft_face, w-&gt;data.text.text, st,
+-					   &amp;tw, &amp;th);
++			if (face)
++				FT_Set_Pixel_Sizes(face, 0,
++						   ctx-&gt;font_size &gt; 0
++							   ? ctx-&gt;font_size
++							   : 14);
++			measure_text_style(face, w-&gt;data.text.text, st, &amp;tw,
++					   &amp;th);
+ 			int nw = tw + 2 * (w-&gt;padding + w-&gt;margin);
+ 			int nh = th + 2 * (w-&gt;padding + w-&gt;margin);
+ 			if (w-&gt;w &lt; nw)
+@@ -493,7 +527,7 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
+ 			const char *text, int x, int y, uint32_t color,
+ 			int style, int baseline_offset)
+ {
+-	int pen_x, pen_y, stride;
++	int pen_x, pen_y, stride, line_h, ascent;
+ 	FT_Matrix italic;
+ 	size_t left;
+ 	const char *p;
+@@ -507,10 +541,13 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
+ 	FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0,
+ 			   ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14);
+ 
++	ascent = ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
++	line_h = ascent + (-(ctx-&gt;ft_face-&gt;size-&gt;metrics.descender &gt;&gt; 6));
++	if (line_h &lt; 1)
++		line_h = 12;
+ 	pen_x = x;
+ 	/* y is top of the text box; FreeType pen is baseline. */
+-	pen_y = y + (ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6) +
+-		baseline_offset;
++	pen_y = y + ascent + baseline_offset;
+ 	if (ctx-&gt;theme.text_baseline_offset)
+ 		pen_y += ctx-&gt;theme.text_baseline_offset;
+ 	stride = ctx-&gt;width;
+@@ -530,6 +567,13 @@ void draw_text_style_ex(struct BGTK_Context *ctx, uint32_t *pixels,
+ 
+ 		if (!cp)
+ 			break;
++		if (cp == '\n') {
++			pen_x = x;
++			pen_y += line_h;
++			continue;
++		}
++		if (cp == '\r')
++			continue;
+ 		index = FT_Get_Char_Index(ctx-&gt;ft_face, (FT_ULong)cp);
+ 		if (FT_Load_Glyph(ctx-&gt;ft_face, index,
+ 				  FT_LOAD_DEFAULT | FT_LOAD_NO_BITMAP |
+@@ -720,6 +764,11 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	bool is_accent = (level == 10);
+ 	uint32_t accent = ctx-&gt;theme.highlight ? ctx-&gt;theme.highlight
+ 					      : BGTK_COLOR_FUCHSIA;
++	FT_Face old_face = ctx-&gt;ft_face;
++	FT_Face face = bgtk_font_face(ctx, w-&gt;data.text.font_role);
++
++	if (face)
++		ctx-&gt;ft_face = face;
+ 
+ 	if (is_header) {
+ 		color = accent;
+@@ -758,6 +807,7 @@ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 			   w-&gt;baseline_offset);
+ 	if (is_header)
+ 		ctx-&gt;font_size = old_size;
++	ctx-&gt;ft_face = old_face;
+ }
+ 
+ static void draw_button(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+diff --git a/html.c b/html.c
+index 38cf330..6ce1c06 100644
+--- a/html.c
++++ b/html.c
+@@ -6,6 +6,8 @@
+  *
+  * Supported tags:
+  *   h1..h6, p, b, i, a, span    -&gt; BGTK_WIDGET_TEXT (with header_level / bold)
++ *   pre, code                    -&gt; mono text; pre keeps newlines/spaces
++ *   br                           -&gt; line break (block flush)
+  *   ul, ol, li                   -&gt; BGTK_WIDGET_LIST (vertical, with bullet/number)
+  *   button                       -&gt; BGTK_WIDGET_BUTTON
+  *   input[type=text]             -&gt; BGTK_WIDGET_TEXT_INPUT
+@@ -17,8 +19,10 @@
+  *
+  * Layout is strictly top-down (block elements stack vertically).
+  * Inline elements within a block are collected into a horizontal list row.
++ * &lt;p&gt; keeps mixed inlines so &lt;a href&gt; stays a separate clickable text widget.
+  *
+  * Attributes:  width, height, padding, margin  (in pixels)
++ *              href on &lt;a&gt;                     -&gt; text.href (owned string)
+  *              onclick / onchange             -&gt; callbacks are left NULL
+  *              (the user wires them in code via the returned widget tree)
+  */
+@@ -78,6 +82,97 @@ static char *collect_text(xmlNode *node)
+ 	return out ? out : strdup("");
+ }
+ 
++/* Preformatted: keep spaces/newlines; expand tabs; normalize CRLF → LF.
++ * Strip a single leading/trailing newline (common HTML pretty-print). */
++static char *collect_text_pre(xmlNode *node)
++{
++	xmlChar *raw;
++	const char *s;
++	size_t i, n, out_n = 0, out_cap;
++	char *out;
++
++	raw = xmlNodeGetContent(node);
++	if (!raw)
++		return strdup("");
++	s = (const char *)raw;
++	n = strlen(s);
++	/* Drop one outer newline often left by &lt;pre&gt;\n...\n&lt;/pre&gt;. */
++	if (n &gt; 0 &amp;&amp; s[0] == '\n') {
++		s++;
++		n--;
++	}
++	if (n &gt; 0 &amp;&amp; s[n - 1] == '\n')
++		n--;
++	out_cap = n * 2 + 1;
++	out = malloc(out_cap);
++	if (!out) {
++		xmlFree(raw);
++		return strdup("");
++	}
++	for (i = 0; i &lt; n; i++) {
++		char c = s[i];
++
++		if (c == '\r') {
++			if (i + 1 &lt; n &amp;&amp; s[i + 1] == '\n')
++				continue;
++			c = '\n';
++		}
++		if (c == '\t') {
++			int spaces = 8 - (int)(out_n % 8);
++
++			while (spaces-- &gt; 0) {
++				if (out_n + 1 &gt;= out_cap) {
++					out_cap *= 2;
++					out = realloc(out, out_cap);
++					if (!out) {
++						xmlFree(raw);
++						return strdup("");
++					}
++				}
++				out[out_n++] = ' ';
++			}
++			continue;
++		}
++		if (out_n + 1 &gt;= out_cap) {
++			out_cap *= 2;
++			out = realloc(out, out_cap);
++			if (!out) {
++				xmlFree(raw);
++				return strdup("");
++			}
++		}
++		out[out_n++] = c;
++	}
++	out[out_n] = '\0';
++	xmlFree(raw);
++	return out;
++}
++
++/* Measure/create text with an alternate face (mono for pre/code). */
++static struct BGTK_Widget *make_text_face(struct BGTK_Context *ctx,
++					  const char *txt, BGTK_Options opts,
++					  int font_role)
++{
++	FT_Face old, face;
++	struct BGTK_Widget *w;
++
++	if (!txt)
++		return NULL;
++	old = ctx ? ctx-&gt;ft_face : NULL;
++	face = ctx ? bgtk_font_face(ctx, font_role) : NULL;
++	if (face)
++		ctx-&gt;ft_face = face;
++	if (face &amp;&amp; ctx)
++		FT_Set_Pixel_Sizes(face, 0,
++				   ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14);
++	w = bgtk_text(ctx, (char *)txt, opts);
++	if (ctx)
++		ctx-&gt;ft_face = old;
++	if (w)
++		w-&gt;data.text.font_role = font_role;
++	return w;
++}
++
+ /* Theme spacing when ctx is available; fall back to hard defaults. */
+ static int theme_pad(struct BGTK_Context *ctx, int fallback)
+ {
+@@ -106,7 +201,8 @@ static int is_inline_tag(const char *tag)
+ 		return 0;
+ 	return strcmp(tag, "b") == 0 || strcmp(tag, "i") == 0 ||
+ 	       strcmp(tag, "a") == 0 || strcmp(tag, "span") == 0 ||
+-	       strcmp(tag, "strong") == 0 || strcmp(tag, "em") == 0;
++	       strcmp(tag, "strong") == 0 || strcmp(tag, "em") == 0 ||
++	       strcmp(tag, "code") == 0;
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -115,6 +211,8 @@ static int is_inline_tag(const char *tag)
+ 
+ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
+ 					xmlNode *node, int avail_w);
++static struct BGTK_Widget *convert_container(struct BGTK_Context *ctx,
++					     xmlNode *node, int avail_w);
+ 
+ /* Apply g_html_css + inline style to widget; return 1 if display:none. */
+ static int html_style_widget(xmlNode *node, struct BGTK_Widget *w)
+@@ -171,23 +269,51 @@ static void html_collect_styles(xmlNode *node, struct BGTK_CSS *css)
+ /* ------------------------------------------------------------------ */
+ 
+ // Create a text widget for a raw text node (XML_TEXT_NODE).
++// Keep spaces between inlines (e.g. &lt;/code&gt; — text); only drop pure
++// newline/indent whitespace used between block elements.
+ static struct BGTK_Widget *make_text_widget(struct BGTK_Context *ctx,
+ 					    const char *raw)
+ {
+-	// Trim whitespace.
+-	const char *s = raw;
+-	while (*s &amp;&amp; isspace((unsigned char)*s))
++	const char *s;
++	int len, i, only_ws, has_space;
++	char *txt;
++	struct BGTK_Widget *w;
++
++	if (!raw || !*raw)
++		return NULL;
++	only_ws = 1;
++	has_space = 0;
++	for (s = raw; *s; s++) {
++		if (!isspace((unsigned char)*s)) {
++			only_ws = 0;
++			break;
++		}
++		if (*s == ' ' || *s == '\t')
++			has_space = 1;
++	}
++	if (only_ws) {
++		/* Inter-inline space from " &lt;/a&gt; " etc.; ignore indent-only. */
++		if (!has_space)
++			return NULL;
++		return bgtk_text(ctx, " ",
++				 (BGTK_Options){.padding = 0, .margin = 0});
++	}
++	/* Keep content; strip only leading/trailing newlines (pretty-print). */
++	s = raw;
++	while (*s == '\n' || *s == '\r')
+ 		s++;
+-	int len = (int)strlen(s);
+-	while (len &gt; 0 &amp;&amp; isspace((unsigned char)s[len - 1]))
++	len = (int)strlen(s);
++	while (len &gt; 0 &amp;&amp; (s[len - 1] == '\n' || s[len - 1] == '\r'))
+ 		len--;
+-	if (len &lt;= 0)
+-		return NULL;
+-
+-	char *txt = strndup(s, len);
++	/* Collapse internal newlines to spaces for inline text nodes. */
++	txt = strndup(s, len);
+ 	if (!txt)
+ 		return NULL;
+-	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){.padding = 0, .margin = 0});
++	for (i = 0; txt[i]; i++) {
++		if (txt[i] == '\n' || txt[i] == '\r' || txt[i] == '\t')
++			txt[i] = ' ';
++	}
++	w = bgtk_text(ctx, txt, (BGTK_Options){.padding = 0, .margin = 0});
+ 	free(txt);
+ 	return w;
+ }
+@@ -213,17 +339,18 @@ static struct BGTK_Widget *convert_heading(struct BGTK_Context *ctx,
+ 	return w;
+ }
+ 
+-// &lt;p&gt; -&gt; text widget (block, normal level).
+-static struct BGTK_Widget *convert_p(struct BGTK_Context *ctx, xmlNode *node)
++/* &lt;p&gt; keeps mixed inlines so &lt;a href&gt; stays its own widget. */
++static struct BGTK_Widget *convert_p(struct BGTK_Context *ctx, xmlNode *node,
++				     int avail_w)
+ {
+-	char *txt = collect_text(node);
+-	if (!txt || !*txt) {
+-		free(txt);
++	struct BGTK_Widget *w = convert_container(ctx, node, avail_w);
++	int mar;
++
++	if (!w)
+ 		return NULL;
+-	}
+-	BGTK_Options opts = opts_from_node(node, 0, 4);
+-	struct BGTK_Widget *w = bgtk_text(ctx, txt, opts);
+-	free(txt);
++	mar = attr_int(node, "margin", 4);
++	if (w-&gt;margin &lt; mar)
++		w-&gt;margin = mar;
+ 	return w;
+ }
+ 
+@@ -256,18 +383,83 @@ static struct BGTK_Widget *convert_italic(struct BGTK_Context *ctx,
+ 	return w;
+ }
+ 
+-// &lt;a&gt; -&gt; accent (theme.highlight) via header_level 10.
++// &lt;a&gt; -&gt; accent (theme.highlight) via header_level 10; href on text.href.
+ static struct BGTK_Widget *convert_a(struct BGTK_Context *ctx, xmlNode *node)
+ {
+ 	char *txt = collect_text(node);
++	xmlChar *href;
++	struct BGTK_Widget *w;
++
+ 	if (!txt || !*txt) {
+ 		free(txt);
+ 		return NULL;
+ 	}
+-	struct BGTK_Widget *w = bgtk_text(ctx, txt, (BGTK_Options){0});
++	w = bgtk_text(ctx, txt, (BGTK_Options){0});
+ 	free(txt);
+-	if (w)
+-		w-&gt;data.text.header_level = 10;
++	if (!w)
++		return NULL;
++	w-&gt;data.text.header_level = 10;
++	href = attr_str(node, "href");
++	if (href &amp;&amp; href[0]) {
++		w-&gt;data.text.href = strdup((const char *)href);
++		xmlFree(href);
++	} else if (href) {
++		xmlFree(href);
++	}
++	return w;
++}
++
++/* &lt;code&gt; -&gt; mono, inline (spaces kept via collect_text trim only). */
++static struct BGTK_Widget *convert_code(struct BGTK_Context *ctx, xmlNode *node)
++{
++	char *txt = collect_text(node);
++	struct BGTK_Widget *w;
++
++	if (!txt || !*txt) {
++		free(txt);
++		return NULL;
++	}
++	w = make_text_face(ctx, txt, (BGTK_Options){0}, BGTK_FONT_MONO);
++	free(txt);
++	return w;
++}
++
++/* &lt;pre&gt; -&gt; mono multi-line block; preserves whitespace. */
++static struct BGTK_Widget *convert_pre(struct BGTK_Context *ctx, xmlNode *node)
++{
++	char *txt = collect_text_pre(node);
++	struct BGTK_Widget *w;
++	BGTK_Options opts;
++
++	if (!txt) {
++		return NULL;
++	}
++	/* Empty pre still reserves a line so layout does not collapse. */
++	if (!txt[0]) {
++		free(txt);
++		txt = strdup(" ");
++		if (!txt)
++			return NULL;
++	}
++	opts = opts_from_node(node, 4, 4);
++	w = make_text_face(ctx, txt, opts, BGTK_FONT_MONO);
++	free(txt);
++	if (w &amp;&amp; w-&gt;color_bg == 0)
++		/* Subtle panel so pre blocks read as code regions. */
++		w-&gt;color_bg = 0xFF1A1A1A;
++	return w;
++}
++
++/* &lt;br&gt; -&gt; empty-ish line fragment (block, forces inline flush). */
++static struct BGTK_Widget *convert_br(struct BGTK_Context *ctx)
++{
++	struct BGTK_Widget *w = bgtk_text(ctx, " ", (BGTK_Options){0});
++
++	if (w) {
++		/* Half-line break so stacked &lt;br&gt;s still advance. */
++		if (w-&gt;h &gt; 4)
++			w-&gt;h = w-&gt;h / 2 + 2;
++	}
+ 	return w;
+ }
+ 
+@@ -846,12 +1038,15 @@ static struct BGTK_Widget *convert_node(struct BGTK_Context *ctx,
+ 	else if (strcmp(tag, "h4") == 0) w = convert_heading(ctx, node, 3);
+ 	else if (strcmp(tag, "h5") == 0) w = convert_heading(ctx, node, 3);
+ 	else if (strcmp(tag, "h6") == 0) w = convert_heading(ctx, node, 3);
+-	else if (strcmp(tag, "p") == 0)      w = convert_p(ctx, node);
++	else if (strcmp(tag, "p") == 0)      w = convert_p(ctx, node, avail_w);
+ 	else if (strcmp(tag, "b") == 0)      w = convert_bold(ctx, node);
+ 	else if (strcmp(tag, "strong") == 0) w = convert_bold(ctx, node);
+ 	else if (strcmp(tag, "i") == 0)      w = convert_italic(ctx, node);
+ 	else if (strcmp(tag, "em") == 0)     w = convert_italic(ctx, node);
+ 	else if (strcmp(tag, "a") == 0)      w = convert_a(ctx, node);
++	else if (strcmp(tag, "code") == 0)   w = convert_code(ctx, node);
++	else if (strcmp(tag, "pre") == 0)    w = convert_pre(ctx, node);
++	else if (strcmp(tag, "br") == 0)     w = convert_br(ctx);
+ 	else if (strcmp(tag, "span") == 0) {
+ 		/* Plain text span (not italic). */
+ 		char *txt = collect_text(node);
+diff --git a/test/test_html.c b/test/test_html.c
+index 85a6ec4..8018f2f 100644
+--- a/test/test_html.c
++++ b/test/test_html.c
+@@ -18,7 +18,13 @@ static const char *SAMPLE_HTML =
+ 	"&lt;h1&gt;Hello BGTK&lt;/h1&gt;"
+ 	"&lt;h2&gt;Subheading&lt;/h2&gt;"
+ 	"&lt;p&gt;This is a paragraph of text rendered from HTML.&lt;/p&gt;"
+-	"&lt;p&gt;&lt;b&gt;Bold text&lt;/b&gt; and &lt;i&gt;italic text&lt;/i&gt; and &lt;a href=\"#\"&gt;a link&lt;/a&gt;.&lt;/p&gt;"
++	"&lt;p&gt;&lt;b&gt;Bold text&lt;/b&gt; and &lt;i&gt;italic text&lt;/i&gt; and "
++	"&lt;a href=\"https://example.com/\"&gt;a link&lt;/a&gt;.&lt;/p&gt;"
++	"&lt;h2&gt;Pre / code&lt;/h2&gt;"
++	"&lt;p&gt;Inline &lt;code&gt;code()&lt;/code&gt; and a block:&lt;/p&gt;"
++	"&lt;pre&gt;line one\n"
++	"  indented\n"
++	"line three&lt;/pre&gt;"
+ 	"&lt;button&gt;Click Me&lt;/button&gt;"
+ 	"&lt;input type=\"text\" value=\"type here\" width=\"200\" /&gt;"
+ 	"&lt;input type=\"checkbox\" /&gt; Check this"
+@@ -47,6 +53,70 @@ static const char *SAMPLE_HTML =
+ 	"&lt;/table&gt;"
+ 	"&lt;/body&gt;&lt;/html&gt;";
+ 
++/* Walk tree for first text with href; also count multi-line mono (pre). */
++static struct BGTK_Widget *find_href(struct BGTK_Widget *w)
++{
++	int i;
++	struct BGTK_Widget *f;
++
++	if (!w)
++		return NULL;
++	if (w-&gt;type == BGTK_WIDGET_TEXT &amp;&amp; w-&gt;data.text.href &amp;&amp;
++	    w-&gt;data.text.href[0])
++		return w;
++	switch (w-&gt;type) {
++	case BGTK_WIDGET_SCROLLABLE:
++		for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
++			f = find_href(w-&gt;data.scrollable.items[i]);
++			if (f)
++				return f;
++		}
++		break;
++	case BGTK_WIDGET_LIST:
++		for (i = 0; i &lt; w-&gt;data.list_widget.widget_count; i++) {
++			f = find_href(w-&gt;data.list_widget.items[i]);
++			if (f)
++				return f;
++		}
++		break;
++	case BGTK_WIDGET_FRAME:
++		return find_href(w-&gt;data.frame.child);
++	case BGTK_WIDGET_BUTTON:
++		return find_href(w-&gt;data.button.label);
++	default:
++		break;
++	}
++	return NULL;
++}
++
++static int count_pre_like(struct BGTK_Widget *w)
++{
++	int i, n = 0;
++
++	if (!w)
++		return 0;
++	if (w-&gt;type == BGTK_WIDGET_TEXT &amp;&amp;
++	    w-&gt;data.text.font_role == BGTK_FONT_MONO &amp;&amp; w-&gt;data.text.text &amp;&amp;
++	    strchr(w-&gt;data.text.text, '\n'))
++		n++;
++	switch (w-&gt;type) {
++	case BGTK_WIDGET_SCROLLABLE:
++		for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++)
++			n += count_pre_like(w-&gt;data.scrollable.items[i]);
++		break;
++	case BGTK_WIDGET_LIST:
++		for (i = 0; i &lt; w-&gt;data.list_widget.widget_count; i++)
++			n += count_pre_like(w-&gt;data.list_widget.items[i]);
++		break;
++	case BGTK_WIDGET_FRAME:
++		n += count_pre_like(w-&gt;data.frame.child);
++		break;
++	default:
++		break;
++	}
++	return n;
++}
++
+ /* CSS v1: style element + class/id + inline */
+ static const char *CSS_SAMPLE =
+ 	"&lt;html&gt;&lt;head&gt;&lt;style&gt;"
+@@ -87,6 +157,24 @@ int main(void)
+ 	bgtk_draw_widgets(ctx);
+ 	take_screenshot(ctx, "test_html_00_init.png");
+ 
++	{
++		struct BGTK_Widget *link = find_href(root);
++
++		if (!link || !link-&gt;data.text.href ||
++		    strcmp(link-&gt;data.text.href, "https://example.com/") != 0) {
++			fprintf(stderr,
++				"test_html: &lt;a href&gt; not stored on text widget\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		if (count_pre_like(root) &lt; 1) {
++			fprintf(stderr,
++				"test_html: expected multi-line mono &lt;pre&gt;\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++	}
++
+ 	/* CSS sample */
+ 	root = bgtk_html_parse_inline(ctx, CSS_SAMPLE, 480, 400);
+ 	if (!root) {
+diff --git a/test/test_labyrinth.c b/test/test_labyrinth.c
+index f07df73..0caa653 100644
+--- a/test/test_labyrinth.c
++++ b/test/test_labyrinth.c
+@@ -12,6 +12,9 @@ void labyrinth_test_init(struct BGTK_Context *c, int w, int h);
+ void labyrinth_test_load(const char *url);
+ void labyrinth_test_load_html(const char *html);
+ const char *labyrinth_test_url(void);
++int labyrinth_test_app_key(struct InputEvent ev);
++struct BGTK_Widget *labyrinth_test_addr(void);
++void labyrinth_test_focus_addr(void);
+ 
+ static const char *SAMPLE =
+ 	"&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;body&gt;"
+@@ -19,9 +22,46 @@ static const char *SAMPLE =
+ 	"&lt;p&gt;Inline HTML rendered through &lt;b&gt;bgtk_html_parse_inline&lt;/b&gt;.&lt;/p&gt;"
+ 	"&lt;h2&gt;List&lt;/h2&gt;"
+ 	"&lt;ul&gt;&lt;li&gt;Alpha&lt;/li&gt;&lt;li&gt;Beta&lt;/li&gt;&lt;li&gt;Gamma&lt;/li&gt;&lt;/ul&gt;"
+-	"&lt;p&gt;&lt;a href=\"http://example.com/\"&gt;Example link&lt;/a&gt; (click wiring later).&lt;/p&gt;"
++	"&lt;p&gt;&lt;a href=\"about:blank\"&gt;Go blank&lt;/a&gt; is a wired link.&lt;/p&gt;"
++	"&lt;h2&gt;Pre&lt;/h2&gt;"
++	"&lt;pre&gt;alpha\n"
++	"  beta\n"
++	"gamma&lt;/pre&gt;"
+ 	"&lt;/body&gt;&lt;/html&gt;";
+ 
++static struct BGTK_Widget *find_href(struct BGTK_Widget *w)
++{
++	int i;
++	struct BGTK_Widget *f;
++
++	if (!w)
++		return NULL;
++	if (w-&gt;type == BGTK_WIDGET_TEXT &amp;&amp; w-&gt;data.text.href &amp;&amp;
++	    w-&gt;data.text.href[0])
++		return w;
++	switch (w-&gt;type) {
++	case BGTK_WIDGET_SCROLLABLE:
++		for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
++			f = find_href(w-&gt;data.scrollable.items[i]);
++			if (f)
++				return f;
++		}
++		break;
++	case BGTK_WIDGET_LIST:
++		for (i = 0; i &lt; w-&gt;data.list_widget.widget_count; i++) {
++			f = find_href(w-&gt;data.list_widget.items[i]);
++			if (f)
++				return f;
++		}
++		break;
++	case BGTK_WIDGET_FRAME:
++		return find_href(w-&gt;data.frame.child);
++	default:
++		break;
++	}
++	return NULL;
++}
++
+ int main(void)
+ {
+ 	int width = 720, height = 520;
+@@ -39,8 +79,9 @@ int main(void)
+ 	bgtk_log_open("test_labyrinth");
+ 	labyrinth_test_init(ctx, width, height);
+ 
+-	/* 00: about:home */
++	/* 00: about:home — shortcuts table; address bar focused (startup) */
+ 	labyrinth_test_load("about:home");
++	labyrinth_test_focus_addr();
+ 	bgtk_draw_widgets(ctx);
+ 	take_screenshot(ctx, "labyrinth_00_home.png");
+ 
+@@ -63,10 +104,76 @@ int main(void)
+ 		bgtk_destroy_mock(ctx);
+ 		return 1;
+ 	}
++	if (!labyrinth_test_addr() ||
++	    ctx-&gt;focused_widget != labyrinth_test_addr()) {
++		fprintf(stderr,
++			"test_labyrinth: startup should focus address bar\n");
++		bgtk_destroy_mock(ctx);
++		return 1;
++	}
+ 
+-	/* 01: inline HTML sample */
++	/* 01: inline HTML sample (pre + wired link) */
+ 	labyrinth_test_load_html(SAMPLE);
+ 	take_screenshot(ctx, "labyrinth_01_inline_html.png");
++	{
++		struct BGTK_Widget *link = find_href(ctx-&gt;root_widget);
++		struct BGTK_Widget *sc = NULL, *w;
++		int scx, scy;
++
++		if (!link || !link-&gt;data.text.href ||
++		    strcmp(link-&gt;data.text.href, "about:blank") != 0) {
++			fprintf(stderr,
++				"test_labyrinth: link href not wired "
++				"(got %s)\n",
++				link &amp;&amp; link-&gt;data.text.href
++					? link-&gt;data.text.href
++					: "(null)");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Walk up to content scrollable (link x/y are content-space). */
++		for (w = link; w; w = w-&gt;parent) {
++			if (w-&gt;type == BGTK_WIDGET_SCROLLABLE) {
++				sc = w;
++				break;
++			}
++		}
++		if (!sc) {
++			fprintf(stderr,
++				"test_labyrinth: link not under scrollable\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		bgtk_widget_screen_pos(sc, &amp;scx, &amp;scy);
++		/* Screen = scroll origin + content pos − scroll offset. */
++		click.type = EV_KEY;
++		click.code = BTN_LEFT;
++		click.value = 1;
++		click.x = scx + link-&gt;x + link-&gt;w / 2 -
++			  sc-&gt;data.scrollable.scroll_x;
++		click.y = scy + link-&gt;y + link-&gt;h / 2 -
++			  sc-&gt;data.scrollable.scroll_y;
++		if (!bgtk_inject_event(ctx, click)) {
++			fprintf(stderr,
++				"test_labyrinth: link click not handled "
++				"(screen %d,%d content link %d,%d)\n",
++				click.x, click.y, link-&gt;x, link-&gt;y);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		click.value = 0;
++		bgtk_inject_event(ctx, click);
++		bgtk_draw_widgets(ctx);
++		take_screenshot(ctx, "labyrinth_01b_link_clicked.png");
++		if (strcmp(labyrinth_test_url(), "about:blank") != 0) {
++			fprintf(stderr,
++				"test_labyrinth: after link click want "
++				"about:blank got %s\n",
++				labyrinth_test_url());
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++	}
+ 
+ 	/* 02: focus URL bar (bottom) — click lower strip */
+ 	click.type = EV_KEY;
+@@ -193,6 +300,82 @@ int main(void)
+ 		take_screenshot(ctx, "labyrinth_05_shift_wheel_hscroll.png");
+ 	}
+ 
++	/* 06: Ctrl+L focuses URL bar; Ctrl+R reloads */
++	{
++		struct InputEvent ke = {0};
++		struct BGTK_Widget *addr;
++		const char *url_before;
++
++		labyrinth_test_load("about:home");
++		bgtk_draw_widgets(ctx);
++		/* Focus content so Ctrl+L has something to switch from. */
++		if (ctx-&gt;root_widget)
++			bgtk_set_focus(ctx, ctx-&gt;root_widget);
++
++		ke.type = EV_KEY;
++		ke.code = KEY_LEFTCTRL;
++		ke.value = 1;
++		if (labyrinth_test_app_key(ke) != 0) {
++			/* mod-only may return 0 — ok */
++		}
++		ke.code = KEY_L;
++		ke.value = 1;
++		if (labyrinth_test_app_key(ke) != 1) {
++			fprintf(stderr,
++				"test_labyrinth: Ctrl+L not handled\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		addr = labyrinth_test_addr();
++		if (!addr || ctx-&gt;focused_widget != addr) {
++			fprintf(stderr,
++				"test_labyrinth: Ctrl+L did not focus addr bar\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		bgtk_draw_widgets(ctx);
++		take_screenshot(ctx, "labyrinth_06_ctrl_l_addr.png");
++
++		/* Release L, still holding ctrl; R reloads */
++		ke.code = KEY_L;
++		ke.value = 0;
++		labyrinth_test_app_key(ke);
++		url_before = labyrinth_test_url();
++		ke.code = KEY_R;
++		ke.value = 1;
++		if (labyrinth_test_app_key(ke) != 1) {
++			fprintf(stderr,
++				"test_labyrinth: Ctrl+R not handled\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		if (strcmp(labyrinth_test_url(), url_before) != 0 &amp;&amp;
++		    strcmp(labyrinth_test_url(), "about:home") != 0) {
++			fprintf(stderr,
++				"test_labyrinth: Ctrl+R left unexpected url %s\n",
++				labyrinth_test_url());
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* stay on about:home after reload */
++		if (strcmp(labyrinth_test_url(), "about:home") != 0) {
++			fprintf(stderr,
++				"test_labyrinth: after Ctrl+R want about:home "
++				"got %s\n",
++				labyrinth_test_url());
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		ke.code = KEY_R;
++		ke.value = 0;
++		labyrinth_test_app_key(ke);
++		ke.code = KEY_LEFTCTRL;
++		ke.value = 0;
++		labyrinth_test_app_key(ke);
++		bgtk_draw_widgets(ctx);
++		take_screenshot(ctx, "labyrinth_06b_ctrl_r_reload.png");
++	}
++
+ 	printf("test_labyrinth complete. PNG frames written.\n");
+ 	bgtk_destroy_mock(ctx);
+ 	return 0;
+diff --git a/widgets.c b/widgets.c
+index b914e23..9aa83ae 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -584,8 +584,10 @@ struct BGTK_Widget *bgtk_text(struct BGTK_Context *ctx, char *text,
+ 	widget-&gt;data.text.text = ptr;
+ 	widget-&gt;data.text.header_level = 0;
+ 	widget-&gt;data.text.style = options.text_style;
++	widget-&gt;data.text.href = NULL;
++	widget-&gt;data.text.font_role = BGTK_FONT_SANS;
+ 
+-	// Calculate size based on text
++	// Calculate size based on text (multi-line aware)
+ 	measure_text_style(widget-&gt;ctx-&gt;ft_face, widget-&gt;data.text.text,
+ 			   widget-&gt;data.text.style, &amp;widget-&gt;w, &amp;widget-&gt;h);
+ 
+diff --git a/www/bgtk.tar.gz b/www/bgtk.tar.gz
+index 3534eb9..de67a06 100644
+Binary files a/www/bgtk.tar.gz and b/www/bgtk.tar.gz differ
+</pre>

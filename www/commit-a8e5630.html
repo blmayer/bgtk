@@ -1,0 +1,1828 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk a8e5630</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit a8e5630
+parent <a href=commit-a1d702f.html>a1d702f</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-13T20:20:21-03:00
+
+    feat: Labyrinth browser (HTML+libtls HTTPS); fix settings nav cache
+
+    Add Labyrinth: gemini-style shell with bottom URL bar, bgtk_html_parse
+    rendering, about/file/http, and HTTPS via libtls. CSS/JS/link-click
+    hooks left as placeholders.
+    
+    Bust scrollable offscreen cache when items change so settings sidebar
+    buttons keep working after page switches.
+
+<a href=tree-a8e5630.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 2adbc6e..bf3835b 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -29,13 +29,15 @@ works on Linux and macOS without BGCE.
+ │   ├── image_viewer.c
+ │   ├── launcher.c
+ │   ├── terminal.c / terminal.h / term_core.c
+-│   └── gemini_browser.c
++│   ├── gemini_browser.c
++│   └── labyrinth.c   - Labyrinth web browser (HTML shell, bottom URL bar)
+ ├── compat/           - Stubs/headers so headless builds work off Linux (bgce, input.h)
+ ├── test/             - Headless/mock tests
+ │   ├── headless.c
+ │   ├── test_terminal.c
+ │   ├── test_html.c
+ │   ├── test_gemini_browser.c
++│   ├── test_labyrinth.c
+ │   ├── server_client.sh
+ │   └── screenshots/  - PNG output from headless tests (gitignored)
+ └── www/              - Sample HTML for html tests
+@@ -77,9 +79,12 @@ works on Linux and macOS without BGCE.
+ - `html.c` / `html.h` parse HTML (file or inline string) into a widget tree
+ - Entry points: `bgtk_html_parse()`, `bgtk_html_parse_inline()`
+ - Returns a frame widget; assign to `ctx-&gt;root_widget` before drawing
++- **Labyrinth** (`apps/labyrinth.c`) is the HTML browser shell (gemini-like
++  chrome: content + bottom URL bar). Fetches `https://` via **libtls** (same
++  stack as gemini_browser). CSS/JS/`&lt;a href&gt;` click remain planned hooks.
+ 
+ ### 6. Apps
+-- Real BGCE apps live under `apps/` (terminal, gemini_browser, launcher, image_viewer, sys_status, test_app)
++- Real BGCE apps live under `apps/` (terminal, gemini_browser, labyrinth, launcher, image_viewer, sys_status, test_app)
+ - Terminal logic is split: `term_core.c` (shared) + `terminal.c` (real main) + `test/test_terminal.c` (headless main)
+ 
+ ## Development Guidelines
+@@ -215,6 +220,7 @@ Build/run examples (on macOS, `make` defaults to headless targets):
+ | `make test_html &amp;&amp; ./test_html` | `test/test_html.c` | HTML → widgets (`test/screenshots/test_html_*.png`) |
+ | `make test_gemini_browser &amp;&amp; ./test_gemini_browser` | `test/test_gemini_browser.c` | Gemini browser (`test/screenshots/gemini_browser_*.png`) |
+ | `make test_sys_status &amp;&amp; ./test_sys_status` | `test/test_sys_status.c` | System status (`test/screenshots/sys_status_*.png`) |
++| `make test_labyrinth &amp;&amp; ./test_labyrinth` | `test/test_labyrinth.c` | Labyrinth web browser (`test/screenshots/labyrinth_*.png`) |
+ 
+ Headless binaries link `compat/bgce_stub.c` and use `-Icompat` so they compile
+ on non-Linux machines. Real apps (`test_app`, `terminal`, `gemini_browser`,
+diff --git a/Makefile b/Makefile
+index eda5285..4e71951 100644
+--- a/Makefile
++++ b/Makefile
+@@ -87,17 +87,17 @@ endif
+ # leave stale binaries against a newer libbgtk.so / struct layout).
+ # gemini_browser needs libtls — built last and optional on install.
+ CORE_APPS = test_app image_viewer launcher terminal settings sys_status
+-ALL_APPS = $(CORE_APPS) gemini_browser
++# Apps that need libtls (built last so a missing TLS lib does not skip CORE_APPS).
++TLS_APPS = labyrinth gemini_browser
++ALL_APPS = $(CORE_APPS) $(TLS_APPS)
+ 
+-# Default `make` builds the library and core apps. settings is intentionally
+-# before gemini_browser so a missing libtls does not skip it.
+-# gemini_browser needs libtls; build it last (or: make gemini_browser).
++# Default `make` builds the library and core apps. TLS apps last.
+ TARGET = libbgtk.so $(ALL_APPS)
+ # On macOS (Darwin), plain `make` will try to build libbgtk.so and real
+ # apps which require the bgce library (Linux-specific). Default to
+ # headless/test targets so `make` succeeds for development on mac.
+ ifeq ($(UNAME_S),Darwin)
+-  TARGET = headless test_terminal test_html test_settings test_theme_gallery test_sys_status
++  TARGET = headless test_terminal test_html test_settings test_theme_gallery test_sys_status test_labyrinth
+ endif
+ 
+ # Install layout. Empty PREFIX → flat root (/lib, /include, /bin) for lin0.
+@@ -115,6 +115,7 @@ LAUNCHER_OBJ = apps/launcher.o
+ TERMINAL_OBJ = apps/terminal.o
+ TERM_CORE_OBJ = apps/term_core.o
+ GEMINI_BROWSER_OBJ = apps/gemini_browser.o
++LABYRINTH_OBJ = apps/labyrinth.o
+ 
+ # ---------- Headless / mock testing support ----------
+ # Headless links the bgce stub and does not need a running server.
+@@ -132,6 +133,8 @@ SETTINGS_TEST_OBJ := apps/settings_test.o
+ SYS_STATUS_OBJ := apps/sys_status.o
+ TEST_SYS_STATUS_OBJ := test/test_sys_status.o
+ SYS_STATUS_TEST_OBJ := apps/sys_status_test.o
++TEST_LABYRINTH_OBJ := test/test_labyrinth.o
++LABYRINTH_TEST_OBJ := apps/labyrinth_test.o
+ 
+ .PHONY: all clean test install help snapshot
+ 
+@@ -159,6 +162,7 @@ help:
+ 	@echo "  terminal             Terminal emulator (PTY)"
+ 	@echo "  settings             Theme/font/background settings UI"
+ 	@echo "  sys_status           System status (CPU/mem/disk/net/weather)"
++	@echo "  labyrinth            Labyrinth web browser (HTML; HTTPS via libtls)"
+ 	@echo "  gemini_browser       Gemini browser (needs libtls)"
+ 	@echo ""
+ 	@echo "  Headless / mock tests (no BGCE server; produce PNGs)"
+@@ -168,6 +172,7 @@ help:
+ 	@echo "  test_settings        Settings UI screenshots"
+ 	@echo "  test_theme_gallery   Settings under candidate themes"
+ 	@echo "  test_gemini_browser  Gemini browser flow screenshots (libtls for live fetch)"
++	@echo "  test_labyrinth       Labyrinth web browser screenshots"
+ 	@echo "  (PNGs land in test/screenshots/)"
+ 	@echo ""
+ 	@echo "  Maintenance"
+@@ -229,10 +234,16 @@ settings: $(SETTINGS_OBJ) libbgtk.so
+ sys_status: $(SYS_STATUS_OBJ) libbgtk.so
+ 	$(CC) -o $@ $(SYS_STATUS_OBJ) $(APP_LDFLAGS)
+ 
++labyrinth: $(LABYRINTH_OBJ) libbgtk.so
++	$(CC) -o $@ $(LABYRINTH_OBJ) $(APP_LDFLAGS) $(LIBTLS_LIBS)
++
++$(LABYRINTH_OBJ): CFLAGS += $(LIBTLS_CFLAGS)
++$(LABYRINTH_TEST_OBJ): CFLAGS += $(LIBTLS_CFLAGS)
++
+ # Headless targets still link LIB_OBJS + stub directly (no libbgce).
+ # Rebuild lib objs with -Icompat only for those units when on Linux so
+ # mock/stub headers are available; on Darwin CFLAGS already has -Icompat.
+-$(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ): CFLAGS += -I$(COMPAT_DIR)
++$(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) $(TEST_HTML_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) $(TEST_LABYRINTH_OBJ) $(LABYRINTH_TEST_OBJ): CFLAGS += -I$(COMPAT_DIR)
+ 
+ $(HEADLESS_STUB): $(COMPAT_DIR)/bgce_stub.c
+ 	$(CC) $(HEADLESS_CFLAGS) -c -o $@ $&lt;
+@@ -297,6 +308,15 @@ $(TEST_SYS_STATUS_OBJ): test/test_sys_status.c
+ test_sys_status: $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
+ 	$(CC) -o $@ $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS)
+ 
++# Labyrinth headless: apps/labyrinth.c with LABYRINTH_TEST_MODE (no main).
++$(LABYRINTH_TEST_OBJ): apps/labyrinth.c
++	$(CC) $(CFLAGS) -DLABYRINTH_TEST_MODE -c -o $@ $&lt;
++
++$(TEST_LABYRINTH_OBJ): test/test_labyrinth.c
++	$(CC) $(CFLAGS) -c -o $@ $&lt;
++
++test_labyrinth: $(TEST_LABYRINTH_OBJ) $(LABYRINTH_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
++	$(CC) -o $@ $(TEST_LABYRINTH_OBJ) $(LABYRINTH_TEST_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(HEADLESS_LDFLAGS) $(LIBTLS_LIBS)
+ 
+ # Header dependencies so touching a .h triggers recompilation.
+ CORE_HEADERS = bgtk.h internal.h config.h
+@@ -315,17 +335,19 @@ $(TEST_THEME_GALLERY_OBJ): bgtk.h config.h
+ 
+ clean:
+ 	rm -f $(TARGET) $(ALL_APPS) terminal test_terminal test_gemini_browser \
+-		test_html test_settings test_theme_gallery test_sys_status headless \
++		test_html test_settings test_theme_gallery test_sys_status test_labyrinth headless \
+ 		$(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) \
+-		$(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) \
++		$(GEMINI_BROWSER_OBJ) $(LABYRINTH_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ) \
+ 		$(TEST_HTML_OBJ) $(SETTINGS_OBJ) $(TEST_SETTINGS_OBJ) $(TEST_THEME_GALLERY_OBJ) $(SETTINGS_TEST_OBJ) \
+-		$(SYS_STATUS_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) libbgtk.so
++		$(SYS_STATUS_OBJ) $(TEST_SYS_STATUS_OBJ) $(SYS_STATUS_TEST_OBJ) \
++		$(TEST_LABYRINTH_OBJ) $(LABYRINTH_TEST_OBJ) libbgtk.so
+ 	rm -f test/screenshots/*.png
+ 
+ # Rebuild core apps before install. After BGTK_Context layout changes, a
+ # lib-only install leaves blank windows (apps write root_widget at wrong offset).
+ # gemini_browser is best-effort (needs libtls).
+ install: libbgtk.so bgtk.h $(CORE_APPS)
++	-$(MAKE) labyrinth
+ 	-$(MAKE) gemini_browser
+ 	install -d $(INSTALL_LIB)
+ 	install -m 755 libbgtk.so $(INSTALL_LIB)
+diff --git a/apps/labyrinth.c b/apps/labyrinth.c
+new file mode 100644
+index 0000000..4ffd174
+--- /dev/null
++++ b/apps/labyrinth.c
+@@ -0,0 +1,1197 @@
++/*
++ * Labyrinth — BGTK web browser (HTML shell).
++ *
++ * Layout mirrors gemini_browser: content area on top, URL bar at the bottom.
++ * Documents are rendered with bgtk_html_parse_inline() (libxml2 → widgets).
++ *
++ * Document pipeline (current vs planned):
++ *
++ *   [fetch]  about: | file: | http: | https: (libtls)
++ *      ↓
++ *   [decode] charset (placeholder: assume UTF-8)
++ *      ↓
++ *   [css]    collect &lt;style&gt;/link stylesheets → cascade (placeholder)
++ *      ↓
++ *   [html]   bgtk_html_parse_inline → widget tree   ← implemented
++ *      ↓
++ *   [style]  apply computed styles to widgets       (placeholder)
++ *      ↓
++ *   [js]     run scripts / bind events              (placeholder)
++ *      ↓
++ *   [wire]   &lt;a href&gt; → navigate()                  (placeholder)
++ *
++ * Keys (gemini-like): Ctrl+L focus URL · Ctrl+R reload · b back ·
++ *   H home · j/k/Page* scroll · Esc blur URL then quit · q quit.
++ *
++ * Build: make labyrinth
++ * Test:  make test_labyrinth &amp;&amp; ./test_labyrinth
++ */
++
++#include &lt;bgce.h&gt;
++#include &lt;bgtk.h&gt;
++#include &lt;errno.h&gt;
++#include &lt;fcntl.h&gt;
++#include &lt;linux/input.h&gt;
++#include &lt;netdb.h&gt;
++#include &lt;netinet/in.h&gt;
++#include &lt;signal.h&gt;
++#include &lt;stdio.h&gt;
++#include &lt;stdlib.h&gt;
++#include &lt;string.h&gt;
++#include &lt;sys/socket.h&gt;
++#include &lt;sys/stat.h&gt;
++#include &lt;time.h&gt;
++#include &lt;tls.h&gt;
++#include &lt;unistd.h&gt;
++
++#include "html.h"
++#include "internal.h"
++
++#ifndef TLS_WANT_POLLIN
++#define TLS_WANT_POLLIN (-2)
++#endif
++#ifndef TLS_WANT_POLLOUT
++#define TLS_WANT_POLLOUT (-3)
++#endif
++
++#define LAB_IO_TIMEOUT_MS 20000
++
++/* ------------------------------------------------------------------ */
++/* State                                                              */
++/* ------------------------------------------------------------------ */
++
++static struct BGTK_Context *ctx;
++static struct BGTK_Widget *root_frame;
++static struct BGTK_Widget *main_list;
++static struct BGTK_Widget *content_host; /* borderless frame → page */
++static struct BGTK_Widget *addr_input;
++
++static char current_url[768] = "about:home";
++static char *last_html; /* retained for resize reflow */
++static int content_w = 400, content_h = 300;
++
++#define HIST_MAX 64
++static char hist[HIST_MAX][768];
++static int hist_n;
++
++/* ------------------------------------------------------------------ */
++/* CSS / JS / link placeholders                                       */
++/* ------------------------------------------------------------------ */
++
++/*
++ * Future stylesheet representation. Linked and embedded CSS would land
++ * here before style application walks the widget tree.
++ */
++struct Labyrinth_StyleSheet {
++	char *origin; /* URL or "inline" */
++	char *source; /* raw CSS text */
++	/* parsed rules, specificity tables, … */
++};
++
++/*
++ * Future JS runtime hook. Scripts would be collected during parse and
++ * executed against a document/window model bound to the widget tree.
++ */
++struct Labyrinth_Script {
++	char *src_url; /* external, or NULL for inline */
++	char *source;
++	int deferred;
++};
++
++/* Counts found during load — useful when wiring starts. */
++static int last_style_blocks;
++static int last_script_blocks;
++static int last_anchor_count;
++
++/* Scan HTML for future pipeline stages (no side effects yet). */
++static void labyrinth_scan_pipeline(const char *html)
++{
++	const char *p;
++
++	last_style_blocks = last_script_blocks = last_anchor_count = 0;
++	if (!html)
++		return;
++	for (p = html; *p; p++) {
++		if (!strncmp(p, "&lt;style", 6) || !strncmp(p, "&lt;STYLE", 6))
++			last_style_blocks++;
++		else if (!strncmp(p, "&lt;script", 7) || !strncmp(p, "&lt;SCRIPT", 7))
++			last_script_blocks++;
++		else if (!strncmp(p, "&lt;a ", 3) || !strncmp(p, "&lt;A ", 3) ||
++			 !strncmp(p, "&lt;a&gt;", 3) || !strncmp(p, "&lt;A&gt;", 3))
++			last_anchor_count++;
++	}
++	bgtk_log("labyrinth pipeline scan: style=%d script=%d a=%d",
++		 last_style_blocks, last_script_blocks, last_anchor_count);
++}
++
++/* Apply CSS cascade to the widget tree (identity for now). */
++static void labyrinth_css_apply(struct BGTK_Widget *page,
++				const char *html)
++{
++	(void)page;
++	(void)html;
++	/* TODO: parse stylesheets, match selectors, set colors/fonts/spacing
++	 * on BGTK widgets (or a parallel style map keyed by widget). */
++}
++
++/* Boot scripts for the document (no-op). */
++static void labyrinth_js_boot(struct BGTK_Widget *page, const char *html)
++{
++	(void)page;
++	(void)html;
++	/* TODO: ECMAScript engine, DOM bindings, event loop on input. */
++}
++
++/* Wire &lt;a href&gt; navigation onto link widgets (no-op until HTML stores href). */
++static void labyrinth_wire_links(struct BGTK_Widget *page, const char *html)
++{
++	(void)page;
++	(void)html;
++	/* TODO: extend html.c to attach href on &lt;a&gt; widgets; walk tree and
++	 * set handle_event → navigate(href). */
++}
++
++/* ------------------------------------------------------------------ */
++/* Chrome / layout                                                    */
++/* ------------------------------------------------------------------ */
++
++static void labyrinth_chrome(int *pad, int *fmar, int *bw)
++{
++	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 12;
++	int m = (ctx &amp;&amp; ctx-&gt;theme.frame_margin &gt;= 0) ? ctx-&gt;theme.frame_margin
++						      : 0;
++	int b = ctx ? (int)ctx-&gt;theme.frame_border_size : 1;
++
++	if (b &lt; 1)
++		b = 1;
++	if (pad)
++		*pad = p;
++	if (fmar)
++		*fmar = m;
++	if (bw)
++		*bw = b;
++}
++
++static int list_v_overhead(int n, int list_m, int list_p)
++{
++	if (n &lt; 1)
++		return 2 * (list_m + list_p);
++	return 2 * list_m * (n - 1) + 2 * (list_m + list_p);
++}
++
++static void labyrinth_layout_chrome(void)
++{
++	int pad, fmar, bw, box_w, box_h, field_pad;
++	int usable_w, ah, host_h, over;
++
++	if (!ctx || !content_host || !addr_input)
++		return;
++
++	labyrinth_chrome(&amp;pad, &amp;fmar, &amp;bw);
++	box_w = ctx-&gt;width - 2 * (fmar + bw + pad);
++	box_h = ctx-&gt;height - 2 * (fmar + bw + pad);
++	if (box_w &lt; 80)
++		box_w = 80;
++	if (box_h &lt; 80)
++		box_h = 80;
++
++	field_pad = pad &gt; 4 ? pad / 2 : 4;
++	addr_input-&gt;padding = field_pad;
++	addr_input-&gt;margin = 0;
++	content_host-&gt;padding = 0;
++	content_host-&gt;margin = 0;
++
++	if (main_list) {
++		main_list-&gt;padding = 0;
++		main_list-&gt;margin = 0;
++		main_list-&gt;w = box_w;
++		main_list-&gt;h = box_h;
++	}
++	if (root_frame) {
++		root_frame-&gt;padding = pad;
++		root_frame-&gt;margin = fmar;
++		root_frame-&gt;w = ctx-&gt;width;
++		root_frame-&gt;h = ctx-&gt;height;
++	}
++
++	usable_w = box_w;
++	{
++		int text_h = ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size + 4 : 18;
++
++		addr_input-&gt;h =
++			text_h + 2 * (addr_input-&gt;padding + addr_input-&gt;margin);
++		if (addr_input-&gt;h &lt; 28)
++			addr_input-&gt;h = 28;
++	}
++	ah = addr_input-&gt;h;
++	over = list_v_overhead(2, 0, 0);
++	host_h = box_h - ah - over;
++	if (host_h &lt; 40)
++		host_h = 40;
++
++	content_host-&gt;w = usable_w;
++	content_host-&gt;h = host_h;
++	addr_input-&gt;w = usable_w;
++	content_w = usable_w;
++	content_h = host_h;
++
++	/* Resize live page frame if present. */
++	if (content_host-&gt;data.frame.child) {
++		struct BGTK_Widget *page = content_host-&gt;data.frame.child;
++
++		page-&gt;w = content_w;
++		page-&gt;h = content_h;
++		if (page-&gt;type == BGTK_WIDGET_FRAME &amp;&amp; page-&gt;data.frame.child) {
++			struct BGTK_Widget *sc = page-&gt;data.frame.child;
++
++			sc-&gt;w = content_w;
++			sc-&gt;h = content_h;
++			if (sc-&gt;type == BGTK_WIDGET_SCROLLABLE &amp;&amp;
++			    sc-&gt;data.scrollable.tmp) {
++				free(sc-&gt;data.scrollable.tmp);
++				sc-&gt;data.scrollable.tmp = NULL;
++				sc-&gt;data.scrollable.widget_capacity = 0;
++				sc-&gt;data.scrollable.tmp_items = NULL;
++				sc-&gt;data.scrollable.tmp_item0 = NULL;
++				sc-&gt;data.scrollable.tmp_nitems = 0;
++			}
++		}
++	}
++}
++
++/* ------------------------------------------------------------------ */
++/* History                                                            */
++/* ------------------------------------------------------------------ */
++
++static void hist_push(const char *url)
++{
++	if (!url || !url[0])
++		return;
++	if (hist_n &gt; 0 &amp;&amp; strcmp(hist[hist_n - 1], url) == 0)
++		return;
++	if (hist_n &gt;= HIST_MAX) {
++		memmove(hist[0], hist[1], (HIST_MAX - 1) * sizeof(hist[0]));
++		hist_n = HIST_MAX - 1;
++	}
++	snprintf(hist[hist_n], sizeof(hist[0]), "%s", url);
++	hist_n++;
++}
++
++#ifndef LABYRINTH_TEST_MODE
++static int hist_back(char *out, size_t n)
++{
++	if (hist_n &lt; 1)
++		return 0;
++	hist_n--;
++	snprintf(out, n, "%s", hist[hist_n]);
++	return 1;
++}
++#endif
++
++/* ------------------------------------------------------------------ */
++/* Built-in pages &amp; fetch                                             */
++/* ------------------------------------------------------------------ */
++
++static const char *HOME_HTML =
++	"&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;title&gt;Labyrinth&lt;/title&gt;&lt;/head&gt;&lt;body&gt;"
++	"&lt;h1&gt;Labyrinth&lt;/h1&gt;"
++	"&lt;p&gt;A simple web browser for BGTK. Pages are HTML → widgets "
++	"(no CSS or JavaScript yet).&lt;/p&gt;"
++	"&lt;h2&gt;Try&lt;/h2&gt;"
++	"&lt;ul&gt;"
++	"&lt;li&gt;Type a URL in the bar below and press Enter&lt;/li&gt;"
++	"&lt;li&gt;&lt;code&gt;about:home&lt;/code&gt; — this page&lt;/li&gt;"
++	"&lt;li&gt;&lt;code&gt;about:blank&lt;/code&gt; — empty document&lt;/li&gt;"
++	"&lt;li&gt;&lt;code&gt;file:///path/to/page.html&lt;/code&gt; — local file&lt;/li&gt;"
++	"&lt;li&gt;&lt;code&gt;http://example.com/&lt;/code&gt; — plain HTTP&lt;/li&gt;"
++	"&lt;li&gt;&lt;code&gt;https://example.com/&lt;/code&gt; — HTTPS (libtls)&lt;/li&gt;"
++	"&lt;/ul&gt;"
++	"&lt;h2&gt;Roadmap&lt;/h2&gt;"
++	"&lt;p&gt;&lt;b&gt;CSS&lt;/b&gt; stylesheets and cascade · &lt;b&gt;JS&lt;/b&gt; scripts and events · "
++	"clickable &lt;code&gt;&amp;lt;a href&amp;gt;&lt;/code&gt;.&lt;/p&gt;"
++	"&lt;p&gt;HTTPS uses &lt;b&gt;libtls&lt;/b&gt;. Keys: Ctrl+L URL · Ctrl+R reload · b back · "
++	"H home · j/k scroll · Esc / q quit.&lt;/p&gt;"
++	"&lt;/body&gt;&lt;/html&gt;";
++
++static const char *BLANK_HTML =
++	"&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;body&gt;&lt;/body&gt;&lt;/html&gt;";
++
++static char *read_file_all(const char *path, size_t *out_len)
++{
++	FILE *f;
++	char *buf;
++	long sz;
++
++	f = fopen(path, "rb");
++	if (!f)
++		return NULL;
++	if (fseek(f, 0, SEEK_END) != 0) {
++		fclose(f);
++		return NULL;
++	}
++	sz = ftell(f);
++	if (sz &lt; 0 || sz &gt; 8 * 1024 * 1024) {
++		fclose(f);
++		return NULL;
++	}
++	rewind(f);
++	buf = malloc((size_t)sz + 1);
++	if (!buf) {
++		fclose(f);
++		return NULL;
++	}
++	if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
++		free(buf);
++		fclose(f);
++		return NULL;
++	}
++	fclose(f);
++	buf[sz] = '\0';
++	if (out_len)
++		*out_len = (size_t)sz;
++	return buf;
++}
++
++/* Parse http(s)://host[:port]/path into host/path/port. Returns 0 on success. */
++static int parse_http_url(const char *url, int is_https, char *host, size_t hostlen,
++			  char *path, size_t pathlen, int *port_out)
++{
++	const char *p, *slash;
++	int port = is_https ? 443 : 80;
++
++	if (!url || !host || !path || hostlen &lt; 2 || pathlen &lt; 2)
++		return -1;
++	if (is_https) {
++		if (strncmp(url, "https://", 8) != 0)
++			return -1;
++		p = url + 8;
++	} else {
++		if (strncmp(url, "http://", 7) != 0)
++			return -1;
++		p = url + 7;
++	}
++	slash = strchr(p, '/');
++	if (slash) {
++		size_t hl = (size_t)(slash - p);
++
++		if (hl &gt;= hostlen)
++			hl = hostlen - 1;
++		memcpy(host, p, hl);
++		host[hl] = '\0';
++		snprintf(path, pathlen, "%s", slash);
++	} else {
++		snprintf(host, hostlen, "%s", p);
++		snprintf(path, pathlen, "/");
++	}
++	{
++		char *col = strchr(host, ':');
++
++		if (col) {
++			*col = '\0';
++			port = atoi(col + 1);
++			if (port &lt; 1)
++				port = is_https ? 443 : 80;
++		}
++	}
++	if (!host[0])
++		return -1;
++	if (port_out)
++		*port_out = port;
++	return 0;
++}
++
++static char *http_strip_headers(char *raw, size_t len, int *out_status)
++{
++	char *hdr_end, *payload, *out;
++	size_t blen;
++	int status = 0;
++
++	if (!raw || len &lt; 12) {
++		free(raw);
++		return NULL;
++	}
++	if (sscanf(raw, "HTTP/%*s %d", &amp;status) == 1 &amp;&amp; out_status)
++		*out_status = status;
++	hdr_end = strstr(raw, "\r\n\r\n");
++	if (!hdr_end) {
++		if (out_status &amp;&amp; !*out_status)
++			*out_status = status;
++		return raw;
++	}
++	payload = hdr_end + 4;
++	blen = len - (size_t)(payload - raw);
++	out = malloc(blen + 1);
++	if (!out) {
++		free(raw);
++		return NULL;
++	}
++	memcpy(out, payload, blen);
++	out[blen] = '\0';
++	free(raw);
++	return out;
++}
++
++/* Minimal HTTP/1.0 GET over plain TCP. */
++static char *http_get(const char *url, int *out_status, char *err, size_t errlen)
++{
++	char host[256], path[512], portstr[16];
++	int port = 80, fd = -1;
++	struct addrinfo hints, *res = NULL, *rp;
++	char req[1024], *body = NULL;
++	size_t cap = 0, len = 0;
++	ssize_t n;
++	char chunk[4096];
++
++	if (err &amp;&amp; errlen)
++		err[0] = '\0';
++	if (out_status)
++		*out_status = 0;
++	if (parse_http_url(url, 0, host, sizeof(host), path, sizeof(path),
++			   &amp;port) != 0) {
++		if (err)
++			snprintf(err, errlen, "bad http URL");
++		return NULL;
++	}
++	snprintf(portstr, sizeof(portstr), "%d", port);
++	memset(&amp;hints, 0, sizeof(hints));
++	hints.ai_socktype = SOCK_STREAM;
++	hints.ai_family = AF_UNSPEC;
++	if (getaddrinfo(host, portstr, &amp;hints, &amp;res) != 0) {
++		if (err)
++			snprintf(err, errlen, "DNS failed for %s", host);
++		return NULL;
++	}
++	for (rp = res; rp; rp = rp-&gt;ai_next) {
++		fd = socket(rp-&gt;ai_family, rp-&gt;ai_socktype, rp-&gt;ai_protocol);
++		if (fd &lt; 0)
++			continue;
++		if (connect(fd, rp-&gt;ai_addr, rp-&gt;ai_addrlen) == 0)
++			break;
++		close(fd);
++		fd = -1;
++	}
++	freeaddrinfo(res);
++	if (fd &lt; 0) {
++		if (err)
++			snprintf(err, errlen, "connect failed");
++		return NULL;
++	}
++
++	snprintf(req, sizeof(req),
++		 "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: Labyrinth/0.1 "
++		 "(BGTK)\r\nAccept: text/html,*/*\r\nConnection: close\r\n\r\n",
++		 path, host);
++	if (write(fd, req, strlen(req)) &lt; 0) {
++		if (err)
++			snprintf(err, errlen, "write failed");
++		close(fd);
++		return NULL;
++	}
++
++	while ((n = read(fd, chunk, sizeof(chunk))) &gt; 0) {
++		if (len + (size_t)n + 1 &gt; cap) {
++			size_t ncap = cap ? cap * 2 : 8192;
++			char *nb;
++
++			while (ncap &lt; len + (size_t)n + 1)
++				ncap *= 2;
++			if (ncap &gt; 8 * 1024 * 1024)
++				break;
++			nb = realloc(body, ncap);
++			if (!nb)
++				break;
++			body = nb;
++			cap = ncap;
++		}
++		memcpy(body + len, chunk, (size_t)n);
++		len += (size_t)n;
++		body[len] = '\0';
++	}
++	close(fd);
++	if (!body || len &lt; 12) {
++		free(body);
++		if (err)
++			snprintf(err, errlen, "empty response");
++		return NULL;
++	}
++	return http_strip_headers(body, len, out_status);
++}
++
++/* Retry tls_read/write through WANT_POLLIN/WANT_POLLOUT (same as gemini). */
++static ssize_t lab_tls_read(struct tls *t, void *buf, size_t len)
++{
++	int waited = 0;
++
++	for (;;) {
++		ssize_t n = tls_read(t, buf, len);
++
++		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
++			struct timespec ts = { .tv_sec = 0,
++					      .tv_nsec = 5 * 1000 * 1000 };
++
++			if (waited &gt;= LAB_IO_TIMEOUT_MS)
++				return -1;
++			nanosleep(&amp;ts, NULL);
++			waited += 5;
++			continue;
++		}
++		return n;
++	}
++}
++
++static ssize_t lab_tls_write(struct tls *t, const void *buf, size_t len)
++{
++	int waited = 0;
++	const char *p = buf;
++	size_t left = len;
++
++	while (left &gt; 0) {
++		ssize_t n = tls_write(t, p, left);
++
++		if (n == TLS_WANT_POLLIN || n == TLS_WANT_POLLOUT) {
++			struct timespec ts = { .tv_sec = 0,
++					      .tv_nsec = 5 * 1000 * 1000 };
++
++			if (waited &gt;= LAB_IO_TIMEOUT_MS)
++				return -1;
++			nanosleep(&amp;ts, NULL);
++			waited += 5;
++			continue;
++		}
++		if (n &lt; 0)
++			return n;
++		if (n == 0)
++			return (ssize_t)(len - left);
++		p += n;
++		left -= (size_t)n;
++		waited = 0;
++	}
++	return (ssize_t)len;
++}
++
++/* HTTPS GET via libtls. Returns malloc body or NULL. */
++static char *https_get(const char *url, int *out_status, char *err, size_t errlen)
++{
++	char host[256], path[512], portstr[16], req[1024];
++	int port = 443;
++	struct tls_config *cfg = NULL;
++	struct tls *ctx_tls = NULL;
++	char *body = NULL;
++	size_t cap = 0, len = 0;
++	char chunk[4096];
++	ssize_t n;
++
++	if (err &amp;&amp; errlen)
++		err[0] = '\0';
++	if (out_status)
++		*out_status = 0;
++	if (parse_http_url(url, 1, host, sizeof(host), path, sizeof(path),
++			   &amp;port) != 0) {
++		if (err)
++			snprintf(err, errlen, "bad https URL");
++		return NULL;
++	}
++	if (tls_init() == -1) {
++		if (err)
++			snprintf(err, errlen, "tls_init failed");
++		return NULL;
++	}
++	cfg = tls_config_new();
++	if (!cfg) {
++		if (err)
++			snprintf(err, errlen, "tls_config_new failed");
++		return NULL;
++	}
++	/* Match gemini: allow typical self-signed / incomplete chains for now. */
++	tls_config_insecure_noverifycert(cfg);
++	tls_config_insecure_noverifyname(cfg);
++
++	ctx_tls = tls_client();
++	if (!ctx_tls) {
++		if (err)
++			snprintf(err, errlen, "tls_client failed");
++		tls_config_free(cfg);
++		return NULL;
++	}
++	if (tls_configure(ctx_tls, cfg) == -1) {
++		if (err)
++			snprintf(err, errlen, "tls_configure: %s",
++				 tls_error(ctx_tls) ? tls_error(ctx_tls) : "?");
++		tls_free(ctx_tls);
++		tls_config_free(cfg);
++		return NULL;
++	}
++	snprintf(portstr, sizeof(portstr), "%d", port);
++	if (tls_connect(ctx_tls, host, portstr) == -1) {
++		if (err)
++			snprintf(err, errlen, "tls_connect %s:%s: %s", host,
++				 portstr,
++				 tls_error(ctx_tls) ? tls_error(ctx_tls) : "?");
++		tls_free(ctx_tls);
++		tls_config_free(cfg);
++		return NULL;
++	}
++
++	snprintf(req, sizeof(req),
++		 "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: Labyrinth/0.1 "
++		 "(BGTK)\r\nAccept: text/html,*/*\r\nConnection: close\r\n\r\n",
++		 path, host);
++	if (lab_tls_write(ctx_tls, req, strlen(req)) &lt; 0) {
++		if (err)
++			snprintf(err, errlen, "tls_write: %s",
++				 tls_error(ctx_tls) ? tls_error(ctx_tls) : "?");
++		tls_close(ctx_tls);
++		tls_free(ctx_tls);
++		tls_config_free(cfg);
++		return NULL;
++	}
++
++	for (;;) {
++		n = lab_tls_read(ctx_tls, chunk, sizeof(chunk));
++		if (n &lt; 0) {
++			if (err &amp;&amp; !body)
++				snprintf(err, errlen, "tls_read: %s",
++					 tls_error(ctx_tls) ? tls_error(ctx_tls)
++							    : "?");
++			break;
++		}
++		if (n == 0)
++			break;
++		if (len + (size_t)n + 1 &gt; cap) {
++			size_t ncap = cap ? cap * 2 : 8192;
++			char *nb;
++
++			while (ncap &lt; len + (size_t)n + 1)
++				ncap *= 2;
++			if (ncap &gt; 8 * 1024 * 1024)
++				break;
++			nb = realloc(body, ncap);
++			if (!nb)
++				break;
++			body = nb;
++			cap = ncap;
++		}
++		memcpy(body + len, chunk, (size_t)n);
++		len += (size_t)n;
++		body[len] = '\0';
++	}
++	tls_close(ctx_tls);
++	tls_free(ctx_tls);
++	tls_config_free(cfg);
++
++	if (!body || len &lt; 12) {
++		free(body);
++		if (err &amp;&amp; !err[0])
++			snprintf(err, errlen, "empty HTTPS response");
++		return NULL;
++	}
++	return http_strip_headers(body, len, out_status);
++}
++
++static char *wrap_http_error(int st, char *body)
++{
++	char *wrap;
++	size_t n;
++
++	if (!body)
++		return NULL;
++	if (st &lt; 400)
++		return body;
++	n = strlen(body) + 128;
++	wrap = malloc(n);
++	if (!wrap)
++		return body;
++	snprintf(wrap, n,
++		 "&lt;html&gt;&lt;body&gt;&lt;h1&gt;HTTP %d&lt;/h1&gt;&lt;pre&gt;%s&lt;/pre&gt;&lt;/body&gt;&lt;/html&gt;", st,
++		 body);
++	free(body);
++	return wrap;
++}
++
++static char *fetch_document(const char *url, char *err, size_t errlen)
++{
++	if (!url || !url[0]) {
++		if (err)
++			snprintf(err, errlen, "empty URL");
++		return NULL;
++	}
++	if (!strcmp(url, "about:home") || !strcmp(url, "about://home"))
++		return strdup(HOME_HTML);
++	if (!strcmp(url, "about:blank") || !strcmp(url, "about://blank"))
++		return strdup(BLANK_HTML);
++	if (!strncmp(url, "about:", 6)) {
++		if (err)
++			snprintf(err, errlen, "unknown about: page");
++		return NULL;
++	}
++	if (!strncmp(url, "file://", 7)) {
++		const char *path = url + 7;
++		char *body;
++
++		/* file:///path → /path */
++		if (path[0] == '/' &amp;&amp; path[1] == '/')
++			path += 1;
++		body = read_file_all(path, NULL);
++		if (!body &amp;&amp; err)
++			snprintf(err, errlen, "cannot read %s", path);
++		return body;
++	}
++	if (!strncmp(url, "https://", 8)) {
++		int st = 0;
++		char *body = https_get(url, &amp;st, err, errlen);
++
++		return wrap_http_error(st, body);
++	}
++	if (!strncmp(url, "http://", 7)) {
++		int st = 0;
++		char *body = http_get(url, &amp;st, err, errlen);
++
++		return wrap_http_error(st, body);
++	}
++	if (err)
++		snprintf(err, errlen,
++			 "unsupported scheme (try https: http: file: about:)");
++	return NULL;
++}
++
++/* ------------------------------------------------------------------ */
++/* Document load / display                                            */
++/* ------------------------------------------------------------------ */
++
++static void set_addr_bar(const char *url)
++{
++	if (!addr_input)
++		return;
++	free(addr_input-&gt;data.text_input.text);
++	addr_input-&gt;data.text_input.text = strdup(url ? url : "");
++	addr_input-&gt;data.text_input.cursor_pos =
++		(uint32_t)strlen(addr_input-&gt;data.text_input.text);
++	addr_input-&gt;data.text_input.scroll_x = 0;
++}
++
++static void show_message_page(const char *title, const char *detail)
++{
++	char html[2048];
++	struct BGTK_Widget *page, *old;
++
++	snprintf(html, sizeof(html),
++		 "&lt;html&gt;&lt;body&gt;&lt;h1&gt;%s&lt;/h1&gt;&lt;p&gt;%s&lt;/p&gt;"
++		 "&lt;p&gt;Enter another URL in the bar below.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;",
++		 title ? title : "Error", detail ? detail : "");
++	labyrinth_layout_chrome();
++	page = bgtk_html_parse_inline(ctx, html, content_w, content_h);
++	old = content_host-&gt;data.frame.child;
++	content_host-&gt;data.frame.child = page;
++	if (page)
++		bgtk_widget_set_parent(page, content_host);
++	if (old)
++		bgtk_widget_destroy(old);
++	free(last_html);
++	last_html = strdup(html);
++}
++
++static void load_html_string(const char *html)
++{
++	struct BGTK_Widget *page, *old;
++
++	if (!html)
++		html = BLANK_HTML;
++
++	labyrinth_scan_pipeline(html);
++	labyrinth_layout_chrome();
++
++	page = bgtk_html_parse_inline(ctx, html, content_w, content_h);
++	if (!page) {
++		show_message_page("Parse error", "Could not build widget tree from HTML.");
++		return;
++	}
++
++	/* Planned stages — currently no-ops. */
++	labyrinth_css_apply(page, html);
++	labyrinth_js_boot(page, html);
++	labyrinth_wire_links(page, html);
++
++	old = content_host-&gt;data.frame.child;
++	content_host-&gt;data.frame.child = page;
++	bgtk_widget_set_parent(page, content_host);
++	if (old)
++		bgtk_widget_destroy(old);
++
++	free(last_html);
++	last_html = strdup(html);
++}
++
++static void load_url(const char *url)
++{
++	char err[256];
++	char *html;
++
++	if (!url || !url[0])
++		return;
++	snprintf(current_url, sizeof(current_url), "%s", url);
++	set_addr_bar(current_url);
++	bgtk_log("labyrinth load %s", current_url);
++
++	html = fetch_document(current_url, err, sizeof(err));
++	if (!html) {
++		show_message_page("Load failed", err[0] ? err : "unknown error");
++		if (ctx)
++			bgtk_draw_widgets(ctx);
++		return;
++	}
++	load_html_string(html);
++	free(html);
++	if (ctx) {
++		/* Prefer focusing content so j/k scroll the page. */
++		if (content_host &amp;&amp; content_host-&gt;data.frame.child) {
++			struct BGTK_Widget *page =
++				content_host-&gt;data.frame.child;
++			struct BGTK_Widget *sc =
++				(page-&gt;type == BGTK_WIDGET_FRAME)
++					? page-&gt;data.frame.child
++					: page;
++
++			if (sc &amp;&amp; sc-&gt;type == BGTK_WIDGET_SCROLLABLE)
++				bgtk_set_focus(ctx, sc);
++			else
++				bgtk_set_focus(ctx, content_host);
++		}
++		bgtk_draw_widgets(ctx);
++	}
++}
++
++static void navigate(const char *url, int push)
++{
++	char full[768];
++
++	if (!url || !url[0])
++		return;
++	/* Bare host → http:// */
++	if (strncmp(url, "http://", 7) != 0 &amp;&amp;
++	    strncmp(url, "https://", 8) != 0 &amp;&amp;
++	    strncmp(url, "file://", 7) != 0 &amp;&amp;
++	    strncmp(url, "about:", 6) != 0) {
++		snprintf(full, sizeof(full), "http://%s", url);
++		url = full;
++	}
++	if (push &amp;&amp; current_url[0])
++		hist_push(current_url);
++	load_url(url);
++}
++
++static void addr_on_enter(void)
++{
++	if (!addr_input || !addr_input-&gt;data.text_input.text)
++		return;
++	navigate(addr_input-&gt;data.text_input.text, 1);
++}
++
++#ifndef LABYRINTH_TEST_MODE
++static void labyrinth_on_resize(void)
++{
++	labyrinth_layout_chrome();
++	if (last_html)
++		load_html_string(last_html);
++	else if (content_host &amp;&amp; content_host-&gt;data.frame.child) {
++		content_host-&gt;data.frame.child-&gt;w = content_w;
++		content_host-&gt;data.frame.child-&gt;h = content_h;
++	}
++}
++
++/* ------------------------------------------------------------------ */
++/* Focus helpers                                                      */
++/* ------------------------------------------------------------------ */
++
++static struct BGTK_Widget *content_scroll_widget(void)
++{
++	struct BGTK_Widget *page;
++
++	if (!content_host)
++		return NULL;
++	page = content_host-&gt;data.frame.child;
++	if (!page)
++		return NULL;
++	if (page-&gt;type == BGTK_WIDGET_FRAME &amp;&amp; page-&gt;data.frame.child &amp;&amp;
++	    page-&gt;data.frame.child-&gt;type == BGTK_WIDGET_SCROLLABLE)
++		return page-&gt;data.frame.child;
++	if (page-&gt;type == BGTK_WIDGET_SCROLLABLE)
++		return page;
++	return NULL;
++}
++
++#endif
++
++/* ------------------------------------------------------------------ */
++/* Main                                                               */
++/* ------------------------------------------------------------------ */
++
++#ifndef LABYRINTH_TEST_MODE
++
++int main(void)
++{
++	int width = 720, height = 520;
++	int conn_fd;
++	struct BufferRequest req;
++	void *buffer;
++	struct BGTK_Widget *main_items[2];
++	struct BGTK_Widget *placeholder;
++	struct BGCEMessage msg;
++	ssize_t bytes;
++	const char *quit_reason = "unknown";
++	int pad, fmar, bw;
++
++	setvbuf(stdout, NULL, _IONBF, 0);
++	setvbuf(stderr, NULL, _IONBF, 0);
++	bgtk_log_open("labyrinth");
++	signal(SIGPIPE, SIG_IGN);
++	bgtk_log("labyrinth starting pid=%ld", (long)getpid());
++
++	if (tls_init() == -1) {
++		bgtk_log("tls_init failed — is libtls/libretls installed?");
++		return 1;
++	}
++	bgtk_log("tls_init ok");
++
++	conn_fd = bgce_connect();
++	if (conn_fd &lt; 0) {
++		bgtk_log_errno("bgce_connect (is bgce running?)");
++		return 1;
++	}
++	req.width = (uint32_t)width;
++	req.height = (uint32_t)height;
++	buffer = bgce_get_buffer(conn_fd, req);
++	if (!buffer) {
++		bgtk_log("bgce_get_buffer %dx%d failed", width, height);
++		bgce_disconnect(conn_fd);
++		return 1;
++	}
++	ctx = bgtk_init(conn_fd, buffer, width, height);
++	if (!ctx) {
++		bgtk_log("bgtk_init failed");
++		bgce_disconnect(conn_fd);
++		return 1;
++	}
++
++	labyrinth_chrome(&amp;pad, &amp;fmar, &amp;bw);
++	addr_input = bgtk_text_input(
++		ctx, current_url, 200, 0,
++		(BGTK_Options){.padding = pad &gt; 4 ? pad / 2 : 4, .margin = 0});
++	addr_input-&gt;data.text_input.on_enter = addr_on_enter;
++
++	placeholder = bgtk_text(ctx, "Loading…",
++				(BGTK_Options){.padding = 8, .margin = 4});
++	content_host = bgtk_frame(ctx, placeholder, 100, 100,
++				  (BGTK_Options){.padding = 0, .margin = 0});
++	if (content_host)
++		content_host-&gt;data.frame.border_w = 0;
++
++	main_items[0] = content_host;
++	main_items[1] = addr_input;
++	main_list = bgtk_list(ctx, main_items, 2,
++			      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++					     .padding = 0,
++					     .margin = 0});
++	root_frame = bgtk_frame(ctx, main_list, width, height,
++				(BGTK_Options){.padding = pad, .margin = fmar});
++	ctx-&gt;root_widget = root_frame;
++	labyrinth_layout_chrome();
++
++	{
++		struct BGTK_Widget *sc = content_scroll_widget();
++
++		bgtk_set_focus(ctx, sc ? sc : content_host);
++	}
++	bgtk_draw_widgets(ctx);
++	load_url(current_url);
++
++	bgtk_log("entering main loop %dx%d url=%s", width, height, current_url);
++	while (1) {
++		bytes = bgce_recv_msg(ctx-&gt;conn_fd, &amp;msg);
++		if (bytes &lt;= 0) {
++			if (bytes == 0)
++				quit_reason = "server closed connection";
++			else if (errno == EINTR)
++				continue;
++			else
++				quit_reason = "recv error";
++			break;
++		}
++		switch (msg.type) {
++		case MSG_INPUT_EVENT: {
++			struct InputEvent *ev = &amp;msg.data.input_event;
++			int res = 0;
++
++			if (ev-&gt;type == EV_ABS)
++				break;
++			if (ev-&gt;type == EV_REL &amp;&amp; ev-&gt;code != REL_WHEEL)
++				break;
++
++			bgtk_update_modifiers(ctx, *ev);
++
++			if (ev-&gt;type == EV_KEY &amp;&amp;
++			    (ev-&gt;value == 1 || ev-&gt;value == 2)) {
++				int addr_focus =
++					(ctx-&gt;focused_widget == addr_input);
++				int mods = bgtk_mods_from_ctx(ctx);
++				int scroll_key = 0;
++				char prev[768];
++				struct BGTK_Widget *sc;
++
++				if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     ev-&gt;code == KEY_L) ||
++				    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     !(mods &amp; BGTK_MOD_SHIFT) &amp;&amp;
++				     ev-&gt;code == KEY_O)) {
++					bgtk_set_focus(ctx, addr_input);
++					res = 1;
++					break;
++				}
++				if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     ev-&gt;code == KEY_R) ||
++				    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     !(mods &amp; BGTK_MOD_SHIFT) &amp;&amp;
++				     ev-&gt;code == KEY_R)) {
++					load_url(current_url);
++					res = 1;
++					break;
++				}
++				if (ev-&gt;code == KEY_ESC) {
++					if (addr_focus) {
++						sc = content_scroll_widget();
++						bgtk_set_focus(
++							ctx,
++							sc ? sc : content_host);
++						res = 1;
++						break;
++					}
++					quit_reason = "Esc";
++					goto done;
++				}
++				if (((mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     ev-&gt;code == KEY_C) ||
++				    (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				     ev-&gt;code == KEY_Q)) {
++					quit_reason = "quit key";
++					goto done;
++				}
++				if (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				    ev-&gt;code == KEY_B) {
++					if (hist_back(prev, sizeof(prev)))
++						load_url(prev);
++					res = 1;
++					break;
++				}
++				if (!addr_focus &amp;&amp; !(mods &amp; BGTK_MOD_CTRL) &amp;&amp;
++				    !(mods &amp; BGTK_MOD_SHIFT) &amp;&amp;
++				    ev-&gt;code == KEY_H) {
++					navigate("about:home", 1);
++					res = 1;
++					break;
++				}
++				if (ev-&gt;code == KEY_PAGEUP ||
++				    ev-&gt;code == KEY_PAGEDOWN)
++					scroll_key = 1;
++				else if (!addr_focus &amp;&amp;
++					 (ev-&gt;code == KEY_UP ||
++					  ev-&gt;code == KEY_DOWN ||
++					  ev-&gt;code == KEY_HOME ||
++					  ev-&gt;code == KEY_END ||
++					  ev-&gt;code == KEY_SPACE ||
++					  ev-&gt;code == KEY_J ||
++					  ev-&gt;code == KEY_K))
++					scroll_key = 1;
++				if (scroll_key) {
++					sc = content_scroll_widget();
++					if (sc &amp;&amp; sc-&gt;handle_event &amp;&amp;
++					    sc-&gt;handle_event(sc, *ev))
++						res = 1;
++					break;
++				}
++			}
++
++			if (!res)
++				res = bgtk_handle_input_event(ctx, *ev);
++			if (res)
++				bgtk_draw_widgets(ctx);
++			break;
++		}
++		case MSG_FOCUS_CHANGE:
++			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
++			break;
++		case MSG_BUFFER_CHANGE:
++			if (bgtk_handle_buffer_change(
++				    ctx, &amp;msg.data.buffer_reply) == 0) {
++				labyrinth_on_resize();
++				bgtk_draw_widgets(ctx);
++			}
++			break;
++		default:
++			break;
++		}
++	}
++done:
++	bgtk_log("labyrinth exit: %s", quit_reason);
++	free(last_html);
++	bgtk_destroy(ctx);
++	bgce_disconnect(conn_fd);
++	return 0;
++}
++
++#endif /* LABYRINTH_TEST_MODE */
++
++/* Test hooks (SETTINGS-style) */
++#ifdef LABYRINTH_TEST_MODE
++void labyrinth_test_init(struct BGTK_Context *c, int w, int h);
++void labyrinth_test_load(const char *url);
++void labyrinth_test_load_html(const char *html);
++const char *labyrinth_test_url(void);
++
++void labyrinth_test_init(struct BGTK_Context *c, int w, int h)
++{
++	int pad, fmar, bw;
++	struct BGTK_Widget *main_items[2];
++	struct BGTK_Widget *placeholder;
++
++	ctx = c;
++	labyrinth_chrome(&amp;pad, &amp;fmar, &amp;bw);
++	addr_input = bgtk_text_input(
++		ctx, current_url, 200, 0,
++		(BGTK_Options){.padding = pad &gt; 4 ? pad / 2 : 4, .margin = 0});
++	addr_input-&gt;data.text_input.on_enter = addr_on_enter;
++	placeholder = bgtk_text(ctx, "…",
++				(BGTK_Options){.padding = 8, .margin = 4});
++	content_host = bgtk_frame(ctx, placeholder, 100, 100,
++				  (BGTK_Options){.padding = 0, .margin = 0});
++	if (content_host)
++		content_host-&gt;data.frame.border_w = 0;
++	main_items[0] = content_host;
++	main_items[1] = addr_input;
++	main_list = bgtk_list(ctx, main_items, 2,
++			      (BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++					     .padding = 0,
++					     .margin = 0});
++	root_frame = bgtk_frame(ctx, main_list, w, h,
++				(BGTK_Options){.padding = pad, .margin = fmar});
++	ctx-&gt;root_widget = root_frame;
++	labyrinth_layout_chrome();
++}
++
++void labyrinth_test_load(const char *url)
++{
++	navigate(url, 0);
++}
++
++void labyrinth_test_load_html(const char *html)
++{
++	snprintf(current_url, sizeof(current_url), "about:test");
++	set_addr_bar(current_url);
++	load_html_string(html);
++	if (ctx)
++		bgtk_draw_widgets(ctx);
++}
++
++const char *labyrinth_test_url(void)
++{
++	return current_url;
++}
++#endif
+diff --git a/apps/settings.c b/apps/settings.c
+index a8547af..6b119b0 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -1702,6 +1702,15 @@ static void rebuild_sidebar(void)
+ 	free(btns);
+ 	sidebar-&gt;data.scrollable.items[0] = sidebar_list;
+ 	sidebar-&gt;data.scrollable.widget_count = 1;
++	/* Drop scroll cache — new list must be painted so buttons get layout. */
++	if (sidebar-&gt;data.scrollable.tmp) {
++		free(sidebar-&gt;data.scrollable.tmp);
++		sidebar-&gt;data.scrollable.tmp = NULL;
++		sidebar-&gt;data.scrollable.widget_capacity = 0;
++		sidebar-&gt;data.scrollable.tmp_items = NULL;
++		sidebar-&gt;data.scrollable.tmp_item0 = NULL;
++		sidebar-&gt;data.scrollable.tmp_nitems = 0;
++	}
+ 	sidebar-&gt;padding = 0;
+ 	sidebar-&gt;margin = 0;
+ 	bgtk_widget_set_parent(sidebar_list, sidebar);
+diff --git a/bgtk.h b/bgtk.h
+index 89549bb..dd80b71 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -371,10 +371,16 @@ struct BGTK_Widget {
+ 		struct {
+ 			struct BGTK_Widget** items;  // List of child widgets
+ 			int widget_count;
+-			int widget_capacity;
++			int widget_capacity; /* pixel count of tmp, not item slots */
+ 			int scroll_y;	     // Current scroll position
+ 			int content_height;  // Total height of all child widgets
+ 			uint32_t* tmp;	     // off-screen buffer
++			/* Identity of content last painted into tmp — if items
++			 * are swapped (settings sidebar) without freeing tmp,
++			 * cache must not be reused (buttons would not hit). */
++			struct BGTK_Widget **tmp_items;
++			struct BGTK_Widget *tmp_item0;
++			int tmp_nitems;
+ 		} scrollable;
+ 		struct {
+ 			struct BGTK_Widget** items;  // List of child widgets
+diff --git a/drawing.c b/drawing.c
+index cb28d5d..4294ee8 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -821,9 +821,11 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	if (content_height &gt; 100000)
+ 		content_height = 100000;
+ 
+-	/* Offscreen cache: rebuild only when missing or size changed.
+-	 * Scrolling only changes scroll_y — reusing tmp avoids a full page
+-	 * clear+redraw every wheel/j/k tick (looked like black blinks). */
++	/* Offscreen cache: rebuild when size or content identity changes.
++	 * Scroll only changes scroll_y — reusing tmp avoids a full page
++	 * clear+redraw every wheel/j/k tick (black blinks). Settings replaces
++	 * items[0] (sidebar list) in place; that must bust the cache so new
++	 * nav buttons get layout and hit-test coords. */
+ 	need = (size_t)w-&gt;w * (size_t)content_height;
+ 	if (need == 0)
+ 		return;
+@@ -832,77 +834,106 @@ static void draw_scrollable(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		free(w-&gt;data.scrollable.tmp);
+ 		w-&gt;data.scrollable.tmp = NULL;
+ 		w-&gt;data.scrollable.widget_capacity = 0;
++		w-&gt;data.scrollable.tmp_items = NULL;
++		w-&gt;data.scrollable.tmp_item0 = NULL;
++		w-&gt;data.scrollable.tmp_nitems = 0;
+ 	}
+-	if (!w-&gt;data.scrollable.tmp) {
+-		w-&gt;data.scrollable.tmp = calloc(need, sizeof(uint32_t));
+-		if (!w-&gt;data.scrollable.tmp) {
+-			fprintf(stderr,
+-				"Failed to allocate off-screen buffer (%dx%d)\n",
+-				w-&gt;w, content_height);
+-			return;
++	{
++		int nch = w-&gt;data.scrollable.widget_count;
++		struct BGTK_Widget **its = w-&gt;data.scrollable.items;
++		struct BGTK_Widget *i0 = (its &amp;&amp; nch &gt; 0) ? its[0] : NULL;
++		int content_same =
++			w-&gt;data.scrollable.tmp &amp;&amp;
++			w-&gt;data.scrollable.tmp_items == its &amp;&amp;
++			w-&gt;data.scrollable.tmp_nitems == nch &amp;&amp;
++			w-&gt;data.scrollable.tmp_item0 == i0;
++
++		if (!content_same &amp;&amp; w-&gt;data.scrollable.tmp) {
++			free(w-&gt;data.scrollable.tmp);
++			w-&gt;data.scrollable.tmp = NULL;
++			w-&gt;data.scrollable.widget_capacity = 0;
+ 		}
+-		/* Pixel count (fits: w*h capped above). */
+-		w-&gt;data.scrollable.widget_capacity = (int)need;
+-
+-		tmp_ctx = *ctx;
+-		tmp_ctx.width = w-&gt;w;
+-		tmp_ctx.height = content_height;
+-		tmp_ctx.shm_buffer = w-&gt;data.scrollable.tmp;
+-
+-		draw_rect(&amp;tmp_ctx, w-&gt;data.scrollable.tmp, 0, 0, w-&gt;w,
+-			  content_height, ctx-&gt;theme.background);
+-
+-		current_y = 0;
+-		for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
+-			struct BGTK_Widget *child = w-&gt;data.scrollable.items[i];
+-			int bottom;
+-			int inner_w = w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
+ 
+-			if (!child)
+-				continue;
+-			/* EXPAND_X: fill content width (scroll body). */
+-			if ((child-&gt;flags &amp; BGTK_FLAG_EXPAND_X) &amp;&amp; inner_w &gt; 0)
+-				child-&gt;w = inner_w;
+-			child-&gt;x = w-&gt;margin + w-&gt;padding;
+-			if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+-				child-&gt;x = w-&gt;margin +
+-					   (w-&gt;w - 2 * w-&gt;margin - child-&gt;w) /
+-						   2;
++		if (!w-&gt;data.scrollable.tmp) {
++			w-&gt;data.scrollable.tmp = calloc(need, sizeof(uint32_t));
++			if (!w-&gt;data.scrollable.tmp) {
++				fprintf(stderr,
++					"Failed to allocate off-screen buffer "
++					"(%dx%d)\n",
++					w-&gt;w, content_height);
++				return;
+ 			}
+-			/* Padding insets content on all sides. */
+-			child-&gt;y = current_y + w-&gt;margin + w-&gt;padding;
+-			/* Content-space coords (events transform into this). */
+-			child-&gt;abs_x = child-&gt;x;
+-			child-&gt;abs_y = child-&gt;y;
+-			child-&gt;parent = w;
+-			bottom = child-&gt;y + child-&gt;h;
+-			if (child-&gt;y &lt; content_height &amp;&amp; bottom &gt; 0)
+-				draw_widget(&amp;tmp_ctx, child,
+-					    w-&gt;data.scrollable.tmp);
+-			current_y += child-&gt;h + 2 * w-&gt;margin;
+-		}
+-	} else {
+-		/* Cache hit: still refresh layout coords for hit-testing. */
+-		current_y = 0;
+-		for (i = 0; i &lt; w-&gt;data.scrollable.widget_count; i++) {
+-			struct BGTK_Widget *child = w-&gt;data.scrollable.items[i];
+-			int inner_w = w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
+-
+-			if (!child)
+-				continue;
+-			if ((child-&gt;flags &amp; BGTK_FLAG_EXPAND_X) &amp;&amp; inner_w &gt; 0)
+-				child-&gt;w = inner_w;
+-			child-&gt;x = w-&gt;margin + w-&gt;padding;
+-			if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+-				child-&gt;x = w-&gt;margin +
+-					   (w-&gt;w - 2 * w-&gt;margin - child-&gt;w) /
+-						   2;
++			/* Pixel count (fits: w*h capped above). */
++			w-&gt;data.scrollable.widget_capacity = (int)need;
++			w-&gt;data.scrollable.tmp_items = its;
++			w-&gt;data.scrollable.tmp_item0 = i0;
++			w-&gt;data.scrollable.tmp_nitems = nch;
++
++			tmp_ctx = *ctx;
++			tmp_ctx.width = w-&gt;w;
++			tmp_ctx.height = content_height;
++			tmp_ctx.shm_buffer = w-&gt;data.scrollable.tmp;
++
++			draw_rect(&amp;tmp_ctx, w-&gt;data.scrollable.tmp, 0, 0, w-&gt;w,
++				  content_height, ctx-&gt;theme.background);
++
++			current_y = 0;
++			for (i = 0; i &lt; nch; i++) {
++				struct BGTK_Widget *child = its ? its[i] : NULL;
++				int bottom;
++				int inner_w =
++					w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
++
++				if (!child)
++					continue;
++				if ((child-&gt;flags &amp; BGTK_FLAG_EXPAND_X) &amp;&amp;
++				    inner_w &gt; 0)
++					child-&gt;w = inner_w;
++				child-&gt;x = w-&gt;margin + w-&gt;padding;
++				if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
++					child-&gt;x =
++						w-&gt;margin +
++						(w-&gt;w - 2 * w-&gt;margin -
++						 child-&gt;w) /
++							2;
++				}
++				child-&gt;y = current_y + w-&gt;margin + w-&gt;padding;
++				child-&gt;abs_x = child-&gt;x;
++				child-&gt;abs_y = child-&gt;y;
++				child-&gt;parent = w;
++				bottom = child-&gt;y + child-&gt;h;
++				if (child-&gt;y &lt; content_height &amp;&amp; bottom &gt; 0)
++					draw_widget(&amp;tmp_ctx, child,
++						    w-&gt;data.scrollable.tmp);
++				current_y += child-&gt;h + 2 * w-&gt;margin;
++			}
++		} else {
++			/* Cache hit: refresh top-level layout for hit-testing. */
++			current_y = 0;
++			for (i = 0; i &lt; nch; i++) {
++				struct BGTK_Widget *child = its ? its[i] : NULL;
++				int inner_w =
++					w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
++
++				if (!child)
++					continue;
++				if ((child-&gt;flags &amp; BGTK_FLAG_EXPAND_X) &amp;&amp;
++				    inner_w &gt; 0)
++					child-&gt;w = inner_w;
++				child-&gt;x = w-&gt;margin + w-&gt;padding;
++				if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
++					child-&gt;x =
++						w-&gt;margin +
++						(w-&gt;w - 2 * w-&gt;margin -
++						 child-&gt;w) /
++							2;
++				}
++				child-&gt;y = current_y + w-&gt;margin + w-&gt;padding;
++				child-&gt;abs_x = child-&gt;x;
++				child-&gt;abs_y = child-&gt;y;
++				child-&gt;parent = w;
++				current_y += child-&gt;h + 2 * w-&gt;margin;
+ 			}
+-			child-&gt;y = current_y + w-&gt;margin + w-&gt;padding;
+-			child-&gt;abs_x = child-&gt;x;
+-			child-&gt;abs_y = child-&gt;y;
+-			child-&gt;parent = w;
+-			current_y += child-&gt;h + 2 * w-&gt;margin;
+ 		}
+ 	}
+ 
+diff --git a/test/test_labyrinth.c b/test/test_labyrinth.c
+new file mode 100644
+index 0000000..589cebb
+--- /dev/null
++++ b/test/test_labyrinth.c
+@@ -0,0 +1,95 @@
++/* test/test_labyrinth.c — headless screenshots for Labyrinth web browser.
++ *
++ * Build: make test_labyrinth
++ * Run:   ./test_labyrinth
++ */
++#include &lt;stdio.h&gt;
++#include &lt;string.h&gt;
++#include &lt;linux/input.h&gt;
++#include "bgtk.h"
++
++void labyrinth_test_init(struct BGTK_Context *c, int w, int h);
++void labyrinth_test_load(const char *url);
++void labyrinth_test_load_html(const char *html);
++const char *labyrinth_test_url(void);
++
++static const char *SAMPLE =
++	"&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;body&gt;"
++	"&lt;h1&gt;Labyrinth Test&lt;/h1&gt;"
++	"&lt;p&gt;Inline HTML rendered through &lt;b&gt;bgtk_html_parse_inline&lt;/b&gt;.&lt;/p&gt;"
++	"&lt;h2&gt;List&lt;/h2&gt;"
++	"&lt;ul&gt;&lt;li&gt;Alpha&lt;/li&gt;&lt;li&gt;Beta&lt;/li&gt;&lt;li&gt;Gamma&lt;/li&gt;&lt;/ul&gt;"
++	"&lt;p&gt;&lt;a href=\"http://example.com/\"&gt;Example link&lt;/a&gt; (click wiring later).&lt;/p&gt;"
++	"&lt;/body&gt;&lt;/html&gt;";
++
++int main(void)
++{
++	int width = 720, height = 520;
++	struct BGTK_Context *ctx;
++	uint32_t *fb;
++	uint32_t bg;
++	int i, bright;
++	struct InputEvent click = {0};
++
++	ctx = bgtk_init_mock(width, height);
++	if (!ctx) {
++		fprintf(stderr, "test_labyrinth: init failed\n");
++		return 1;
++	}
++	bgtk_log_open("test_labyrinth");
++	labyrinth_test_init(ctx, width, height);
++
++	/* 00: about:home */
++	labyrinth_test_load("about:home");
++	bgtk_draw_widgets(ctx);
++	take_screenshot(ctx, "labyrinth_00_home.png");
++
++	fb = (uint32_t *)ctx-&gt;shm_buffer;
++	bg = ctx-&gt;theme.background | 0xFF000000u;
++	bright = 0;
++	for (i = 0; i &lt; width * height; i++) {
++		if (fb[i] != 0 &amp;&amp; fb[i] != bg)
++			bright++;
++	}
++	if (bright &lt; 100) {
++		fprintf(stderr, "test_labyrinth: home page empty (bright=%d)\n",
++			bright);
++		bgtk_destroy_mock(ctx);
++		return 1;
++	}
++	if (strcmp(labyrinth_test_url(), "about:home") != 0) {
++		fprintf(stderr, "test_labyrinth: url want about:home got %s\n",
++			labyrinth_test_url());
++		bgtk_destroy_mock(ctx);
++		return 1;
++	}
++
++	/* 01: inline HTML sample */
++	labyrinth_test_load_html(SAMPLE);
++	take_screenshot(ctx, "labyrinth_01_inline_html.png");
++
++	/* 02: focus URL bar (bottom) — click lower strip */
++	click.type = EV_KEY;
++	click.code = BTN_LEFT;
++	click.value = 1;
++	click.x = width / 2;
++	click.y = height - 36;
++	bgtk_inject_event(ctx, click);
++	click.value = 0;
++	bgtk_inject_event(ctx, click);
++	take_screenshot(ctx, "labyrinth_02_url_focused.png");
++
++	/* 03: about:blank */
++	labyrinth_test_load("about:blank");
++	bgtk_draw_widgets(ctx);
++	take_screenshot(ctx, "labyrinth_03_blank.png");
++
++	/* 04: back to home via load (history not required) */
++	labyrinth_test_load("about:home");
++	bgtk_draw_widgets(ctx);
++	take_screenshot(ctx, "labyrinth_04_home_again.png");
++
++	printf("test_labyrinth complete. PNG frames written.\n");
++	bgtk_destroy_mock(ctx);
++	return 0;
++}
+diff --git a/test/test_settings.c b/test/test_settings.c
+index 45bad24..0f0e4dc 100644
+--- a/test/test_settings.c
++++ b/test/test_settings.c
+@@ -311,6 +311,76 @@ int main(void)
+ 	}
+ 	take_screenshot(ctx, "settings_03b_font_after_enter.png");
+ 
++	/*
++	 * After leaving Background, sidebar nav must keep working (scroll
++	 * cache used to keep old buttons painted without layout — dead hits).
++	 * Theme → Background → Theme again.
++	 */
++	{
++		struct InputEvent click = {0};
++		struct config *sc;
++		int i;
++
++		click.type = EV_KEY;
++		click.code = BTN_LEFT;
++		/* Theme */
++		click.value = 1;
++		click.x = SIDEBAR_X;
++		click.y = SIDEBAR_BTN_Y(4);
++		bgtk_inject_event(ctx, click);
++		click.value = 0;
++		if (!bgtk_inject_event(ctx, click)) {
++			fprintf(stderr,
++				"test_settings: Theme nav click not handled\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Background again */
++		click.value = 1;
++		click.y = SIDEBAR_BTN_Y(0);
++		bgtk_inject_event(ctx, click);
++		click.value = 0;
++		if (!bgtk_inject_event(ctx, click)) {
++			fprintf(stderr,
++				"test_settings: Background nav after page "
++				"change not handled\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Theme again — second rebuild must still hit */
++		click.value = 1;
++		click.y = SIDEBAR_BTN_Y(4);
++		bgtk_inject_event(ctx, click);
++		click.value = 0;
++		if (!bgtk_inject_event(ctx, click)) {
++			fprintf(stderr,
++				"test_settings: second Theme nav not handled\n");
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* Content should show theme labels (sample non-bg pixels). */
++		sc = settings_get_config();
++		(void)sc;
++		{
++			uint32_t *fb = (uint32_t *)ctx-&gt;shm_buffer;
++			uint32_t bg = ctx-&gt;theme.background | 0xFF000000u;
++			int bright = 0;
++			for (i = 0; i &lt; width * height; i++) {
++				if (fb[i] != 0 &amp;&amp; fb[i] != bg)
++					bright++;
++			}
++			if (bright &lt; 200) {
++				fprintf(stderr,
++					"test_settings: after nav Theme page "
++					"looks empty (bright=%d)\n",
++					bright);
++				bgtk_destroy_mock(ctx);
++				return 1;
++			}
++		}
++		take_screenshot(ctx, "settings_03c_nav_after_rebuild.png");
++	}
++
+ 	/* 04: Click "Theme" */
+ 	{
+ 		struct InputEvent click = {0};
+diff --git a/widgets.c b/widgets.c
+index 5bd39eb..2aef99a 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -741,10 +741,12 @@ struct BGTK_Widget *bgtk_scrollable(struct BGTK_Context *ctx,
+ 		widget-&gt;data.scrollable.content_height += items[i]-&gt;h + 5 + 2 * widget-&gt;margin;	// 5px spacing + margin
+ 	}
+ 
+-	// Initialize tmp buffer to NULL, it will be allocated during drawing
++	/* Offscreen cache (filled on first draw; busted when items change). */
+ 	widget-&gt;data.scrollable.tmp = NULL;
+ 	widget-&gt;data.scrollable.widget_capacity = 0;
+-	// Override the default event handler with scrollable-specific one
++	widget-&gt;data.scrollable.tmp_items = NULL;
++	widget-&gt;data.scrollable.tmp_item0 = NULL;
++	widget-&gt;data.scrollable.tmp_nitems = 0;
+ 	widget-&gt;handle_event = scrollable_handle_event;
+ 
+ 	return widget;
+</pre>

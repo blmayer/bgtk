@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 680e539</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 680e539
+parent <a href=commit-0697f03.html>0697f03</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-10T11:16:38-03:00
+
+    fix: settings polish, vi scroll region, skip full buffer clear
+
+    Pin Apply at bottom, wider path fields, font path inputs, spacer widget,
+    and shorter switches. Fix terminal IND/LF outside DECSTBM so vi j/k do
+    not scroll the status line. Paint widgets without clear_buffer; still
+    bgce_draw after write.
+
+<a href=tree-680e539.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 1954869..8386ae1 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -247,7 +247,8 @@ etc.) still need BGCE on Linux.
+ 8. **Layout flags** (optional; default is legacy absolute placement):
+    - `BGTK_FLAG_EXPAND_X` / `BGTK_FLAG_EXPAND_Y` / `BGTK_FLAG_FILL` — grow into free space in a parent list (main axis shared among expanders; cross axis fills content box). Parent list needs a fixed/pre-set size larger than content (e.g. filled by a frame).
+    - `BGTK_FLAG_RELATIVE` — `x`/`y` are parent-relative; `abs_x`/`abs_y` are screen (or scroll content) coords after layout. Set on a container to opt a subtree in; children inherit during place.
+-   - `bgtk_widget_screen_pos()`, `bgtk_widget_hit()`, `bgtk_widget_set_parent()`.
++   - `bgtk_spacer(ctx, min_w, min_h, opts)` — empty flex cell; combine with EXPAND_* to push siblings (e.g. Apply to bottom).
++   - `bgtk_widget_screen_pos()`, `bgtk_widget_hit()`, `bgtk_widget_set_parent()`, `bgtk_list_layout_expand()`.
+ 
+ ## Useful Functions
+ 
+diff --git a/apps/settings.c b/apps/settings.c
+index 5f33bd8..df07beb 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -59,6 +59,9 @@ static struct BGTK_Widget *shortcut_inputs[MAX_SHORTCUT_ROWS];
+ static int shortcut_row_count;
+ 
+ static struct BGTK_Widget *font_size_input;
++static struct BGTK_Widget *font_sans_input;
++static struct BGTK_Widget *font_mono_input;
++static struct BGTK_Widget *font_serif_input;
+ 
+ static struct BGTK_Widget *theme_bg_input;
+ static struct BGTK_Widget *theme_btn_input;
+@@ -126,7 +129,32 @@ static void load_shortcuts_defaults(void)
+ 	shortcut_set_row(1, "Screenshot", "sysrq", "builtin:screenshot");
+ 	shortcut_set_row(2, "Terminal", "ctrl+alt+t", "command:terminal");
+ 	shortcut_set_row(3, "Launcher", "ctrl+alt+l", "command:launcher");
+-	shortcut_row_count = 4;
++	shortcut_set_row(4, "Settings", "ctrl+alt+s", "command:settings");
++	shortcut_set_row(5, "Gemini", "ctrl+alt+g", "command:gemini_browser");
++	shortcut_row_count = 6;
++}
++
++/* Ensure compositor builtins always appear even if conf omitted them. */
++static void ensure_builtin_shortcuts(void)
++{
++	int i, has_exit = 0, has_ss = 0;
++
++	for (i = 0; i &lt; shortcut_row_count; i++) {
++		if (strcmp(shortcut_actions[i], "builtin:exit") == 0)
++			has_exit = 1;
++		if (strcmp(shortcut_actions[i], "builtin:screenshot") == 0)
++			has_ss = 1;
++	}
++	if (!has_exit &amp;&amp; shortcut_row_count &lt; MAX_SHORTCUT_ROWS) {
++		shortcut_set_row(shortcut_row_count, "Exit", "ctrl+alt+q",
++				 "builtin:exit");
++		shortcut_row_count++;
++	}
++	if (!has_ss &amp;&amp; shortcut_row_count &lt; MAX_SHORTCUT_ROWS) {
++		shortcut_set_row(shortcut_row_count, "Screenshot", "sysrq",
++				 "builtin:screenshot");
++		shortcut_row_count++;
++	}
+ }
+ 
+ static void load_shortcuts_table(void)
+@@ -141,12 +169,16 @@ static void load_shortcuts_table(void)
+ 	shortcuts_loaded = 0;
+ 
+ 	home = getenv("HOME");
+-	if (!home || !home[0])
++	if (!home || !home[0]) {
++		ensure_builtin_shortcuts();
+ 		return;
++	}
+ 	snprintf(path, sizeof(path), "%s/.config/bgce.conf", home);
+ 	f = fopen(path, "r");
+-	if (!f)
++	if (!f) {
++		ensure_builtin_shortcuts();
+ 		return;
++	}
+ 
+ 	/* Replace defaults with file contents when [shortcuts] has entries. */
+ 	while (fgets(line, sizeof(line), f)) {
+@@ -213,6 +245,8 @@ static void load_shortcuts_table(void)
+ 	/* Empty [shortcuts] section: keep the built-in defaults. */
+ 	if (!shortcuts_loaded)
+ 		load_shortcuts_defaults();
++	/* Always surface compositor builtins (exit / screenshot). */
++	ensure_builtin_shortcuts();
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -413,6 +447,25 @@ static struct BGTK_Widget *ui_btn(const char *s, BGTK_Callback cb, void *data)
+ 	return bgtk_button(ctx, ui_text(s), cb, data, ctl_opts());
+ }
+ 
++/* Compact square-ish button matching text_input height (font path pickers). */
++static struct BGTK_Widget *ui_btn_match_input(const char *s, BGTK_Callback cb,
++					     void *data, int input_h)
++{
++	int pad = 2;
++	struct BGTK_Widget *btn;
++	BGTK_Options o = {.padding = pad, .margin = 0,
++			  .text_align = BGTK_ALIGN_CENTER,
++			  .text_v_align = BGTK_VALIGN_CENTER};
++
++	btn = bgtk_button(ctx, ui_text(s), cb, data, o);
++	if (btn &amp;&amp; input_h &gt; 0) {
++		btn-&gt;h = input_h;
++		if (btn-&gt;w &lt; input_h)
++			btn-&gt;w = input_h;
++	}
++	return btn;
++}
++
+ static struct BGTK_Widget *ui_input(const char *val, int width)
+ {
+ 	return bgtk_text_input(ctx, (char *)(val ? val : ""), width, 0,
+@@ -450,6 +503,7 @@ static struct BGTK_Widget *ui_vbox(struct BGTK_Widget **items, int n)
+ /* Wide enough for longest theme col-2 label ("Frame border unfocused"). */
+ #define FORM_LABEL2_W 200
+ #define FORM_FIELD_W 100 /* fixed so value columns line up */
++#define FORM_PATH_W 420  /* bg/cursor/font path fields */
+ /* List gap = 2×margin → 48px between theme columns. */
+ #define FORM_COL_GAP 24
+ /* Sidebar nav: list gap = 2×margin → 16px between buttons. */
+@@ -462,6 +516,17 @@ static void ui_force_field_w(struct BGTK_Widget *f, int width)
+ }
+ 
+ static struct BGTK_Widget *ui_row(const char *label, struct BGTK_Widget *field)
++{
++	/* Min width for short controls; leave wider path fields alone. */
++	if (field &amp;&amp; field-&gt;w &gt; 0 &amp;&amp; field-&gt;w &lt; FORM_FIELD_W)
++		ui_force_field_w(field, FORM_FIELD_W);
++	struct BGTK_Widget *items[2] = { ui_label(label, FORM_LABEL_W), field };
++	return ui_hbox(items, 2);
++}
++
++/* Single form field forced to FORM_FIELD_W (theme value column). */
++static struct BGTK_Widget *ui_row_field(const char *label,
++					struct BGTK_Widget *field)
+ {
+ 	ui_force_field_w(field, FORM_FIELD_W);
+ 	struct BGTK_Widget *items[2] = { ui_label(label, FORM_LABEL_W), field };
+@@ -509,30 +574,45 @@ static void content_size(int *out_w, int *out_h)
+ 		*out_h = h;
+ }
+ 
+-/* Scrollable borderless page; sizes from parent frame FILL on draw. */
+-static struct BGTK_Widget *make_page(struct BGTK_Widget *body)
++/*
++ * Page chrome: scrollable form on top (EXPAND_Y) + Apply pinned at bottom.
++ * Uses bgtk_spacer if you need mid-form flex; here the scroll itself expands.
++ */
++static struct BGTK_Widget *make_page(struct BGTK_Widget *form,
++				    BGTK_Callback apply_cb)
+ {
+-	struct BGTK_Widget *scroll;
+-	struct BGTK_Widget *frame;
++	struct BGTK_Widget *scroll, *apply, *outer, *frame;
++	struct BGTK_Widget *items[2];
+ 	int pin = panel_inset();
+ 	int pw, ph;
+ 
+ 	content_size(&amp;pw, &amp;ph);
+-	if (body)
+-		body-&gt;flags |= BGTK_FLAG_EXPAND_X;
+-	scroll = bgtk_scrollable(ctx, &amp;body, 1,
++	if (form)
++		form-&gt;flags |= BGTK_FLAG_EXPAND_X;
++	scroll = bgtk_scrollable(ctx, &amp;form, 1,
+ 		(BGTK_Options){.padding = pin, .margin = 0});
+-	/* Seed size for first draw / preview; parent frame refills on layout. */
+ 	scroll-&gt;w = pw &gt; 0 ? pw : 80;
+-	scroll-&gt;h = ph &gt; 0 ? ph : 40;
+-	scroll-&gt;flags |= BGTK_FLAG_FILL;
+-	frame = bgtk_frame(ctx, scroll, scroll-&gt;w, scroll-&gt;h,
++	scroll-&gt;h = ph &gt; 60 ? ph - 48 : 40;
++	scroll-&gt;flags |= BGTK_FLAG_EXPAND_Y | BGTK_FLAG_EXPAND_X;
++
++	apply = ui_btn("Apply", apply_cb, NULL);
++	items[0] = scroll;
++	items[1] = apply;
++	outer = bgtk_list(ctx, items, 2,
++		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++			       .margin = 4, .padding = pin});
++	if (outer) {
++		outer-&gt;w = pw;
++		outer-&gt;h = ph;
++		outer-&gt;flags |= BGTK_FLAG_FILL;
++	}
++	frame = bgtk_frame(ctx, outer ? outer : scroll, pw, ph,
+ 		(BGTK_Options){.padding = 0, .margin = 0});
+ 	if (frame) {
+ 		frame-&gt;data.frame.border_w = 0;
+ 		frame-&gt;flags |= BGTK_FLAG_FILL;
+ 	}
+-	return frame ? frame : scroll;
++	return frame ? frame : outer;
+ }
+ 
+ static uint32_t parse_color_input(const char *text)
+@@ -905,6 +985,24 @@ static void apply_shortcuts(void *userdata)
+ static void apply_font(void *userdata)
+ {
+ 	(void)userdata;
++	if (font_sans_input &amp;&amp; font_sans_input-&gt;data.text_input.text) {
++		strncpy(cfg.font_sans_path,
++			font_sans_input-&gt;data.text_input.text,
++			MAX_PATH_LEN - 1);
++		cfg.font_sans_path[MAX_PATH_LEN - 1] = '\0';
++	}
++	if (font_mono_input &amp;&amp; font_mono_input-&gt;data.text_input.text) {
++		strncpy(cfg.font_mono_path,
++			font_mono_input-&gt;data.text_input.text,
++			MAX_PATH_LEN - 1);
++		cfg.font_mono_path[MAX_PATH_LEN - 1] = '\0';
++	}
++	if (font_serif_input &amp;&amp; font_serif_input-&gt;data.text_input.text) {
++		strncpy(cfg.font_serif_path,
++			font_serif_input-&gt;data.text_input.text,
++			MAX_PATH_LEN - 1);
++		cfg.font_serif_path[MAX_PATH_LEN - 1] = '\0';
++	}
+ 	if (font_size_input &amp;&amp; font_size_input-&gt;data.text_input.text) {
+ 		int sz = atoi(font_size_input-&gt;data.text_input.text);
+ 		if (sz &gt; 0 &amp;&amp; sz &lt; 200)
+@@ -914,15 +1012,6 @@ static void apply_font(void *userdata)
+ 	bgtk_draw_widgets(ctx);
+ }
+ 
+-static const char *font_basename(const char *path)
+-{
+-	const char *slash;
+-	if (!path || !path[0])
+-		return "(default)";
+-	slash = strrchr(path, '/');
+-	return slash ? slash + 1 : path;
+-}
+-
+ static char *font_path_for_role(int role)
+ {
+ 	if (role == BGTK_FONT_MONO)
+@@ -1163,14 +1252,18 @@ static void add_bg_preview(struct BGTK_Widget *page)
+ {
+ 	int pw, ph, panel_w, panel_h;
+ 	struct BGTK_Widget *preview = NULL;
+-	struct BGTK_Widget *scroll;
+-	struct BGTK_Widget *list;
++	struct BGTK_Widget *outer, *scroll, *list;
+ 	int n, i, reserved, max_w, max_h, total_h, max_w_list;
+ 	struct BGTK_Widget **new_items;
+ 
+-	if (!page)
++	if (!page || page-&gt;type != BGTK_WIDGET_FRAME)
++		return;
++	/* page → outer vbox [scroll | Apply] → form list inside scroll. */
++	outer = page-&gt;data.frame.child;
++	if (!outer || outer-&gt;type != BGTK_WIDGET_LIST ||
++	    outer-&gt;data.list_widget.widget_count &lt; 1)
+ 		return;
+-	scroll = page-&gt;data.frame.child;
++	scroll = outer-&gt;data.list_widget.items[0];
+ 	if (!scroll || scroll-&gt;type != BGTK_WIDGET_SCROLLABLE)
+ 		return;
+ 	if (scroll-&gt;data.scrollable.widget_count &lt; 1)
+@@ -1185,7 +1278,7 @@ static void add_bg_preview(struct BGTK_Widget *page)
+ 
+ 	content_size(&amp;panel_w, &amp;panel_h);
+ 
+-	/* Height already used by form rows + Apply — preview fills the rest. */
++	/* Form rows already in list; preview fills leftover panel height. */
+ 	reserved = 0;
+ 	for (i = 0; i &lt; n; i++) {
+ 		struct BGTK_Widget *ch = list-&gt;data.list_widget.items[i];
+@@ -1193,8 +1286,7 @@ static void add_bg_preview(struct BGTK_Widget *page)
+ 			continue;
+ 		reserved += ch-&gt;h + 2 * list-&gt;margin;
+ 	}
+-	/* Panel chrome: content frame padding, scroll padding, preview margin. */
+-	max_h = panel_h - reserved - 28;
++	max_h = panel_h - reserved - 72; /* chrome + Apply row */
+ 	if (max_h &lt; 80)
+ 		max_h = 80;
+ 	max_w = panel_w - 28;
+@@ -1231,14 +1323,13 @@ static void add_bg_preview(struct BGTK_Widget *page)
+ 		}
+ 	}
+ 
+-	/* Insert preview before the last item (Apply button). */
++	/* Append preview at end of form (Apply lives outside the scroll). */
+ 	new_items = malloc((n + 1) * sizeof(struct BGTK_Widget *));
+ 	if (!new_items)
+ 		return;
+-	for (i = 0; i &lt; n - 1; i++)
++	for (i = 0; i &lt; n; i++)
+ 		new_items[i] = list-&gt;data.list_widget.items[i];
+-	new_items[n - 1] = preview;
+-	new_items[n] = list-&gt;data.list_widget.items[n - 1]; /* Apply */
++	new_items[n] = preview;
+ 	free(list-&gt;data.list_widget.items);
+ 	list-&gt;data.list_widget.items = new_items;
+ 	list-&gt;data.list_widget.widget_count = n + 1;
+@@ -1298,7 +1389,8 @@ static struct BGTK_Widget *build_background_page(void)
+ 		bg_color_input = ui_input(color_hex, 120);
+ 		rows[n++] = ui_row("Color", bg_color_input);
+ 	} else {
+-		bg_path_input = ui_input(cfg.path, 280);
++		bg_path_input = ui_input(cfg.path, FORM_PATH_W);
++		ui_force_field_w(bg_path_input, FORM_PATH_W);
+ 		rows[n++] = ui_row("Path", bg_path_input);
+ 		/* 0 = Scaled, 1 = Tiled */
+ 		mode_sw = bgtk_switch(ctx, "Scaled", "Tiled",
+@@ -1309,9 +1401,8 @@ static struct BGTK_Widget *build_background_page(void)
+ 			mode_sw-&gt;data.switch_w.cb_data = mode_sw;
+ 		rows[n++] = ui_row("Mode", mode_sw ? mode_sw : ui_text("?"));
+ 	}
+-	rows[n++] = ui_btn("Apply", apply_background, NULL);
+ 	body = ui_vbox(rows, n);
+-	page = make_page(body);
++	page = make_page(body, apply_background);
+ 	add_bg_preview(page);
+ 	return page;
+ }
+@@ -1332,17 +1423,17 @@ static struct BGTK_Widget *build_cursor_page(void)
+ 		free(cursors);
+ 		return ui_text("Out of memory");
+ 	}
+-	cursor_path_input = ui_input(cursor_theme, 260);
++	cursor_path_input = ui_input(cursor_theme, FORM_PATH_W);
++	ui_force_field_w(cursor_path_input, FORM_PATH_W);
+ 	rows[n++] = ui_row("Theme", cursor_path_input);
+ 	for (i = 0; i &lt; nc; i++) {
+ 		rows[n++] = ui_btn(cursors[i], pick_cursor_theme, cursors[i]);
+ 		/* cursors[i] kept as cb_data; free list array only */
+ 	}
+ 	free(cursors);
+-	rows[n++] = ui_btn("Apply", apply_cursor, NULL);
+ 	body = ui_vbox(rows, n);
+ 	free(rows);
+-	return make_page(body);
++	return make_page(body, apply_cursor);
+ }
+ 
+ static struct BGTK_Widget *build_shortcuts_page(void)
+@@ -1360,10 +1451,9 @@ static struct BGTK_Widget *build_shortcuts_page(void)
+ 		shortcut_inputs[i] = ui_input(shortcut_keys[i], 160);
+ 		rows[n++] = ui_row(shortcut_labels[i], shortcut_inputs[i]);
+ 	}
+-	rows[n++] = ui_btn("Apply", apply_shortcuts, NULL);
+ 	body = ui_vbox(rows, n);
+ 	free(rows);
+-	return make_page(body);
++	return make_page(body, apply_shortcuts);
+ }
+ 
+ static struct BGTK_Widget *build_font_page(void)
+@@ -1372,21 +1462,39 @@ static struct BGTK_Widget *build_font_page(void)
+ 	struct BGTK_Widget *rows[64];
+ 	int n = 0, i, show;
+ 	struct BGTK_Widget *body;
++	struct BGTK_Widget *pick_row[2];
+ 
+ 	if (!font_list_cache)
+ 		font_list_count = scan_fonts(&amp;font_list_cache);
+ 
+ 	snprintf(size_buf, sizeof(size_buf), "%d", cfg.font_size);
+-	rows[n++] = ui_row("Sans (UI)",
+-		ui_btn((char *)font_basename(cfg.font_sans_path),
+-		       toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_SANS));
+-	rows[n++] = ui_row("Mono",
+-		ui_btn((char *)font_basename(cfg.font_mono_path),
+-		       toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_MONO));
+-	rows[n++] = ui_row("Serif",
+-		ui_btn((char *)font_basename(cfg.font_serif_path),
+-		       toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_SERIF));
+-	font_size_input = ui_input(size_buf, 60);
++	font_sans_input = ui_input(cfg.font_sans_path, FORM_PATH_W);
++	font_mono_input = ui_input(cfg.font_mono_path, FORM_PATH_W);
++	font_serif_input = ui_input(cfg.font_serif_path, FORM_PATH_W);
++	ui_force_field_w(font_sans_input, FORM_PATH_W);
++	ui_force_field_w(font_mono_input, FORM_PATH_W);
++	ui_force_field_w(font_serif_input, FORM_PATH_W);
++
++	pick_row[0] = font_sans_input;
++	pick_row[1] = ui_btn_match_input(
++		"…", toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_SANS,
++		font_sans_input-&gt;h);
++	rows[n++] = ui_row("Sans (UI)", ui_hbox(pick_row, 2));
++
++	pick_row[0] = font_mono_input;
++	pick_row[1] = ui_btn_match_input(
++		"…", toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_MONO,
++		font_mono_input-&gt;h);
++	rows[n++] = ui_row("Mono", ui_hbox(pick_row, 2));
++
++	pick_row[0] = font_serif_input;
++	pick_row[1] = ui_btn_match_input(
++		"…", toggle_font_dropdown, (void *)(intptr_t)BGTK_FONT_SERIF,
++		font_serif_input-&gt;h);
++	rows[n++] = ui_row("Serif", ui_hbox(pick_row, 2));
++
++	font_size_input = ui_input(size_buf, 80);
++	ui_force_field_w(font_size_input, 80);
+ 	rows[n++] = ui_row("Size", font_size_input);
+ 
+ 	if (font_dropdown_open &amp;&amp; font_list_count &gt; 0) {
+@@ -1397,12 +1505,11 @@ static struct BGTK_Widget *build_font_page(void)
+ 		rows[n++] = ui_text(hdr);
+ 		show = font_list_count &gt; 50 ? 50 : font_list_count;
+ 		for (i = 0; i &lt; show &amp;&amp; n &lt; 62; i++)
+-			rows[n++] = ui_btn((char *)font_basename(font_list_cache[i]),
++			rows[n++] = ui_btn((char *)font_list_cache[i],
+ 					   font_select_cb, (void *)(intptr_t)i);
+ 	}
+-	rows[n++] = ui_btn("Apply", apply_font, NULL);
+ 	body = ui_vbox(rows, n);
+-	return make_page(body);
++	return make_page(body, apply_font);
+ }
+ 
+ static struct BGTK_Widget *theme_color_input(uint32_t c, int w)
+@@ -1462,24 +1569,23 @@ static struct BGTK_Widget *build_theme_page(void)
+ 			    "Input border size", theme_input_border_input);
+ 
+ 	theme_highlight_input = theme_color_input(cfg.theme.highlight, 90);
+-	rows[n++] = ui_row("Highlight", theme_highlight_input);
++	rows[n++] = ui_row_field("Highlight", theme_highlight_input);
+ 
+ 	theme_margin_input = theme_int_input(cfg.theme.margin, 60);
+-	rows[n++] = ui_row("Widget margin", theme_margin_input);
++	rows[n++] = ui_row_field("Widget margin", theme_margin_input);
+ 
+ 	theme_padding_input = theme_int_input(cfg.theme.padding, 60);
+-	rows[n++] = ui_row("Frame padding", theme_padding_input);
++	rows[n++] = ui_row_field("Frame padding", theme_padding_input);
+ 
+ 	theme_frame_margin_input = theme_int_input(cfg.theme.frame_margin, 60);
+-	rows[n++] = ui_row("Frame margin", theme_frame_margin_input);
++	rows[n++] = ui_row_field("Frame margin", theme_frame_margin_input);
+ 
+ 	theme_baseline_input =
+ 		theme_int_input(cfg.theme.text_baseline_offset, 60);
+-	rows[n++] = ui_row("Text baseline", theme_baseline_input);
++	rows[n++] = ui_row_field("Text baseline", theme_baseline_input);
+ 
+-	rows[n++] = ui_btn("Apply", apply_theme, NULL);
+ 	body = ui_vbox(rows, n);
+-	return make_page(body);
++	return make_page(body, apply_theme);
+ }
+ 
+ 
+@@ -1494,6 +1600,7 @@ static void clear_page_ptrs(void)
+ 	for (int i = 0; i &lt; MAX_SHORTCUT_ROWS; i++)
+ 		shortcut_inputs[i] = NULL;
+ 	font_size_input = NULL;
++	font_sans_input = font_mono_input = font_serif_input = NULL;
+ 	theme_bg_input = theme_btn_input = theme_btn_text_input = NULL;
+ 	theme_frame_border_input = theme_btn_border_input = NULL;
+ 	theme_input_border_input = theme_frame_color_input = NULL;
+diff --git a/apps/term_core.c b/apps/term_core.c
+index fde7816..7b7481c 100644
+--- a/apps/term_core.c
++++ b/apps/term_core.c
+@@ -292,6 +292,44 @@ static void scroll_down(struct Term_State *t)
+ 		t-&gt;cells[top * t-&gt;cols + c] = default_cell();
+ }
+ 
++/*
++ * IND / LF: move down one line. Scroll the DECSTBM region only when the
++ * cursor is *inside* that region and already on the bottom margin.
++ * Outside the region (vim status line is below scroll_bot) never scroll —
++ * that was "j moves cursor and every line jumps up" in vi.
++ */
++static void cursor_index(struct Term_State *t)
++{
++	if (t-&gt;cur_row &lt; t-&gt;scroll_top) {
++		if (t-&gt;cur_row &lt; t-&gt;rows - 1)
++			t-&gt;cur_row++;
++		return;
++	}
++	if (t-&gt;cur_row &gt; t-&gt;scroll_bot) {
++		if (t-&gt;cur_row &lt; t-&gt;rows - 1)
++			t-&gt;cur_row++;
++		return;
++	}
++	if (t-&gt;cur_row &gt;= t-&gt;scroll_bot)
++		scroll_up(t);
++	else
++		t-&gt;cur_row++;
++}
++
++/* RI: move up one line; scroll only inside region on top margin. */
++static void cursor_revindex(struct Term_State *t)
++{
++	if (t-&gt;cur_row &lt; t-&gt;scroll_top || t-&gt;cur_row &gt; t-&gt;scroll_bot) {
++		if (t-&gt;cur_row &gt; 0)
++			t-&gt;cur_row--;
++		return;
++	}
++	if (t-&gt;cur_row &lt;= t-&gt;scroll_top)
++		scroll_down(t);
++	else
++		t-&gt;cur_row--;
++}
++
+ /* ------------------------------------------------------------------ */
+ /* CSI dispatch                                                       */
+ /* ------------------------------------------------------------------ */
+@@ -304,13 +342,19 @@ static void csi_dispatch(struct Term_State *t, char final,
+ 	int p1 = nparam &gt; 1 ? params[1] : 0;
+ 
+ 	switch (final) {
+-	case 'A':
++	case 'A': /* CUU — stay inside scroll region (no auto-scroll) */
+ 		t-&gt;cur_row -= p0 ? p0 : 1;
+-		if (t-&gt;cur_row &lt; 0) t-&gt;cur_row = 0;
++		if (t-&gt;cur_row &lt; t-&gt;scroll_top)
++			t-&gt;cur_row = t-&gt;scroll_top;
++		if (t-&gt;cur_row &lt; 0)
++			t-&gt;cur_row = 0;
+ 		break;
+-	case 'B':
++	case 'B': /* CUD — clamp to scroll_bot; do not scroll content */
+ 		t-&gt;cur_row += p0 ? p0 : 1;
+-		if (t-&gt;cur_row &gt;= t-&gt;rows) t-&gt;cur_row = t-&gt;rows - 1;
++		if (t-&gt;cur_row &gt; t-&gt;scroll_bot)
++			t-&gt;cur_row = t-&gt;scroll_bot;
++		if (t-&gt;cur_row &gt;= t-&gt;rows)
++			t-&gt;cur_row = t-&gt;rows - 1;
+ 		break;
+ 	case 'C':
+ 		t-&gt;cur_col += p0 ? p0 : 1;
+@@ -495,11 +539,7 @@ void term_feed(struct Term_State *t, const char *data, int len)
+ 			if (ch == '\033') {
+ 				t-&gt;esc_state = 1;
+ 			} else if (ch == '\n') {
+-				t-&gt;cur_row++;
+-				if (t-&gt;cur_row &gt; t-&gt;scroll_bot) {
+-					t-&gt;cur_row = t-&gt;scroll_bot;
+-					scroll_up(t);
+-				}
++				cursor_index(t);
+ 			} else if (ch == '\r') {
+ 				t-&gt;cur_col = 0;
+ 			} else if (ch == '\t') {
+@@ -519,11 +559,7 @@ void term_feed(struct Term_State *t, const char *data, int len)
+ 				t-&gt;cur_col++;
+ 				if (t-&gt;cur_col &gt;= t-&gt;cols) {
+ 					t-&gt;cur_col = 0;
+-					t-&gt;cur_row++;
+-					if (t-&gt;cur_row &gt; t-&gt;scroll_bot) {
+-						t-&gt;cur_row = t-&gt;scroll_bot;
+-						scroll_up(t);
+-					}
++					cursor_index(t);
+ 				}
+ 			}
+ 			break;
+@@ -538,18 +574,12 @@ void term_feed(struct Term_State *t, const char *data, int len)
+ 			} else if (ch == '(' || ch == ')') {
+ 				t-&gt;esc_state = 5;
+ 			} else if (ch == 'D') {
+-				t-&gt;cur_row++;
+-				if (t-&gt;cur_row &gt; t-&gt;scroll_bot) {
+-					t-&gt;cur_row = t-&gt;scroll_bot;
+-					scroll_up(t);
+-				}
++				/* IND */
++				cursor_index(t);
+ 				t-&gt;esc_state = 0;
+ 			} else if (ch == 'M') {
+-				t-&gt;cur_row--;
+-				if (t-&gt;cur_row &lt; t-&gt;scroll_top) {
+-					t-&gt;cur_row = t-&gt;scroll_top;
+-					scroll_down(t);
+-				}
++				/* RI */
++				cursor_revindex(t);
+ 				t-&gt;esc_state = 0;
+ 			} else if (ch == 'c') {
+ 				for (int j = 0; j &lt; t-&gt;rows * t-&gt;cols; j++)
+diff --git a/apps/terminal.c b/apps/terminal.c
+index 957f7d6..73fdb8c 100644
+--- a/apps/terminal.c
++++ b/apps/terminal.c
+@@ -467,25 +467,27 @@ int main(void)
+ 						      BGTK_KEY_TTY, out,
+ 						      sizeof(out));
+ 				/*
+-				 * Stuck-Ctrl safety: Ctrl+J/K are LF/VT (0x0A/
+-				 * 0x0B). In vi that scrolls/corrupts the buffer
+-				 * ("bottom lines jump up"). If we would emit a
+-				 * C0 letter but only one mod side bit is set
+-				 * from a single press that never got a matching
+-				 * release pattern, still send it — the real
+-				 * fix is focus/ESC clear. Log for diagnosis.
++				 * Stuck-Ctrl safety: Ctrl+J/K are LF/VT. In vi
++				 * that scrolls the region ("cursor down but
++				 * every line jumps up"). Prefer plain j/k and
++				 * clear sticky ctrl — intentional Ctrl+J is
++				 * rare interactively.
+ 				 */
+ 				if (n == 1 &amp;&amp; (unsigned char)out[0] &lt; 0x20 &amp;&amp;
+-				    (ev-&gt;code == KEY_J || ev-&gt;code == KEY_K))
+-					bgtk_log("TTY C0 for key %u mod=ctrl — "
+-						 "if vi misbehaves, mod was stuck",
+-						 ev-&gt;code);
++				    (ev-&gt;code == KEY_J || ev-&gt;code == KEY_K)) {
++					bgtk_log("demote Ctrl+%c -&gt; '%c' "
++						 "(clear stuck mods)",
++						 ev-&gt;code == KEY_J ? 'J' : 'K',
++						 ev-&gt;code == KEY_J ? 'j' : 'k');
++					out[0] = (ev-&gt;code == KEY_J) ? 'j'
++								     : 'k';
++					bgtk_clear_modifiers(ctx);
++				}
+ 				if (n &gt; 0) {
+ 					if (write(master_fd, out, (size_t)n) &lt; 0)
+ 						bgtk_log_errno("PTY write key");
+ 				}
+-				/* Esc is a natural "reset" in vi — drop any
+-				 * sticky mod so the next j/k is a plain letter. */
++				/* Esc resets sticky mods for the next motion. */
+ 				if (ev-&gt;code == KEY_ESC)
+ 					bgtk_clear_modifiers(ctx);
+ 				if (need_draw) {
+diff --git a/bgtk.c b/bgtk.c
+index d25a678..7dd7109 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -927,12 +927,16 @@ void bgtk_set_window_focus(struct BGTK_Context *ctx, int focused)
+ 
+ void bgtk_draw_widgets(struct BGTK_Context *ctx)
+ {
+-	clear_buffer(ctx);
+-	calculate_widget_size(ctx, ctx-&gt;root_widget);
+-	draw_widget(ctx, ctx-&gt;root_widget, ctx-&gt;shm_buffer);
+-	if (ctx &amp;&amp; ctx-&gt;conn_fd &gt;= 0) {
+-		bgce_draw(ctx-&gt;conn_fd);
++	/* No full-buffer clear: widgets paint their own rects; then ask
++	 * the compositor to present the shm. */
++	if (!ctx)
++		return;
++	if (ctx-&gt;root_widget) {
++		calculate_widget_size(ctx, ctx-&gt;root_widget);
++		draw_widget(ctx, ctx-&gt;root_widget, ctx-&gt;shm_buffer);
+ 	}
++	if (ctx-&gt;conn_fd &gt;= 0)
++		bgce_draw(ctx-&gt;conn_fd);
+ }
+ 
+ // Handles a single event and returns whether a redraw is needed.
+diff --git a/bgtk.h b/bgtk.h
+index 159513f..6a64a09 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -266,6 +266,8 @@ enum BGTK_Widget_Type {
+ 	BGTK_WIDGET_RULE,
+ 	/* Binary pill: left / right labels + sliding knob (0 = left, 1 = right). */
+ 	BGTK_WIDGET_SWITCH,
++	/* Empty flex space; pair with BGTK_FLAG_EXPAND_* to push siblings. */
++	BGTK_WIDGET_SPACER,
+ };
+ 
+ // Widget flags
+@@ -513,4 +515,8 @@ struct BGTK_Widget *bgtk_switch(struct BGTK_Context *ctx, const char *left,
+ 				BGTK_Callback callback, void *cb_data,
+ 				BGTK_Options options);
+ 
++/* Invisible box of at least min_w × min_h; use EXPAND_X/Y/FILL to stretch. */
++struct BGTK_Widget *bgtk_spacer(struct BGTK_Context *ctx, int min_w, int min_h,
++				BGTK_Options options);
++
+ #endif
+diff --git a/drawing.c b/drawing.c
+index 82c8e54..8c27c21 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -432,7 +432,8 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 	case BGTK_WIDGET_IMAGE:
+ 	case BGTK_WIDGET_TEXT_INPUT:
+ 	case BGTK_WIDGET_SWITCH:
+-		// Fixed-size widgets; size set by constructor.
++	case BGTK_WIDGET_SPACER:
++		// Fixed-size widgets; size set by constructor (expand may grow).
+ 		break;
+ 	case BGTK_WIDGET_FRAME:
+ 		/* Must recurse: root is usually a frame; without this,
+@@ -1399,15 +1400,15 @@ static void draw_switch(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	track_h = kn + 4;
+ 	if (track_h &gt; ih)
+ 		track_h = ih;
+-	/* Wider pill (≈ 4.5× knob); matches bgtk_switch sizing. */
+-	track_w = kn * 9 / 2;
+-	if (track_w &lt; kn + 40)
+-		track_w = kn + 40;
++	/* Pill ≈ 3× knob; matches bgtk_switch sizing. */
++	track_w = kn * 3;
++	if (track_w &lt; kn + 20)
++		track_w = kn + 20;
+ 	/* Keep room for both labels. */
+ 	if (lw + gap + track_w + gap + rw &gt; iw)
+ 		track_w = iw - lw - rw - gap * 2;
+-	if (track_w &lt; kn + 16)
+-		track_w = kn + 16;
++	if (track_w &lt; kn + 10)
++		track_w = kn + 10;
+ 
+ 	track_x = x0 + lw + gap;
+ 	track_y = y0 + (ih - track_h) / 2;
+@@ -1497,6 +1498,8 @@ void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	case BGTK_WIDGET_SWITCH:
+ 		draw_switch(ctx, w, pixels);
+ 		break;
++	case BGTK_WIDGET_SPACER:
++		break;
+ 	default:
+ 		puts("can't draw unknown widget");
+ 		break;
+diff --git a/test/test_terminal.c b/test/test_terminal.c
+index 00b1564..f4d6481 100644
+--- a/test/test_terminal.c
++++ b/test/test_terminal.c
+@@ -415,6 +415,97 @@ int main(void)
+ 		term_destroy(vs);
+ 	}
+ 
++	/* CSI B (cursor down) must not scroll the buffer — only move cursor. */
++	{
++		struct Term_State *vs = term_create(20, 6);
++		char row0[24], row1[24];
++		int c;
++
++		term_feed(vs, "\033[1;1HAAAA\033[2;1HBBBB\033[3;1HCCCC", -1);
++		term_feed(vs, "\033[1;1H\033[B", -1); /* CUD once from row 0 */
++		if (vs-&gt;cur_row != 1) {
++			bgtk_log("CUD failed cur_row=%d want 1", vs-&gt;cur_row);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		for (c = 0; c &lt; 4; c++) {
++			row0[c] = vs-&gt;cells[c].ch;
++			row1[c] = vs-&gt;cells[20 + c].ch;
++		}
++		row0[4] = row1[4] = '\0';
++		if (strcmp(row0, "AAAA") != 0 || strcmp(row1, "BBBB") != 0) {
++			bgtk_log("CUD scrolled content row0='%s' row1='%s'",
++				 row0, row1);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* With scroll region, CUD stops at bottom margin (no scroll). */
++		term_feed(vs, "\033[1;4r\033[4;1H\033[B", -1);
++		if (vs-&gt;cur_row != 3) {
++			bgtk_log("CUD past margin cur_row=%d want 3",
++				 vs-&gt;cur_row);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		term_destroy(vs);
++	}
++
++	/*
++	 * Vim status line sits *below* the DECSTBM region. LF/IND there must
++	 * not scroll the text region (that made j look like every line jumped).
++	 */
++	{
++		struct Term_State *vs = term_create(20, 5);
++		char before[24], after[24];
++		int c;
++
++		/* rows 0..3 scroll region, row 4 = status */
++		term_feed(vs, "\033[1;4r", -1);
++		term_feed(vs, "\033[1;1HL0\033[2;1HL1\033[3;1HL2\033[4;1HL3",
++			  -1);
++		term_feed(vs, "\033[5;1HSTATUS", -1);
++		for (c = 0; c &lt; 8; c++)
++			before[c] = vs-&gt;cells[c].ch ? vs-&gt;cells[c].ch : '.';
++		before[8] = '\0';
++		/* LF while on status line */
++		term_feed(vs, "\033[5;1H\n", -1);
++		for (c = 0; c &lt; 8; c++)
++			after[c] = vs-&gt;cells[c].ch ? vs-&gt;cells[c].ch : '.';
++		after[8] = '\0';
++		if (strcmp(before, after) != 0 || vs-&gt;cells[1 * 20].ch != 'L' ||
++		    vs-&gt;cells[1 * 20 + 1].ch != '1') {
++			bgtk_log("LF on status scrolled region before='%s' "
++				 "after='%s' r1=%c%c",
++				 before, after, vs-&gt;cells[20].ch,
++				 vs-&gt;cells[21].ch);
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		/* IND on status must not scroll either */
++		term_feed(vs, "\033[5;1H\033D", -1);
++		if (vs-&gt;cells[0].ch != 'L' || vs-&gt;cells[1].ch != '0') {
++			bgtk_log("IND on status scrolled region");
++			term_destroy(vs);
++			free(img-&gt;data.image.pixels);
++			term_destroy(ts);
++			bgtk_destroy_mock(ctx);
++			return 1;
++		}
++		term_destroy(vs);
++	}
++
+ 	printf("test_terminal complete. PNG frames written.\n");
+ 
+ 	free(img-&gt;data.image.pixels);
+diff --git a/widgets.c b/widgets.c
+index 53633b0..5bd39eb 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -664,12 +664,24 @@ struct BGTK_Widget *bgtk_switch(struct BGTK_Context *ctx, const char *left,
+ 		kn = 12;
+ 	gap = 8;
+ 	track_h = kn + 6;
+-	/* Track ≈ 4.5× knob so the pill reads clearly between labels. */
+-	w-&gt;w = lw + rw + kn * 9 / 2 + gap * 2 + 2 * (w-&gt;padding + w-&gt;margin);
++	/* Track ≈ 3× knob — readable without dominating the row. */
++	w-&gt;w = lw + rw + kn * 3 + gap * 2 + 2 * (w-&gt;padding + w-&gt;margin);
+ 	w-&gt;h = (track_h &gt; lh ? track_h : lh) + 2 * (w-&gt;padding + w-&gt;margin);
+ 	return w;
+ }
+ 
++struct BGTK_Widget *bgtk_spacer(struct BGTK_Context *ctx, int min_w, int min_h,
++				BGTK_Options options)
++{
++	struct BGTK_Widget *w = widget_new(ctx, BGTK_WIDGET_SPACER, options);
++
++	if (!w)
++		return NULL;
++	w-&gt;w = min_w &gt; 0 ? min_w : 0;
++	w-&gt;h = min_h &gt; 0 ? min_h : 0;
++	return w;
++}
++
+ struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,
+ 				struct BGTK_Widget *label,
+ 				BGTK_Callback callback, void *cb_data,
+</pre>

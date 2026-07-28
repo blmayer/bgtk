@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 6f64d87</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 6f64d87
+parent <a href=commit-05f88ae.html>05f88ae</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-01-03T15:15:52-03:00
+
+    adjusted makefile
+
+<a href=tree-6f64d87.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/Makefile b/Makefile
+index 5293736..6f4abff 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,17 +1,21 @@
+ # Makefile for BGTK
+ 
+-CFLAGS = -Wall -Wextra -Werror -I. -I/usr/include/freetype2 -I/usr/local/include/bgce
++CFLAGS = -Wall -Wextra -Werror -I. -I/usr/include/freetype2 -I../bgce
+ LDFLAGS = -lfreetype -lbgce -lm
+ 
+-TARGET = app
++TARGET = libbgtk.so app
+ SRC = app.c bgtk.c drawing.c widgets.c
++LIB_OBJS = bgtk.c drawing.c widgets.c
+ OBJ = $(SRC:.c=.o)
+ 
+ .PHONY: all clean test
+ 
+ all: $(TARGET)
+ 
+-$(TARGET): $(OBJ)
++libbgtk.so: $(LIB_OBJS)
++	$(CC) -shared -o $@ $(LIB_OBJS) $(LDFLAGS)
++
++app: $(OBJ)
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+ 
+ %.o: %.c
+@@ -20,14 +24,21 @@ $(TARGET): $(OBJ)
+ clean:
+ 	rm -f $(TARGET) $(OBJ)
+ 
++.PHONY: install
++install: libbgtk.so bgtk.h
++	install -d $(INSTALL_LIB)
++	install -m 755 libbgtk.so $(INSTALL_LIB)
++	install -d $(INSTALL_INCLUDE)
++	install -m 644 bgtk.h $(INSTALL_INCLUDE)
++	ldconfig
+ test: $(TARGET)
+ 
+ .PHONY: test
+ 	@echo "Starting BGCE server in background..."
+ 	bgce &amp;
+ 	BGCE_PID=$$
+-	@echo "Running $(TARGET)..."
+-	./$(TARGET) || true
++	@echo "Running app..."
++	./app || true
+ 	@echo "Killing BGCE server (PID: $$BGCE_PID)..."
+ 	kill $$BGCE_PID 2&gt;/dev/null || true
+ 	@echo "Test complete."
+</pre>

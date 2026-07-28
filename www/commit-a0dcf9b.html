@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk a0dcf9b</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit a0dcf9b
+parent (none)
+author myr &lt;myr@terminal.pink&gt;
+date   2025-12-06T11:38:32-03:00
+
+    added toolkit files
+
+<a href=tree-a0dcf9b.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/AGENTS.md b/AGENTS.md
+new file mode 100644
+index 0000000..00fbaa7
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1,47 @@
++# BGTK (Brian's Graphical Toolkit)
++
++This is a toolkit for the BGCE display server. It works by directly writing to
++a graphical buffer, this library lets developers create user interfaces easily.
++
++
++## Roadmap
++
++[ ] **Step 1: Define BGTK Interface (`bgtk.h`)**
++    * Define the core structure for a widget (`struct BGTK_Widget`).
++    * Define the event structure (`struct BGTK_Event`).
++    [ ] Improve widget structure: add options (like alignment), child widgets.
++    [ ] Add methods to update a widget's property so it redraws automaticaly.
++    * Define API functions:
++        * `BGTK_Context *bgtk_init(void)`: Connects to BGCE server, gets buffer/dimensions.
++        * `void bgtk_main_loop(BGTK_Context *ctx)`: Blocking loop to handle events and redraws.
++        * `BGTK_Widget *bgtk_label_new(const char *text)`: Creates a label.
++        * `BGTK_Widget *bgtk_button_new(const char *text, void (*callback)(void))`
++        * `void bgtk_add_widget(BGTK_Context *ctx, BGTK_Widget *widget, int x, int y, int w, int h)`: Simple absolute positioning for now.
++
++[ ] **Step 2: Implement BGTK Core (`bgtk.c`)**
++    [X] Implement initialization, event queueing, and simple drawing (e.g., drawing rectangles for buttons, text rendering).
++    [ ] Only call draw when changes are made, like input.
++    [ ] Implement proper hit detection: using widget trees and coordinates, e.g. click on x,y -&gt; search the tree until last widget is found, then send the input to that widget.
++    [ ] Add a generic scroll widget, that scrolls content
++
++[x] **Step 3: Integrate and Test**
++    [X] Create a new client file (or update `client.c`) to demonstrate a basic BGTK application. -&gt; app.c
++
++
++## Useful Hints for Agents
++
++- The project uses **absolute positioning** for widgets. Future work includes adding
++  layout managers (e.g., box, grid).
++- **FreeType** is used for font rendering. Ensure the font path in `bgtk.c` is valid
++  or make it configurable.
++- **BGCE** is the display server. The connection is established in `bgtk_init()`.
++- **Event handling** is done in `bgtk_main_loop()`. It currently processes input events
++  and redraws the screen.
++- **Widget updates**: When a widget's property changes (e.g., label text), it should
++  trigger a redraw. This is partially implemented.
++- **Code style**: Use the provided `.clang-format` file. Key rules:
++  - Braces on the same line for `if`, `for`, `while`, etc.
++  - Never omit braces for single-line blocks.
++  - If function arguments don't fit on one line, place each on a new line and close
++    the parenthesis on its own line.
++- **Testing**: The `app.c` file is a demo application. Use it to test new features.
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 0000000..997b6a9
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,34 @@
++# Makefile for BGTK
++
++CFLAGS = -Wall -Wextra -Werror -I. -I/usr/include/freetype2 -I/usr/local/include/bgce
++LDFLAGS = -lfreetype -lbgce
++
++TARGET = app
++SRC = app.c bgtk.c
++OBJ = $(SRC:.c=.o)
++
++.PHONY: all clean test
++
++all: $(TARGET)
++
++$(TARGET): $(OBJ)
++	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
++
++%.o: %.c
++	$(CC) $(CFLAGS) -c -o $@ $&lt;
++
++clean:
++	rm -f $(TARGET) $(OBJ)
++
++test: $(TARGET)
++
++.PHONY: test
++	@echo "Starting BGCE server in background..."
++	bgce &amp;
++	BGCE_PID=$$
++	@echo "Running $(TARGET)..."
++	./$(TARGET) || true
++	@echo "Killing BGCE server (PID: $$BGCE_PID)..."
++	kill $$BGCE_PID 2&gt;/dev/null || true
++	@echo "Test complete."
++
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..bd4a8e0
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,37 @@
++# BGTK (Brian's Graphical Toolkit)
++
++A lightweight toolkit for the BGCE display server. This library allows developers to
++create graphical user interfaces by directly writing to a shared graphical buffer.
++
++## Features
++- Simple widget system (labels, buttons).
++- Direct rendering to a shared memory buffer.
++- Event handling for user input.
++- Basic font rendering using FreeType.
++
++## Building
++
++Requirements:
++- A C compiler (GCC or Clang).
++- FreeType development libraries.
++- BGCE server running.
++
++```sh
++make
++```
++
++## Running
++
++Start the BGCE server, then run the demo application:
++
++```sh
++./app
++```
++
++## Project Structure
++- `bgtk.h`: Public API and type definitions.
++- `bgtk.c`: Core implementation.
++- `app.c`: Demo application.
++- `Makefile`: Build system.
++- `.clang-format`: Code style configuration.
++
+diff --git a/app.c b/app.c
+new file mode 100644
+index 0000000..e7d64b0
+--- /dev/null
++++ b/app.c
+@@ -0,0 +1,58 @@
++#include "bgtk.h"
++#include &lt;stdio.h&gt;
++#include &lt;string.h&gt;
++
++static int counter = 0;
++static BGTK_Widget* counter_label = NULL;
++BGTK_Context* ctx = NULL;
++
++void button_callback(void) {
++	counter++;
++	printf("Button clicked! Counter: %d\n", counter);
++
++	if (counter_label &amp;&amp; counter_label-&gt;type == BGTK_WIDGET_LABEL) {
++		puts(" setting new label");
++		char counter_text[32];
++		sprintf(counter_text, "Counter: %d", counter);
++		printf("calling set_label: %p\n", counter_label-&gt;set_label);
++		counter_label-&gt;set_label(counter_label, counter_text);
++		// Note: Widget size should ideally be recalculated here for layout purposes,
++		// but for absolute layout, we omit it for now.
++	}
++}
++
++int main(void) {
++	setvbuf(stdout, NULL, _IONBF, 0); // Disable buffering for stdout
++	setvbuf(stderr, NULL, _IONBF, 0); // Disable buffering for stderr
++
++	ctx = bgtk_init();
++	if (!ctx) {
++		fprintf(stderr, "Failed to initialize BGTK.\n");
++		return 1;
++	}
++	printf("BGTK init done\n");
++
++	// 1. Create Widgets
++	char* counter_text = "Counter: 0";
++
++	BGTK_Widget* title = bgtk_label_new(ctx, "BGTK Demo Application");
++	BGTK_Widget* button = bgtk_button_new(ctx, "Click Me!", button_callback);
++	counter_label = bgtk_label_new(ctx, counter_text);
++	printf("BGTK added widgets\n");
++
++	// 2. Add Widgets (Absolute Positioning)
++	// Title at the top center
++	bgtk_add_widget(ctx, title, (ctx-&gt;width / 2) - (title-&gt;w / 2), 50, 0, 0);
++
++	// Button below the title
++	bgtk_add_widget(ctx, button, (ctx-&gt;width / 2) - (button-&gt;w / 2), 100, 0, 0);
++
++	// Label below the button
++	bgtk_add_widget(ctx, counter_label, (ctx-&gt;width / 2) - (counter_label-&gt;w / 2), 150, 0, 0);
++
++	printf("Starting BGTK main loop (%dx%d)...\n", ctx-&gt;width, ctx-&gt;height);
++	bgtk_main_loop(ctx);
++
++	bgtk_destroy(ctx);
++	return 0;
++}
+diff --git a/bgtk.c b/bgtk.c
+new file mode 100644
+index 0000000..85d92f2
+--- /dev/null
++++ b/bgtk.c
+@@ -0,0 +1,480 @@
++#include "bgtk.h"
++#include &lt;bgce.h&gt;
++
++#include &lt;errno.h&gt;
++#include &lt;linux/input.h&gt;
++#include &lt;stdio.h&gt;
++#include &lt;stdlib.h&gt;
++#include &lt;string.h&gt;
++#include &lt;unistd.h&gt;
++
++// The font path is hardcoded for simplicity.
++#define DEFAULT_FONT_PATH "/usr/share/fonts/ttf-input/InputMono/InputMono/InputMono-Regular.ttf"
++#define DEFAULT_FONT_SIZE 12
++
++// Helper to create a generic widget
++static BGTK_Widget* bgtk_widget_new(BGTK_Context* ctx, BGTK_Widget_Type type) {
++	BGTK_Widget* widget = (BGTK_Widget*)calloc(1, sizeof(BGTK_Widget));
++	if (!widget) {
++		perror("calloc");
++		return NULL;
++	}
++	widget-&gt;ctx = ctx;
++	widget-&gt;type = type;
++	return widget;
++}
++
++// --- Core Functions ---
++
++BGTK_Context* bgtk_init(void) {
++	BGTK_Context* ctx = (BGTK_Context*)calloc(1, sizeof(BGTK_Context));
++	if (!ctx) {
++		perror("calloc");
++		return NULL;
++	}
++
++	ctx-&gt;conn_fd = -1; // Initialize fd to invalid value
++	ctx-&gt;font_size = DEFAULT_FONT_SIZE;
++
++	// 1. Initialize FreeType
++	if (FT_Init_FreeType(&amp;ctx-&gt;ft_library)) {
++		fprintf(stderr, "bgtk_init: Could not init FreeType library.\n");
++		free(ctx);
++		return NULL;
++	}
++
++	// 2. Load Font
++	if (FT_New_Face(ctx-&gt;ft_library, DEFAULT_FONT_PATH, 0, &amp;ctx-&gt;ft_face)) {
++		fprintf(stderr, "bgtk_init: Could not load font %s. Falling back to simple drawing.\n", DEFAULT_FONT_PATH);
++		// Continue with default font context, simple text drawing is used later.
++	} else {
++		// Set font size
++		FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
++	}
++
++	// 3. Connect to BGCE
++	int conn_fd = bgce_connect();
++	if (conn_fd &lt; 0) {
++		fprintf(stderr, "bgtk_init: Failed to connect to BGCE server.\n");
++		if (ctx-&gt;ft_library)
++			FT_Done_FreeType(ctx-&gt;ft_library);
++		free(ctx);
++		return NULL;
++	}
++
++	// 4. Get Server Info (optional, but good for context)
++	struct ServerInfo s_info;
++	if (bgce_get_server_info(conn_fd, &amp;s_info) != 0) {
++		fprintf(stderr, "bgtk_init: Failed to get server info.\n");
++		bgce_disconnect(conn_fd);
++		if (ctx-&gt;ft_library)
++			FT_Done_FreeType(ctx-&gt;ft_library);
++		free(ctx);
++		return NULL;
++	}
++
++	//// 5. Subscribe to Input Events
++	// struct BGCEMessage sub_msg = { .type = MSG_SUBSCRIBE_INPUT };
++	//// This message has no payload, just the type.
++	// if (bgce_send_msg(conn_fd, &amp;sub_msg) &lt; 0) {
++	//     perror("bgtk_init: Failed to subscribe to input");
++	//     // Not fatal, but input won't work
++	// }
++
++	// 6. Request a buffer with server dimensions (full screen)
++	struct BufferRequest req = {
++	        .width = 600,
++	        .height = 480};
++
++	// We expect the libbgce function to handle the shm attach
++	void* buffer = bgce_get_buffer(conn_fd, req);
++	if (!buffer) {
++		fprintf(stderr, "bgtk_init: Failed to get buffer from server.\n");
++		bgce_disconnect(conn_fd);
++		if (ctx-&gt;ft_library)
++			FT_Done_FreeType(ctx-&gt;ft_library);
++		free(ctx);
++		return NULL;
++	}
++
++	ctx-&gt;conn_fd = conn_fd;
++	ctx-&gt;shm_buffer = buffer;
++	ctx-&gt;buf_width = 600;
++	ctx-&gt;buf_height = 480;
++
++	ctx-&gt;width = 600;
++	ctx-&gt;height = 480;
++
++	// Initial allocation for widgets
++	ctx-&gt;widget_capacity = 10;
++	ctx-&gt;widgets = (BGTK_Widget**)calloc(ctx-&gt;widget_capacity, sizeof(BGTK_Widget*));
++	if (!ctx-&gt;widgets) {
++		perror("calloc");
++		// Cleanup shm_buffer and FT
++		bgce_disconnect(conn_fd);
++		if (ctx-&gt;ft_library)
++			FT_Done_FreeType(ctx-&gt;ft_library);
++		free(ctx);
++		return NULL;
++	}
++
++	return ctx;
++}
++
++void bgtk_destroy(BGTK_Context* ctx) {
++	if (!ctx)
++		return;
++
++	// Free all widgets
++	for (size_t i = 0; i &lt; ctx-&gt;widget_count; i++) {
++		BGTK_Widget* w = ctx-&gt;widgets[i];
++		if (w-&gt;type == BGTK_WIDGET_LABEL) {
++			free(w-&gt;data.label.text);
++		} else if (w-&gt;type == BGTK_WIDGET_BUTTON) {
++			free(w-&gt;data.button.text);
++		}
++		free(w);
++	}
++	free(ctx-&gt;widgets);
++
++	// Free FreeType resources
++	if (ctx-&gt;ft_face) {
++		FT_Done_Face(ctx-&gt;ft_face);
++	}
++	if (ctx-&gt;ft_library) {
++		FT_Done_FreeType(ctx-&gt;ft_library);
++	}
++
++	// Disconnect from BGCE
++	if (ctx-&gt;conn_fd &gt; 0) {
++		bgce_disconnect(ctx-&gt;conn_fd);
++	}
++
++	free(ctx);
++}
++
++// --- Drawing Primitives &amp; Widgets ---
++
++// A few basic colors (0xAARRGGBB)
++#define BGTK_COLOR_BG 0xFFCCCCCC    // Light Gray
++#define BGTK_COLOR_BTN 0xFF007BFF   // Blue
++#define BGTK_COLOR_TEXT 0xFF000000  // Black
++#define BGTK_COLOR_WHITE 0xFFFFFFFF // White
++
++static void bgtk_clear_buffer(BGTK_Context* ctx, uint32_t color) {
++	uint32_t* pixels = (uint32_t*)ctx-&gt;shm_buffer;
++	size_t size = (size_t)ctx-&gt;buf_width * ctx-&gt;buf_height;
++	for (size_t i = 0; i &lt; size; i++) {
++		pixels[i] = color;
++	}
++}
++
++static void bgtk_draw_rect(BGTK_Context* ctx, int x, int y, int w, int h, uint32_t color) {
++	// Basic clipping and drawing
++	int x1 = x;
++	int y1 = y;
++	int x2 = x + w;
++	int y2 = y + h;
++
++	// Clip to buffer bounds
++	if (x1 &lt; 0)
++		x1 = 0;
++	if (y1 &lt; 0)
++		y1 = 0;
++	if (x2 &gt; (int)ctx-&gt;buf_width)
++		x2 = ctx-&gt;buf_width;
++	if (y2 &gt; (int)ctx-&gt;buf_height)
++		y2 = ctx-&gt;buf_height;
++
++	uint32_t* pixels = (uint32_t*)ctx-&gt;shm_buffer;
++	int stride = ctx-&gt;buf_width;
++
++	for (int j = y1; j &lt; y2; j++) {
++		for (int i = x1; i &lt; x2; i++) {
++			pixels[j * stride + i] = color;
++		}
++	}
++}
++
++void measure_text(FT_Face face, const char* text,
++                  int* out_width, int* out_height) {
++	int width = 0;
++
++	for (const char* p = text; *p; p++) {
++		if (FT_Load_Char(face, *p, FT_LOAD_DEFAULT))
++			continue;
++
++		width += face-&gt;glyph-&gt;advance.x; // 26.6 units
++	}
++
++	width &gt;&gt;= 6;
++
++	int ascent = face-&gt;size-&gt;metrics.ascender &gt;&gt; 6;
++	int descent = -face-&gt;size-&gt;metrics.descender &gt;&gt; 6;
++	int height = ascent + descent;
++
++	*out_width = width;
++	*out_height = height;
++}
++
++static void bgtk_draw_text(BGTK_Context* ctx, const char* text, int x, int y, uint32_t color) {
++	if (!ctx-&gt;ft_face) {
++		// Fallback to simple placeholder if font didn't load
++		bgtk_draw_rect(ctx, x, y, 5, 5, color);
++		return;
++	}
++
++	// Set font size for drawing context
++	FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
++
++	int pen_x = x;
++	int pen_y = y + (ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6);
++
++	uint32_t* pixels = ctx-&gt;shm_buffer;
++	int stride = ctx-&gt;buf_width;
++
++	for (const char* p = text; *p; p++) {
++		FT_UInt index = FT_Get_Char_Index(ctx-&gt;ft_face, *p);
++
++		if (FT_Load_Glyph(ctx-&gt;ft_face, index, FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT))
++			continue;
++
++		FT_Render_Glyph(ctx-&gt;ft_face-&gt;glyph, FT_RENDER_MODE_NORMAL);
++
++		FT_GlyphSlot slot = ctx-&gt;ft_face-&gt;glyph;
++		FT_Bitmap* bitmap = &amp;slot-&gt;bitmap;
++
++		int gx = pen_x + slot-&gt;bitmap_left;
++		int gy = pen_y - slot-&gt;bitmap_top;
++
++                for (unsigned int row = 0; row &lt; bitmap-&gt;rows; row++) {
++                        for (unsigned int col = 0; col &lt; bitmap-&gt;width; col++) {
++				uint8_t a = bitmap-&gt;buffer[row * bitmap-&gt;pitch + col];
++				if (a == 0)
++					continue;
++
++                                int32_t dx = gx + col;
++                                int32_t dy = gy + row;
++                                if (dx &lt; 0 || dx &gt;= (int)ctx-&gt;buf_width ||
++                                    dy &lt; 0 || dy &gt;= (int)ctx-&gt;buf_height)
++					continue;
++
++				// Blend
++				uint32_t dst = pixels[dy * stride + dx];
++				uint8_t inv = 255 - a;
++
++				uint8_t r_dst = (dst &gt;&gt; 16) &amp; 0xFF;
++				uint8_t g_dst = (dst &gt;&gt; 8) &amp; 0xFF;
++				uint8_t b_dst = (dst) &amp; 0xFF;
++
++				uint8_t r_src = (color &gt;&gt; 16) &amp; 0xFF;
++				uint8_t g_src = (color &gt;&gt; 8) &amp; 0xFF;
++				uint8_t b_src = (color) &amp; 0xFF;
++
++				uint8_t r = (r_src * a + r_dst * inv) / 255;
++				uint8_t g = (g_src * a + g_dst * inv) / 255;
++				uint8_t b = (b_src * a + b_dst * inv) / 255;
++
++				pixels[dy * stride + dx] = (r &lt;&lt; 16) | (g &lt;&lt; 8) | b;
++			}
++		}
++
++		pen_x += slot-&gt;advance.x &gt;&gt; 6;
++	}
++}
++
++static void bgtk_draw_widget(BGTK_Context* ctx, BGTK_Widget* w) {
++	switch (w-&gt;type) {
++	case BGTK_WIDGET_LABEL:
++		// Draw label background
++		bgtk_draw_rect(ctx, w-&gt;x, w-&gt;y, w-&gt;w, w-&gt;h, BGTK_COLOR_BG);
++		// Draw text (offset for simple padding)
++		bgtk_draw_text(ctx, w-&gt;data.label.text, w-&gt;x + 5, w-&gt;y + 5, BGTK_COLOR_TEXT);
++		break;
++	case BGTK_WIDGET_BUTTON:
++		// Draw button background
++		bgtk_draw_rect(ctx, w-&gt;x, w-&gt;y, w-&gt;w, w-&gt;h, BGTK_COLOR_BTN);
++		// Draw button border (1px black)
++		bgtk_draw_rect(ctx, w-&gt;x, w-&gt;y, w-&gt;w, 1, BGTK_COLOR_TEXT);            // Top
++		bgtk_draw_rect(ctx, w-&gt;x, w-&gt;y + w-&gt;h - 1, w-&gt;w, 1, BGTK_COLOR_TEXT); // Bottom
++		bgtk_draw_rect(ctx, w-&gt;x, w-&gt;y, 1, w-&gt;h, BGTK_COLOR_TEXT);            // Left
++		bgtk_draw_rect(ctx, w-&gt;x + w-&gt;w - 1, w-&gt;y, 1, w-&gt;h, BGTK_COLOR_TEXT); // Right
++
++		// Calculate text offset for rough centering
++		// NOTE: A proper implementation would use FT_Get_Text_Width()
++		int text_width;
++		int text_height;
++		measure_text(ctx-&gt;ft_face, w-&gt;data.button.text, &amp;text_width, &amp;text_height);
++
++		// Draw text
++		int offset_x = (w-&gt;w - text_width) / 2;
++		int offset_y = (w-&gt;h - text_height) / 2;
++		bgtk_draw_text(ctx, w-&gt;data.button.text, w-&gt;x + offset_x, w-&gt;y + offset_y, BGTK_COLOR_WHITE);
++		break;
++	}
++}
++
++static void bgtk_draw_widgets(BGTK_Context* ctx) {
++	// 1. Clear the screen
++	bgtk_clear_buffer(ctx, BGTK_COLOR_BG);
++
++	// 2. Draw all widgets
++	for (size_t i = 0; i &lt; ctx-&gt;widget_count; i++) {
++		bgtk_draw_widget(ctx, ctx-&gt;widgets[i]);
++	}
++}
++
++static int bgtk_handle_input_event(BGTK_Context* ctx, struct InputEvent* ev) {
++	// Only handle mouse button presses for now
++	if (ev-&gt;code != BTN_LEFT || ev-&gt;value != 1) {
++		return 0;
++	}
++	printf("BGTK Got click: (%d, %d)\n", ev-&gt;x, ev-&gt;y);
++
++	// Hit-testing for buttons
++	for (size_t i = 0; i &lt; ctx-&gt;widget_count; i++) {
++		BGTK_Widget* w = ctx-&gt;widgets[i];
++
++		if (w-&gt;type == BGTK_WIDGET_BUTTON) {
++			// Check if click coordinates are within button bounds
++			if (ev-&gt;x &gt;= w-&gt;x &amp;&amp; ev-&gt;x &lt; (w-&gt;x + w-&gt;w) &amp;&amp;
++			    ev-&gt;y &gt;= w-&gt;y &amp;&amp; ev-&gt;y &lt; (w-&gt;y + w-&gt;h)) {
++				printf("BGTK Clicked in button\n");
++
++				// Trigger callback
++				if (w-&gt;data.button.callback) {
++					w-&gt;data.button.callback();
++					return 1;
++				}
++			}
++		}
++	}
++	return 0;
++}
++
++static int bgtk_handle_events(BGTK_Context* ctx) {
++	struct BGCEMessage msg;
++	ssize_t bytes;
++
++	// bgce_recv_msg is blocking. This makes the UI reactive.
++	bytes = bgce_recv_msg(ctx-&gt;conn_fd, &amp;msg);
++	if (bytes &lt;= 0) {
++		if (bytes == 0) {
++			fprintf(stderr, "bgtk_main_loop: Server closed connection.\n");
++		} else if (errno != EINTR) {
++			perror("bgtk_main_loop: bgce_recv_msg");
++		}
++		return -1; // Exit loop
++	}
++
++	switch (msg.type) {
++	case MSG_INPUT_EVENT:
++		return bgtk_handle_input_event(ctx, &amp;msg.data.input_event);
++	case MSG_BUFFER_CHANGE:
++		// TODO: Handle buffer resize/move
++		return 1; // Redraw
++	default:
++		// Ignore other messages for now
++		return 0;
++	}
++}
++
++void bgtk_main_loop(BGTK_Context* ctx) {
++	bgtk_draw_widgets(ctx);
++	bgce_draw(ctx-&gt;conn_fd);
++	printf("BGTK Main Loop started. Press Ctrl+C to exit.\n");
++
++	while (1) {
++		int result = bgtk_handle_events(ctx);
++		if (result == -1) {
++			break; // Server error/disconnection
++		} else if (result == 1) {
++			printf("BGTK drawing.\n");
++			bgce_draw(ctx-&gt;conn_fd);
++		}
++	}
++}
++
++// --- Widget Creation Functions ---
++
++void set_label(BGTK_Widget* widget, char* label) {
++	printf("BGTK: setting label: %s\n", label);
++	if (widget-&gt;data.label.text) {
++		free(widget-&gt;data.label.text);
++	}
++
++	char* ptr = calloc(1, strlen(label) + 1);
++	sprintf(ptr, "%s", label);
++
++	widget-&gt;data.label.text = ptr;
++
++	measure_text(widget-&gt;ctx-&gt;ft_face, widget-&gt;data.button.text, &amp;widget-&gt;w, &amp;widget-&gt;h);
++
++	// add padding
++	widget-&gt;w += 5;
++	widget-&gt;h += 5;
++
++	bgtk_draw_widget(widget-&gt;ctx, widget);
++	printf("BGTK label set\n");
++}
++
++BGTK_Widget* bgtk_label_new(BGTK_Context* ctx, char* text) {
++	BGTK_Widget* widget = bgtk_widget_new(ctx, BGTK_WIDGET_LABEL);
++	printf("BGTK allocated label\n");
++	if (!widget) {
++		perror("BGTK Failed to create new widget");
++		return NULL;
++	}
++
++	widget-&gt;set_label = set_label;
++
++	set_label(widget, text);
++
++	return widget;
++}
++
++BGTK_Widget* bgtk_button_new(BGTK_Context* ctx, char* text, BGTK_Callback callback) {
++	BGTK_Widget* widget = bgtk_widget_new(ctx, BGTK_WIDGET_BUTTON);
++	if (!widget) {
++		perror("BGTK Failed to create new widget");
++		return NULL;
++	}
++
++	widget-&gt;data.button.callback = callback;
++
++	char* ptr = calloc(1, strlen(text) + 1);
++	sprintf(ptr, "%s", text);
++	widget-&gt;data.button.text = ptr;
++
++	measure_text(widget-&gt;ctx-&gt;ft_face, widget-&gt;data.button.text, &amp;widget-&gt;w, &amp;widget-&gt;h);
++
++	// add padding
++	widget-&gt;w += 20;
++	widget-&gt;h += 20;
++	return widget;
++}
++
++// --- Layout/Management Functions ---
++
++void bgtk_add_widget(BGTK_Context* ctx, BGTK_Widget* widget, int x, int y, int w, int h) {
++	if (!ctx || !widget)
++		return;
++
++	if (ctx-&gt;widget_count &gt;= ctx-&gt;widget_capacity) {
++		ctx-&gt;widget_capacity *= 2;
++		BGTK_Widget** new_widgets = (BGTK_Widget**)realloc(ctx-&gt;widgets, ctx-&gt;widget_capacity * sizeof(BGTK_Widget*));
++		if (!new_widgets) {
++			perror("realloc");
++			// In a real app, this should be handled better
++			return;
++		}
++		ctx-&gt;widgets = new_widgets;
++	}
++
++	widget-&gt;x = x;
++	widget-&gt;y = y;
++	widget-&gt;w = w &gt; 0 ? w : widget-&gt;w;
++	widget-&gt;h = h &gt; 0 ? h : widget-&gt;h;
++
++	ctx-&gt;widgets[ctx-&gt;widget_count++] = widget;
++}
+diff --git a/bgtk.h b/bgtk.h
+new file mode 100644
+index 0000000..ecc8a31
+--- /dev/null
++++ b/bgtk.h
+@@ -0,0 +1,87 @@
++#ifndef BGTK_H
++#define BGTK_H
++
++#include &lt;ft2build.h&gt;
++#include &lt;stddef.h&gt;
++#include &lt;stdint.h&gt;
++#include FT_FREETYPE_H
++
++// Forward declarations
++typedef struct BGTK_Context BGTK_Context;
++typedef struct BGTK_Widget BGTK_Widget;
++
++// Function pointer for button callbacks
++typedef void (*BGTK_Callback)(void);
++
++// BGTK_Context: Holds the state of the BGTK application
++struct BGTK_Context {
++	int conn_fd; // File descriptor for BGCE connection
++	void* shm_buffer;
++	uint32_t buf_width; // The actual width of the buffer (might differ from server width)
++	uint32_t buf_height;
++	int width;
++	// FreeType data
++	FT_Library ft_library;
++	FT_Face ft_face;
++	int font_size;
++
++	// For now, simple absolute positioning
++	int height;
++	// For now, simple absolute positioning
++	BGTK_Widget** widgets;
++	size_t widget_count;
++	size_t widget_capacity;
++};
++
++// BGTK_Widget_Type
++typedef enum {
++	BGTK_WIDGET_LABEL,
++	BGTK_WIDGET_BUTTON,
++	// Add more types as needed
++} BGTK_Widget_Type;
++
++// BGTK_Widget: Base structure for all widgets
++struct BGTK_Widget {
++	BGTK_Context* ctx;
++	BGTK_Widget_Type type;
++	int x, y, w, h; // Absolute position and size
++
++	// Union for specific widget data
++	union {
++		struct {
++			char* text;
++		} label;
++		struct {
++			char* text;
++			BGTK_Callback callback;
++		} button;
++	} data;
++
++	void (*set_label)(BGTK_Widget* self, char*);
++};
++
++// --- Core Functions ---
++
++// Initializes BGTK, connects to BGCE server, gets buffer/dimensions.
++BGTK_Context* bgtk_init(void);
++
++// Blocking loop to handle events and redraws.
++void bgtk_main_loop(BGTK_Context* ctx);
++
++// Cleans up the BGTK context and resources.
++void bgtk_destroy(BGTK_Context* ctx);
++
++// --- Widget Creation Functions ---
++
++// Creates a label widget.
++BGTK_Widget* bgtk_label_new(BGTK_Context* ctx, char* text);
++
++// Creates a button widget.
++BGTK_Widget* bgtk_button_new(BGTK_Context* ctx, char* text, BGTK_Callback callback);
++
++// --- Layout/Management Functions ---
++
++// Adds a widget to the context with absolute positioning.
++void bgtk_add_widget(BGTK_Context* ctx, BGTK_Widget* widget, int x, int y, int w, int h);
++
++#endif // BGTK_H
+</pre>

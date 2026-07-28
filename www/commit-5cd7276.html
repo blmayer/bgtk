@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 5cd7276</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 5cd7276
+parent <a href=commit-82d322f.html>82d322f</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-10T13:58:33-03:00
+
+    fix: outermost frame border, settings theme columns
+
+    Draw focus/unfocus border on the full frame rect so frame_margin is
+    inner air only. Theme page: colors left, sizes right; window 920x640.
+
+<a href=tree-5cd7276.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/gemini_browser.c b/apps/gemini_browser.c
+index a45a706..d00ec0f 100644
+--- a/apps/gemini_browser.c
++++ b/apps/gemini_browser.c
+@@ -321,7 +321,7 @@ static void go_link_index(int idx)
+ 	navigate(link_targets[idx - 1], 1);
+ }
+ 
+-/* Root chrome: [frame_margin][border][padding][content]… (from theme). */
++/* Root chrome: [border][frame_margin][padding][content]… (from theme). */
+ static void gemini_chrome(int *pad, int *fmar, int *bw)
+ {
+ 	int p = (ctx &amp;&amp; ctx-&gt;theme.padding &gt; 0) ? ctx-&gt;theme.padding : 12;
+diff --git a/apps/launcher.c b/apps/launcher.c
+index d2bb092..81b71bc 100644
+--- a/apps/launcher.c
++++ b/apps/launcher.c
+@@ -322,7 +322,7 @@ static void layout_launcher(void)
+ 	fmar = ctx-&gt;theme.frame_margin &gt;= 0 ? ctx-&gt;theme.frame_margin : 0;
+ 	if (bw &lt; 0)
+ 		bw = 0;
+-	/* Content: [frame_margin][border][padding][…] — same on all sides. */
++	/* Content: [border][frame_margin][padding][…] — same on all sides. */
+ 	inner_w = ctx-&gt;width - 2 * (fmar + bw + pad);
+ 	inner_h = ctx-&gt;height - 2 * (fmar + bw + pad);
+ 	if (inner_w &lt; 40)
+@@ -453,7 +453,7 @@ int main(void)
+ 				bgtk_log("bgtk_list failed");
+ 				return 1;
+ 			}
+-			/* Root chrome from theme (frame_margin + padding). */
++			/* Root chrome from theme (border outer; margin + pad in). */
+ 			frame = bgtk_frame(
+ 				ctx, layout, width, height,
+ 				(BGTK_Options){
+diff --git a/apps/settings.c b/apps/settings.c
+index 2d4fcff..bec25b9 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -26,8 +26,9 @@
+ static struct BGTK_Context *ctx;
+ static struct config cfg;
+ 
+-#define SETTINGS_W 900
+-#define SETTINGS_H 560
++/* Wide enough for dual theme columns (colors | sizes); tall enough for ~10 rows. */
++#define SETTINGS_W 920
++#define SETTINGS_H 640
+ 
+ static int app_w = SETTINGS_W;
+ static int app_h = SETTINGS_H;
+@@ -366,7 +367,7 @@ static int root_pad(void)
+ 	return outer &gt; pin ? outer - pin : 0;
+ }
+ 
+-/* One side of window chrome: frame_margin + border + root padding.
++/* One side of window chrome: border + frame_margin + root padding.
+  * Matches content→window-edge distance (top/bottom/left). */
+ static int edge_inset(void)
+ {
+@@ -447,12 +448,14 @@ static struct BGTK_Widget *ui_vbox(struct BGTK_Widget **items, int n)
+ }
+ 
+ #define FORM_LABEL_W 130
+-/* Wide enough for longest theme col-2 label ("Frame border unfocused"). */
+-#define FORM_LABEL2_W 200
++/* Theme page: color column (long names) and size column. */
++#define FORM_THEME_COLOR_LAB 180
++#define FORM_THEME_SIZE_LAB 160
+ #define FORM_FIELD_W 100 /* fixed so value columns line up */
++#define FORM_THEME_SIZE_FIELD 72
+ #define FORM_PATH_W 420  /* bg/cursor/font path fields */
+-/* List gap = 2×margin → 48px between theme columns. */
+-#define FORM_COL_GAP 24
++/* List gap = 2×margin between the two theme columns. */
++#define FORM_COL_GAP 16
+ /* Sidebar nav: list gap = 2×margin → 16px between buttons. */
+ #define SIDEBAR_NAV_MARGIN 8
+ 
+@@ -471,15 +474,6 @@ static struct BGTK_Widget *ui_row(const char *label, struct BGTK_Widget *field)
+ 	return ui_hbox(items, 2);
+ }
+ 
+-/* Single form field forced to FORM_FIELD_W (theme value column). */
+-static struct BGTK_Widget *ui_row_field(const char *label,
+-					struct BGTK_Widget *field)
+-{
+-	ui_force_field_w(field, FORM_FIELD_W);
+-	struct BGTK_Widget *items[2] = { ui_label(label, FORM_LABEL_W), field };
+-	return ui_hbox(items, 2);
+-}
+-
+ /* Two form columns: [lab|field] —gap— [lab|field] with fixed field widths. */
+ static struct BGTK_Widget *ui_row2(const char *l0, struct BGTK_Widget *f0,
+ 				   const char *l1, struct BGTK_Widget *f1)
+@@ -491,13 +485,13 @@ static struct BGTK_Widget *ui_row2(const char *l0, struct BGTK_Widget *f0,
+ 	ui_force_field_w(f1, FORM_FIELD_W);
+ 	c1_i[0] = ui_label(l0, FORM_LABEL_W);
+ 	c1_i[1] = f0;
+-	c2_i[0] = ui_label(l1, FORM_LABEL2_W);
++	c2_i[0] = ui_label(l1, FORM_THEME_COLOR_LAB);
+ 	c2_i[1] = f1;
+ 	c1 = ui_hbox(c1_i, 2);
+ 	c2 = ui_hbox(c2_i, 2);
+ 	/* Pin column outer widths so value edges stay on a grid. */
+ 	ui_force_field_w(c1, FORM_LABEL_W + FORM_FIELD_W);
+-	ui_force_field_w(c2, FORM_LABEL2_W + FORM_FIELD_W);
++	ui_force_field_w(c2, FORM_THEME_COLOR_LAB + FORM_FIELD_W);
+ 	cols[0] = c1;
+ 	cols[1] = c2;
+ 	return bgtk_list(ctx, cols, 2,
+@@ -505,6 +499,18 @@ static struct BGTK_Widget *ui_row2(const char *l0, struct BGTK_Widget *f0,
+ 			       .margin = FORM_COL_GAP, .padding = 0});
+ }
+ 
++/* One theme form row: fixed label width + field. */
++static struct BGTK_Widget *ui_theme_row(const char *label, int lab_w,
++					struct BGTK_Widget *field, int field_w)
++{
++	struct BGTK_Widget *items[2];
++
++	ui_force_field_w(field, field_w);
++	items[0] = ui_label(label, lab_w);
++	items[1] = field;
++	return ui_hbox(items, 2);
++}
++
+ /* Content size after reflow (panel filled by shell EXPAND). */
+ static void content_size(int *out_w, int *out_h)
+ {
+@@ -539,7 +545,8 @@ static struct BGTK_Widget *make_page(struct BGTK_Widget *form,
+ 	scroll = bgtk_scrollable(ctx, &amp;form, 1,
+ 		(BGTK_Options){.padding = pin, .margin = 0});
+ 	scroll-&gt;w = pw &gt; 0 ? pw : 80;
+-	scroll-&gt;h = ph &gt; 60 ? ph - 48 : 40;
++	/* Leave room for Apply + list gap so the last form row is not clipped. */
++	scroll-&gt;h = ph &gt; 80 ? ph - 56 : 40;
+ 	scroll-&gt;flags |= BGTK_FLAG_EXPAND_Y | BGTK_FLAG_EXPAND_X;
+ 
+ 	apply = ui_btn("Apply", apply_cb, NULL);
+@@ -1433,64 +1440,92 @@ static struct BGTK_Widget *theme_int_input(int v, int w)
+ 
+ static struct BGTK_Widget *build_theme_page(void)
+ {
+-	struct BGTK_Widget *rows[16];
+-	int n = 0;
+-	struct BGTK_Widget *body;
+-
+-	theme_bg_input = theme_color_input(cfg.theme.background, 90);
++	struct BGTK_Widget *color_rows[12];
++	struct BGTK_Widget *size_rows[12];
++	struct BGTK_Widget *cols[2];
++	struct BGTK_Widget *color_col, *size_col, *body;
++	int nc = 0, ns = 0;
++	int clab = FORM_THEME_COLOR_LAB;
++	int slab = FORM_THEME_SIZE_LAB;
++	int cfw = FORM_FIELD_W;
++	int sfw = FORM_THEME_SIZE_FIELD;
++
++	/* Left column: colors only. */
++	theme_bg_input = theme_color_input(cfg.theme.background, cfw);
++	color_rows[nc++] =
++		ui_theme_row("Background", clab, theme_bg_input, cfw);
++	theme_btn_input = theme_color_input(cfg.theme.button, cfw);
++	color_rows[nc++] = ui_theme_row("Button", clab, theme_btn_input, cfw);
++	theme_btn_text_input = theme_color_input(cfg.theme.button_text, cfw);
++	color_rows[nc++] =
++		ui_theme_row("Button text", clab, theme_btn_text_input, cfw);
++	theme_focus_input = theme_color_input(cfg.theme.focus, cfw);
++	color_rows[nc++] = ui_theme_row("Focus", clab, theme_focus_input, cfw);
++	theme_focus_bg_input = theme_color_input(cfg.theme.focus_bg, cfw);
++	color_rows[nc++] =
++		ui_theme_row("Focus background", clab, theme_focus_bg_input, cfw);
++	theme_input_bg_input = theme_color_input(cfg.theme.input_bg, cfw);
++	color_rows[nc++] =
++		ui_theme_row("Input background", clab, theme_input_bg_input, cfw);
++	theme_highlight_input = theme_color_input(cfg.theme.highlight, cfw);
++	color_rows[nc++] =
++		ui_theme_row("Highlight", clab, theme_highlight_input, cfw);
++	theme_rule_color_input = theme_color_input(cfg.theme.rule_color, cfw);
++	color_rows[nc++] =
++		ui_theme_row("Rule color", clab, theme_rule_color_input, cfw);
+ 	theme_frame_color_input =
+-		theme_color_input(cfg.theme.frame_border_color, 90);
+-	rows[n++] = ui_row2("Background", theme_bg_input,
+-			    "Frame border color", theme_frame_color_input);
+-
+-	theme_btn_input = theme_color_input(cfg.theme.button, 90);
++		theme_color_input(cfg.theme.frame_border_color, cfw);
++	color_rows[nc++] = ui_theme_row("Frame border color", clab,
++					theme_frame_color_input, cfw);
+ 	theme_frame_unfocused_input =
+-		theme_color_input(cfg.theme.frame_border_unfocused, 90);
+-	rows[n++] = ui_row2("Button", theme_btn_input,
+-			    "Frame border unfocused",
+-			    theme_frame_unfocused_input);
++		theme_color_input(cfg.theme.frame_border_unfocused, cfw);
++	color_rows[nc++] = ui_theme_row("Frame border unfocused", clab,
++					theme_frame_unfocused_input, cfw);
+ 
+-	theme_btn_text_input = theme_color_input(cfg.theme.button_text, 90);
+-	theme_rule_color_input = theme_color_input(cfg.theme.rule_color, 90);
+-	rows[n++] = ui_row2("Button text", theme_btn_text_input,
+-			    "Rule color", theme_rule_color_input);
+-
+-	theme_focus_input = theme_color_input(cfg.theme.focus, 90);
++	/* Right column: sizes only. */
+ 	theme_frame_border_input =
+-		theme_int_input((int)cfg.theme.frame_border_size, 60);
+-	rows[n++] = ui_row2("Focus", theme_focus_input,
+-			    "Frame border size", theme_frame_border_input);
+-
+-	theme_input_bg_input = theme_color_input(cfg.theme.input_bg, 90);
++		theme_int_input((int)cfg.theme.frame_border_size, sfw);
++	size_rows[ns++] = ui_theme_row("Frame border size", slab,
++				       theme_frame_border_input, sfw);
+ 	theme_btn_border_input =
+-		theme_int_input((int)cfg.theme.button_border_size, 60);
+-	rows[n++] = ui_row2("Input background", theme_input_bg_input,
+-			    "Button border size", theme_btn_border_input);
+-
+-	theme_focus_bg_input = theme_color_input(cfg.theme.focus_bg, 90);
++		theme_int_input((int)cfg.theme.button_border_size, sfw);
++	size_rows[ns++] = ui_theme_row("Button border size", slab,
++				       theme_btn_border_input, sfw);
+ 	theme_input_border_input =
+-		theme_int_input((int)cfg.theme.input_border_size, 60);
+-	rows[n++] = ui_row2("Focus background", theme_focus_bg_input,
+-			    "Input border size", theme_input_border_input);
+-
+-	theme_highlight_input = theme_color_input(cfg.theme.highlight, 90);
+-	rows[n++] = ui_row_field("Highlight", theme_highlight_input);
+-
+-	theme_margin_input = theme_int_input(cfg.theme.margin, 60);
+-	theme_row_gap_input = theme_int_input(cfg.theme.row_gap, 60);
+-	rows[n++] = ui_row2("Widget margin", theme_margin_input,
+-			    "Row gap", theme_row_gap_input);
+-
+-	theme_padding_input = theme_int_input(cfg.theme.padding, 60);
+-	theme_frame_margin_input = theme_int_input(cfg.theme.frame_margin, 60);
+-	rows[n++] = ui_row2("Frame padding", theme_padding_input,
+-			    "Frame margin", theme_frame_margin_input);
+-
++		theme_int_input((int)cfg.theme.input_border_size, sfw);
++	size_rows[ns++] = ui_theme_row("Input border size", slab,
++				       theme_input_border_input, sfw);
++	theme_margin_input = theme_int_input(cfg.theme.margin, sfw);
++	size_rows[ns++] =
++		ui_theme_row("Widget margin", slab, theme_margin_input, sfw);
++	theme_padding_input = theme_int_input(cfg.theme.padding, sfw);
++	size_rows[ns++] =
++		ui_theme_row("Frame padding", slab, theme_padding_input, sfw);
++	theme_frame_margin_input = theme_int_input(cfg.theme.frame_margin, sfw);
++	size_rows[ns++] =
++		ui_theme_row("Frame margin", slab, theme_frame_margin_input, sfw);
++	theme_row_gap_input = theme_int_input(cfg.theme.row_gap, sfw);
++	size_rows[ns++] =
++		ui_theme_row("Row gap", slab, theme_row_gap_input, sfw);
+ 	theme_baseline_input =
+-		theme_int_input(cfg.theme.text_baseline_offset, 60);
+-	rows[n++] = ui_row_field("Text baseline", theme_baseline_input);
+-
+-	body = ui_vbox(rows, n);
++		theme_int_input(cfg.theme.text_baseline_offset, sfw);
++	size_rows[ns++] =
++		ui_theme_row("Text baseline", slab, theme_baseline_input, sfw);
++
++	color_col = ui_vbox(color_rows, nc);
++	size_col = ui_vbox(size_rows, ns);
++	if (color_col)
++		color_col-&gt;flags |= BGTK_FLAG_EXPAND_Y;
++	if (size_col)
++		size_col-&gt;flags |= BGTK_FLAG_EXPAND_Y;
++	cols[0] = color_col;
++	cols[1] = size_col;
++	body = bgtk_list(ctx, cols, 2,
++			 (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
++					.margin = FORM_COL_GAP,
++					.padding = 0});
++	if (body)
++		body-&gt;flags |= BGTK_FLAG_EXPAND_X;
+ 	return make_page(body, apply_theme);
+ }
+ 
+diff --git a/apps/sys_status.c b/apps/sys_status.c
+index 2bdb1ec..d542005 100644
+--- a/apps/sys_status.c
++++ b/apps/sys_status.c
+@@ -708,10 +708,12 @@ static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *fram
+ 	int row_p = 0;
+ 	int list_m = ss_list_m(c);
+ 	int list_p = 4;
+-	int frame_p = pad, bw;
++	int frame_p = pad, frame_m, bw;
+ 	int row_w, row_h, list_w, list_h;
+ 	int text_chrome = 2 * (text_p + text_m);
+ 
++	frame_m = (c &amp;&amp; c-&gt;theme.frame_margin &gt;= 0) ? c-&gt;theme.frame_margin : 0;
++
+ 	if (!c || !frame || !root_list)
+ 		return;
+ 
+@@ -775,8 +777,11 @@ static void sys_status_fit_size(struct BGTK_Context *c, struct BGTK_Widget *fram
+ 	bw = frame-&gt;data.frame.border_w;
+ 	if (bw &lt; 1)
+ 		bw = 1;
+-	frame-&gt;w = list_w + 2 * (frame_p + bw);
+-	frame-&gt;h = list_h + 2 * (frame_p + bw);
++	/* border outermost; frame_m + pad inside (matches other apps). */
++	frame-&gt;w = list_w + 2 * (frame_p + frame_m + bw);
++	frame-&gt;h = list_h + 2 * (frame_p + frame_m + bw);
++	frame-&gt;margin = frame_m;
++	frame-&gt;padding = frame_p;
+ 	if (frame-&gt;w &lt; 1)
+ 		frame-&gt;w = 1;
+ 	if (frame-&gt;h &lt; 1)
+@@ -837,8 +842,12 @@ struct BGTK_Widget *sys_status_build_ui(struct BGTK_Context *c)
+ 			 });
+ 	root_list = list;
+ 	/* Temporary size; sys_status_fit_size sets the real one. */
+-	frame = bgtk_frame(c, list, 1, 1,
+-			   (BGTK_Options){.padding = pad, .margin = 0});
++	{
++		int fmar = (c &amp;&amp; c-&gt;theme.frame_margin &gt;= 0) ? c-&gt;theme.frame_margin
++							      : 0;
++		frame = bgtk_frame(c, list, 1, 1,
++				   (BGTK_Options){.padding = pad, .margin = fmar});
++	}
+ 
+ 	/* Prime CPU sample, then full fill (weather may block once). */
+ 	sys_status_refresh(REFRESH_ALL &amp; ~REFRESH_WEATHER);
+diff --git a/apps/terminal.c b/apps/terminal.c
+index 73fdb8c..a07f8de 100644
+--- a/apps/terminal.c
++++ b/apps/terminal.c
+@@ -131,8 +131,8 @@ static void pty_set_winsize(int master_fd, int cols, int rows)
+ }
+ 
+ /*
+- * Root chrome from theme: [frame_margin][border][padding][cells]…
+- * Sowm default frame_margin=0 so the border is the window edge.
++ * Root chrome from theme: [border][frame_margin][padding][cells]…
++ * Focus/unfocus border is always outermost (see draw_frame).
+  */
+ static void term_chrome(struct BGTK_Context *ctx, int *pad, int *fmar, int *bw)
+ {
+diff --git a/config.c b/config.c
+index 6efcb3b..7344225 100644
+--- a/config.c
++++ b/config.c
+@@ -347,10 +347,11 @@ void init_config_defaults(struct config *config)
+ 	config-&gt;theme.text_baseline_offset = 0;
+ 	/*
+ 	 * Sowm-style floating cards:
+-	 *   frame_margin = 0  → border is the window edge
+-	 *   padding           → air inside the border
+-	 *   margin            → gap between sibling widgets
+-	 *   row_gap           → vertical space between stacked rows (px)
++	 *   border is always the outermost chrome (focus/unfocus color)
++	 *   frame_margin → air inside border (before padding); 0 = tight
++	 *   padding      → air inside that, around content
++	 *   margin       → gap between sibling widgets
++	 *   row_gap      → vertical space between stacked rows (px)
+ 	 */
+ 	config-&gt;theme.margin = 8;
+ 	config-&gt;theme.padding = 12;
+diff --git a/config.h b/config.h
+index ccd498c..3d03e6b 100644
+--- a/config.h
++++ b/config.h
+@@ -48,7 +48,8 @@ typedef struct {
+ 	 * Spacing (px). Apps should prefer these over magic constants:
+ 	 *   margin       — gap between sibling widgets (lists, rows)
+ 	 *   padding      — air inside the frame border (content inset)
+-	 *   frame_margin — air outside the frame border (sowm cards: 0)
++	 *   frame_margin — extra air inside the border before padding
++	 *                  (root frames: border is always outermost)
+ 	 *   row_gap      — preferred vertical gap between stacked rows
+ 	 *                  (e.g. status lines); list widgets use 2×margin
+ 	 *                  as inter-item space, so margin ≈ row_gap/2
+diff --git a/drawing.c b/drawing.c
+index 3a4bca9..83fef5c 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -1080,16 +1080,20 @@ static void draw_image_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		       uint32_t *pixels)
+ {
+-	// Draw frame background
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
+-		  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin,
+-		  ctx-&gt;theme.background);
+-
+-	/* border_w 0 = no border (used for HTML cells / borderless panels). */
++	/*
++	 * Chrome: focus/unfocus border is always outermost on the widget rect.
++	 * margin (theme frame_margin on root frames) is air *inside* the border,
++	 * then padding, then content — so apps can keep using frame_margin
++	 * without a black ring outside the border.
++	 */
+ 	int bw = w-&gt;data.frame.border_w;
+ 	if (bw &lt; 0)
+ 		bw = 0;
+ 
++	/* Full card fill (includes inner margin band). */
++	draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, w-&gt;h, ctx-&gt;theme.background);
++
++	/* border_w 0 = no border (HTML cells / borderless panels). */
+ 	if (bw &gt; 0) {
+ 		uint32_t border =
+ 			w-&gt;data.frame.border_color ? w-&gt;data.frame.border_color
+@@ -1100,15 +1104,10 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 					 ? ctx-&gt;theme.frame_border_unfocused
+ 					 : ctx-&gt;theme.background;
+ 		}
+-		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
+-			  w-&gt;w - 2 * w-&gt;margin, bw, border);
+-		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin,
+-			  w-&gt;y + w-&gt;h - w-&gt;margin - bw, w-&gt;w - 2 * w-&gt;margin, bw,
+-			  border);
+-		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, bw,
+-			  w-&gt;h - 2 * w-&gt;margin, border);
+-		draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - w-&gt;margin - bw,
+-			  w-&gt;y + w-&gt;margin, bw, w-&gt;h - 2 * w-&gt;margin, border);
++		draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, w-&gt;w, bw, border);
++		draw_rect(ctx, pixels, w-&gt;x, w-&gt;y + w-&gt;h - bw, w-&gt;w, bw, border);
++		draw_rect(ctx, pixels, w-&gt;x, w-&gt;y, bw, w-&gt;h, border);
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - bw, w-&gt;y, bw, w-&gt;h, border);
+ 	}
+ 
+ 	// Draw child widget inside the frame
+diff --git a/test/test_settings.c b/test/test_settings.c
+index 99a9d07..45bad24 100644
+--- a/test/test_settings.c
++++ b/test/test_settings.c
+@@ -53,9 +53,9 @@ static int write_pattern_ppm(const char *path)
+ 
+ int main(void)
+ {
+-	/* Match settings app request — dual-col theme needs ~900 wide. */
+-	int width = 900;
+-	int height = 560;
++	/* Match settings app request — dual-col theme (colors | sizes). */
++	int width = 920;
++	int height = 640;
+ 
+ 	struct BGTK_Context *ctx = bgtk_init_mock(width, height);
+ 	if (!ctx) {
+@@ -107,8 +107,8 @@ int main(void)
+ 		click.code = BTN_LEFT;
+ 		click.value = 1;
+ 		/* Apply sits under the aspect-correct preview (fills leftover). */
+-		click.x = 180;
+-		click.y = 512;
++		click.x = 220;
++		click.y = height - 48;
+ 		bgtk_inject_event(ctx, click);
+ 		click.value = 0;
+ 		if (!bgtk_inject_event(ctx, click)) {
+@@ -335,9 +335,9 @@ int main(void)
+ 		click.type = EV_KEY;
+ 		click.code = BTN_LEFT;
+ 		click.value = 1;
+-		/* First theme color field (Background) under Goldie chrome. */
+-		click.x = 320;
+-		click.y = 40;
++		/* First theme color field (Background) — left column. */
++		click.x = 400;
++		click.y = 55;
+ 		bgtk_inject_event(ctx, click);
+ 		click.value = 0;
+ 		bgtk_inject_event(ctx, click);
+</pre>

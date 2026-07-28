@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 8f0bef5</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 8f0bef5
+parent <a href=commit-26ab185.html>26ab185</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-06T15:43:48-03:00
+
+    fix: redraw after window resize instead of a black frame.
+
+    BGCE sends MSG_BUFFER_CHANGE with a new shm mapping on resize; apps
+    were ignoring it and kept the old buffer. Add bgtk_handle_buffer_change
+    to remount the framebuffer, reflow the launcher layout, and redraw.
+    Wire the same path into other BGCE apps and cover resize in headless.
+
+<a href=tree-8f0bef5.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/gemini_browser.c b/apps/gemini_browser.c
+index 5217280..6ece0c5 100644
+--- a/apps/gemini_browser.c
++++ b/apps/gemini_browser.c
+@@ -697,6 +697,13 @@ int main(void)
+ 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
+ 			break;
+ 		case MSG_BUFFER_CHANGE:
++			if (bgtk_handle_buffer_change(ctx, &amp;msg.data.buffer_reply) == 0) {
++				if (ctx-&gt;root_widget) {
++					ctx-&gt;root_widget-&gt;w = ctx-&gt;width;
++					ctx-&gt;root_widget-&gt;h = ctx-&gt;height;
++				}
++				bgtk_draw_widgets(ctx);
++			}
+ 			break;
+ 		default:
+ 			break;
+diff --git a/apps/image_viewer.c b/apps/image_viewer.c
+index c5e9ac5..494ba29 100644
+--- a/apps/image_viewer.c
++++ b/apps/image_viewer.c
+@@ -167,6 +167,14 @@ int main(void) {
+ 				    msg.data.focus_event.state);
+ 				break;
+ 			case MSG_BUFFER_CHANGE:
++				if (bgtk_handle_buffer_change(ctx, &amp;msg.data.buffer_reply) == 0) {
++					if (ctx-&gt;root_widget) {
++						ctx-&gt;root_widget-&gt;w = ctx-&gt;width;
++						ctx-&gt;root_widget-&gt;h = ctx-&gt;height;
++					}
++					bgtk_draw_widgets(ctx);
++					res = 0;
++				}
+ 				break;
+ 			default:
+ 				break;
+diff --git a/apps/launcher.c b/apps/launcher.c
+index f09f70a..c727a0a 100644
+--- a/apps/launcher.c
++++ b/apps/launcher.c
+@@ -153,6 +153,38 @@ static void on_enter_pressed(void)
+ 	exit(0);
+ }
+ 
++/* Size input + match list to fill the current window. */
++static void layout_launcher(void)
++{
++	if (!ctx)
++		return;
++	int pad = 8;
++	int inner_w = ctx-&gt;width - 2 * pad;
++	int inner_h = ctx-&gt;height - 2 * pad;
++	if (inner_w &lt; 40)
++		inner_w = 40;
++	if (inner_h &lt; 40)
++		inner_h = 40;
++
++	if (text_input) {
++		text_input-&gt;w = inner_w;
++		/* height stays content-sized; force a sensible min */
++		if (text_input-&gt;h &lt; 28)
++			text_input-&gt;h = 28;
++	}
++	if (matches_scroll) {
++		int input_h = text_input ? text_input-&gt;h + 8 : 36;
++		matches_scroll-&gt;w = inner_w;
++		matches_scroll-&gt;h = inner_h - input_h;
++		if (matches_scroll-&gt;h &lt; 40)
++			matches_scroll-&gt;h = 40;
++	}
++	if (ctx-&gt;root_widget) {
++		ctx-&gt;root_widget-&gt;w = ctx-&gt;width;
++		ctx-&gt;root_widget-&gt;h = ctx-&gt;height;
++	}
++}
++
+ int main(void)
+ {
+ 	setvbuf(stdout, NULL, _IONBF, 0);
+@@ -189,21 +221,20 @@ int main(void)
+ 	text_input-&gt;data.text_input.on_enter = on_enter_pressed;
+ 
+ 	matches_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 4});
+-	matches_scroll-&gt;w = 440;
+-	matches_scroll-&gt;h = 220;
+ 
+ 	struct BGTK_Widget* layout_items[2] = {text_input, matches_scroll};
+ 	struct BGTK_Widget* layout = bgtk_list(ctx, layout_items, 2, (BGTK_Options){.orientation = BGTK_LIST_VERTICAL});
+ 
+-	struct BGTK_Widget* frame = bgtk_frame(ctx, layout, 480, 300, (BGTK_Options){.padding = 8});
++	struct BGTK_Widget* frame = bgtk_frame(ctx, layout, width, height, (BGTK_Options){.padding = 8});
+ 
+ 	ctx-&gt;root_widget = frame;
++	layout_launcher();
+ 	bgtk_set_focus(ctx, text_input);
+ 
+ 	update_matches("");
+ 	rebuild_matches_ui();
+ 
+-	printf("Starting launcher main loop (%dx%d)...\n", ctx-&gt;width, ctx-&gt;height);
++	bgtk_log("Starting launcher main loop (%dx%d)", ctx-&gt;width, ctx-&gt;height);
+ 
+ 	int quit = 0;
+ 	struct BGCEMessage msg;
+@@ -212,13 +243,13 @@ int main(void)
+ 		bytes = bgce_recv_msg(ctx-&gt;conn_fd, &amp;msg);
+ 		if (bytes &lt;= 0) {
+ 			if (bytes == 0)
+-				fprintf(stderr, "launcher: Server closed connection.\n");
++				bgtk_log("server closed connection");
+ 			else if (errno != EINTR)
+-				perror("launcher: bgce_recv_msg");
++				bgtk_log_errno("bgce_recv_msg");
+ 			break;
+ 		}
+ 
+-		int res = 0;
++		int need_draw = 0;
+ 		switch (msg.type) {
+ 		case MSG_INPUT_EVENT:
+ 			if (msg.data.input_event.type == EV_KEY &amp;&amp;
+@@ -229,20 +260,26 @@ int main(void)
+ 			}
+ 			if (msg.data.input_event.type != EV_REL &amp;&amp;
+ 			    msg.data.input_event.type != EV_ABS) {
+-				res = bgtk_handle_input_event(ctx, msg.data.input_event);
++				need_draw = bgtk_handle_input_event(ctx, msg.data.input_event);
+ 			}
+ 			break;
+ 		case MSG_FOCUS_CHANGE:
+ 			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
++			need_draw = 1;
+ 			break;
+ 		case MSG_BUFFER_CHANGE:
++			/* Server allocated a new shm buffer after a window resize. */
++			if (bgtk_handle_buffer_change(ctx, &amp;msg.data.buffer_reply) == 0) {
++				layout_launcher();
++				need_draw = 1;
++			}
+ 			break;
+ 		default:
+ 			break;
+ 		}
+ 
+-		if (res)
+-			bgce_draw(conn_fd);
++		if (need_draw)
++			bgtk_draw_widgets(ctx);
+ 	}
+ 
+ 	bgtk_destroy(ctx);
+diff --git a/apps/settings.c b/apps/settings.c
+index 23f4b09..d192b8b 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -916,10 +916,11 @@ int main(void)
+ 		if (msg.type == MSG_INPUT_EVENT) {
+ 			bgtk_handle_input_event(c, msg.data.input_event);
+ 			bgtk_draw_widgets(c);
+-			bgce_draw(conn);
+ 		} else if (msg.type == MSG_FOCUS_CHANGE) {
+ 			bgtk_set_window_focus(c, msg.data.focus_event.state);
+-			bgce_draw(conn);
++		} else if (msg.type == MSG_BUFFER_CHANGE) {
++			if (bgtk_handle_buffer_change(c, &amp;msg.data.buffer_reply) == 0)
++				bgtk_draw_widgets(c);
+ 		}
+ 	}
+ 
+diff --git a/apps/test_app.c b/apps/test_app.c
+index 14094ec..29c0d44 100644
+--- a/apps/test_app.c
++++ b/apps/test_app.c
+@@ -194,7 +194,10 @@ int main(void) {
+ 				bgtk_set_window_focus(ctx, msg.data.focus_event.state);
+ 				break;
+ 			case MSG_BUFFER_CHANGE:
+-				// TODO: Handle buffer resize/move
++				if (bgtk_handle_buffer_change(ctx, &amp;msg.data.buffer_reply) == 0) {
++					bgtk_draw_widgets(ctx);
++					res = 0; /* draw already submitted */
++				}
+ 				break;
+ 			default:
+ 				// Ignore other messages for now
+diff --git a/bgtk.c b/bgtk.c
+index 3814d59..59ff4c8 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -4,12 +4,14 @@
+ 
+ #include &lt;bgce.h&gt;
+ #include &lt;errno.h&gt;
++#include &lt;fcntl.h&gt;
+ #include &lt;linux/input.h&gt;
+ #include &lt;stdarg.h&gt;
+ #include &lt;stb_image_write.h&gt;
+ #include &lt;stdio.h&gt;
+ #include &lt;stdlib.h&gt;
+ #include &lt;string.h&gt;
++#include &lt;sys/mman.h&gt;
+ #include &lt;sys/stat.h&gt;
+ #include &lt;sys/time.h&gt;
+ #include &lt;time.h&gt;
+@@ -232,6 +234,7 @@ struct BGTK_Context *bgtk_init_mock(int width, int height)
+ 	ctx-&gt;conn_fd = -1;
+ 	ctx-&gt;width = width;
+ 	ctx-&gt;height = height;
++	ctx-&gt;buffer_mapped = 0;
+ 	ctx-&gt;shm_buffer = calloc((size_t)width * height * BGCE_BYTES_PER_PIXEL, 1);
+ 	if (!ctx-&gt;shm_buffer) {
+ 		perror("calloc framebuffer");
+@@ -347,6 +350,7 @@ struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
+ 	}
+ 	ctx-&gt;width = width;
+ 	ctx-&gt;height = height;
++	ctx-&gt;buffer_mapped = 1; /* caller mapped via bgce_get_buffer / mmap */
+ 
+ 	bgtk_init_resources(ctx);
+ 	if (!ctx-&gt;ft_library) {
+@@ -357,6 +361,79 @@ struct BGTK_Context *bgtk_init(int conn_fd, void *buffer, int width, int height)
+ 	return ctx;
+ }
+ 
++static void bgtk_release_buffer(struct BGTK_Context *ctx)
++{
++	if (!ctx || !ctx-&gt;shm_buffer)
++		return;
++	size_t bytes = (size_t)ctx-&gt;width * (size_t)ctx-&gt;height * BGCE_BYTES_PER_PIXEL;
++	if (ctx-&gt;buffer_mapped) {
++		if (bytes &gt; 0)
++			munmap(ctx-&gt;shm_buffer, bytes);
++	} else {
++		free(ctx-&gt;shm_buffer);
++	}
++	ctx-&gt;shm_buffer = NULL;
++}
++
++int bgtk_handle_buffer_change(struct BGTK_Context *ctx,
++			      const struct BufferReply *reply)
++{
++	if (!ctx || !reply || !reply-&gt;shm_name[0] ||
++	    reply-&gt;width == 0 || reply-&gt;height == 0) {
++		bgtk_log("buffer change: invalid reply");
++		return -1;
++	}
++
++	size_t new_bytes = (size_t)reply-&gt;width * (size_t)reply-&gt;height *
++			   BGCE_BYTES_PER_PIXEL;
++	int fd = bgce_buf_open(reply-&gt;shm_name);
++	if (fd &lt; 0) {
++		bgtk_log_errno("buffer change: open '%s'", reply-&gt;shm_name);
++		return -1;
++	}
++	void *map = mmap(NULL, new_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++	close(fd);
++	if (map == MAP_FAILED) {
++		bgtk_log_errno("buffer change: mmap %ux%u", reply-&gt;width,
++			       reply-&gt;height);
++		return -1;
++	}
++
++	bgtk_log("buffer change %dx%d -&gt; %ux%u shm='%s'",
++		 ctx-&gt;width, ctx-&gt;height, reply-&gt;width, reply-&gt;height,
++		 reply-&gt;shm_name);
++
++	bgtk_release_buffer(ctx);
++	ctx-&gt;shm_buffer = map;
++	ctx-&gt;buffer_mapped = 1;
++	ctx-&gt;width = (int)reply-&gt;width;
++	ctx-&gt;height = (int)reply-&gt;height;
++	if (ctx-&gt;root_widget) {
++		ctx-&gt;root_widget-&gt;w = ctx-&gt;width;
++		ctx-&gt;root_widget-&gt;h = ctx-&gt;height;
++	}
++	return 0;
++}
++
++int bgtk_resize_mock(struct BGTK_Context *ctx, int width, int height)
++{
++	if (!ctx || width &lt; 1 || height &lt; 1 || ctx-&gt;buffer_mapped)
++		return -1;
++	void *nb = calloc((size_t)width * (size_t)height * BGCE_BYTES_PER_PIXEL, 1);
++	if (!nb)
++		return -1;
++	bgtk_release_buffer(ctx);
++	ctx-&gt;shm_buffer = nb;
++	ctx-&gt;buffer_mapped = 0;
++	ctx-&gt;width = width;
++	ctx-&gt;height = height;
++	if (ctx-&gt;root_widget) {
++		ctx-&gt;root_widget-&gt;w = width;
++		ctx-&gt;root_widget-&gt;h = height;
++	}
++	return 0;
++}
++
+ static void destroy_widget(struct BGTK_Widget *w);
+ 
+ void bgtk_destroy(struct BGTK_Context *ctx)
+@@ -369,8 +446,8 @@ void bgtk_destroy(struct BGTK_Context *ctx)
+ 		ctx-&gt;root_widget = NULL;
+ 		ctx-&gt;focused_widget = NULL;
+ 	}
+-	// Free FreeType resources (buffer ownership is with caller for real init,
+-	// or handled in bgtk_destroy_mock for headless).
++	/* Release framebuffer (mmap for real apps, malloc for mock). */
++	bgtk_release_buffer(ctx);
+ 	if (ctx-&gt;ft_face) {
+ 		FT_Done_Face(ctx-&gt;ft_face);
+ 	}
+@@ -383,12 +460,7 @@ void bgtk_destroy(struct BGTK_Context *ctx)
+ 
+ void bgtk_destroy_mock(struct BGTK_Context *ctx)
+ {
+-	if (ctx) {
+-		if (ctx-&gt;shm_buffer) {
+-			free(ctx-&gt;shm_buffer);
+-			ctx-&gt;shm_buffer = NULL;
+-		}
+-	}
++	/* buffer released inside bgtk_destroy via bgtk_release_buffer. */
+ 	bgtk_destroy(ctx);
+ }
+ 
+diff --git a/bgtk.h b/bgtk.h
+index 9b659f4..e6af1f6 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -170,6 +170,9 @@ typedef void (*BGTK_Callback)(void *userdata);
+ struct BGTK_Context {
+ 	int conn_fd;  // File descriptor for BGCE connection
+ 	void* shm_buffer;
++	// 1 = shm_buffer is mmap'd (real BGCE); 0 = malloc'd (mock).
++	// Used so resize can munmap/free the previous mapping correctly.
++	int buffer_mapped;
+ 	int width;
+ 	int height;
+ 
+@@ -346,6 +349,17 @@ int take_screenshot(struct BGTK_Context* ctx, const char* path);
+ // Returns non-zero if a redraw was triggered.
+ int bgtk_inject_event(struct BGTK_Context* ctx, struct InputEvent ev);
+ 
++// Handle MSG_BUFFER_CHANGE from BGCE: unmap the old framebuffer, mmap the new
++// one from reply-&gt;shm_name, update ctx size, and size the root widget to the
++// new window. Does not draw — call bgtk_draw_widgets() after any app-specific
++// reflow. Returns 0 on success, -1 on failure.
++int bgtk_handle_buffer_change(struct BGTK_Context *ctx,
++			      const struct BufferReply *reply);
++
++// Mock/test helper: reallocate the owned framebuffer to a new size and size
++// the root widget. Returns 0 on success.
++int bgtk_resize_mock(struct BGTK_Context *ctx, int width, int height);
++
+ // --- Widget Creation Functions ---
+ // Creates a label widget.
+ struct BGTK_Widget* bgtk_label(struct BGTK_Context* ctx, char* text, BGTK_Options options);
+diff --git a/compat/bgce.h b/compat/bgce.h
+index 6d8f654..baf9f70 100644
+--- a/compat/bgce.h
++++ b/compat/bgce.h
+@@ -105,6 +105,8 @@ ssize_t bgce_recv_msg(int conn, struct BGCEMessage *msg);
+ int bgce_connect(void);
+ int bgce_get_server_info(int fd, struct ServerInfo *out_info);
+ void *bgce_get_buffer(int conn, struct BufferRequest req);
++int bgce_buf_open(const char *name);
++void bgce_buf_unlink(const char *name);
+ int bgce_move(int fd, int x, int y);
+ int bgce_draw(int fd);
+ void bgce_disconnect(int fd);
+diff --git a/compat/bgce_stub.c b/compat/bgce_stub.c
+index 279c0da..411ad5f 100644
+--- a/compat/bgce_stub.c
++++ b/compat/bgce_stub.c
+@@ -39,6 +39,17 @@ void *bgce_get_buffer(int conn, struct BufferRequest req)
+ 	return NULL;
+ }
+ 
++int bgce_buf_open(const char *name)
++{
++	(void)name;
++	return -1;
++}
++
++void bgce_buf_unlink(const char *name)
++{
++	(void)name;
++}
++
+ int bgce_move(int fd, int x, int y)
+ {
+ 	(void)fd; (void)x; (void)y;
+diff --git a/test/headless.c b/test/headless.c
+index 97ca91e..07331e7 100644
+--- a/test/headless.c
++++ b/test/headless.c
+@@ -188,6 +188,18 @@ int main(void)
+ 	key.code = KEY_BACKSPACE; bgtk_inject_event(ctx, key);
+ 	take_screenshot(ctx, "headless_04_backspaced.png");
+ 
++	/* 6b. Resize the mock framebuffer (simulates MSG_BUFFER_CHANGE path). */
++	if (bgtk_resize_mock(ctx, 520, 320) != 0) {
++		bgtk_log("headless: resize mock failed");
++		return 1;
++	}
++	if (ctx-&gt;root_widget) {
++		ctx-&gt;root_widget-&gt;w = ctx-&gt;width;
++		ctx-&gt;root_widget-&gt;h = ctx-&gt;height;
++	}
++	bgtk_draw_widgets(ctx);
++	take_screenshot(ctx, "headless_04b_resized.png");
++
+ 	bgtk_destroy_mock(ctx);
+ 
+ 	/* 7. text_align showcase (separate scene, wider canvas) */
+</pre>

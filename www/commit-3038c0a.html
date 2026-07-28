@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 3038c0a</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 3038c0a
+parent <a href=commit-202a9d7.html>202a9d7</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-09T13:04:34-03:00
+
+    feat: switch widget, unfocused frame border, settings/launcher polish
+
+    Add bgtk_switch and themeable frame_border_unfocused. Settings uses pill
+    switches with clearer form/sidebar/theme column spacing; launcher search
+    is borderless and sized with the results list.
+
+<a href=tree-3038c0a.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/apps/launcher.c b/apps/launcher.c
+index 38e85d0..d2bb092 100644
+--- a/apps/launcher.c
++++ b/apps/launcher.c
+@@ -167,7 +167,7 @@ static void rebuild_matches_ui(void)
+ 		int vpad = 3; /* tight file-list rows */
+ 		char lined[160];
+ 
+-		/* Leading spaces = left indent inside the highlight bar. */
++		/* Indent matches search text (field pad 2 + small lead). */
+ 		snprintf(lined, sizeof(lined), "  %s", name);
+ 		lab = bgtk_text(ctx, lined,
+ 				(BGTK_Options){.padding = 0, .margin = 0});
+@@ -184,7 +184,14 @@ static void rebuild_matches_ui(void)
+ 			continue;
+ 		}
+ 		row-&gt;w = row_w;
+-		row-&gt;h = lab-&gt;h + 2 * vpad;
++		/* Same line height family as the slim search field. */
++		{
++			int fs = ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14;
++			int rh = fs + 2 * vpad;
++			if (rh &lt; lab-&gt;h + 2 * vpad)
++				rh = lab-&gt;h + 2 * vpad;
++			row-&gt;h = rh;
++		}
+ 		row-&gt;data.button.border_w = 0;
+ 		if (sel)
+ 			row-&gt;data.button.bg_override = ctx-&gt;theme.highlight
+@@ -302,39 +309,43 @@ static void on_enter_pressed(void)
+ 	launcher_detach();
+ }
+ 
+-/* Size input + match list to fill the current window. */
++/* Size input + match list to fill the current window (equal L/R chrome). */
+ static void layout_launcher(void)
+ {
+-	int pad, mar, bw, inner_w, inner_h, input_h, gap;
++	int pad, mar, bw, fmar, inner_w, inner_h, input_h, gap, fs, line_h;
+ 
+ 	if (!ctx)
+ 		return;
+ 	pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 12;
+ 	mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 8;
+ 	bw = (int)ctx-&gt;theme.frame_border_size;
+-	{
+-		int fmar = ctx-&gt;theme.frame_margin &gt;= 0 ? ctx-&gt;theme.frame_margin
+-							: 0;
+-		if (bw &lt; 0)
+-			bw = 0;
+-		/* Content: [frame_margin][border][padding][…] */
+-		inner_w = ctx-&gt;width - 2 * (fmar + bw + pad);
+-		inner_h = ctx-&gt;height - 2 * (fmar + bw + pad);
+-	}
++	fmar = ctx-&gt;theme.frame_margin &gt;= 0 ? ctx-&gt;theme.frame_margin : 0;
++	if (bw &lt; 0)
++		bw = 0;
++	/* Content: [frame_margin][border][padding][…] — same on all sides. */
++	inner_w = ctx-&gt;width - 2 * (fmar + bw + pad);
++	inner_h = ctx-&gt;height - 2 * (fmar + bw + pad);
+ 	if (inner_w &lt; 40)
+ 		inner_w = 40;
+ 	if (inner_h &lt; 40)
+ 		inner_h = 40;
+-	gap = mar; /* space between search box and list */
++	/* Small gap under search line (not list.margin — that also inset X). */
++	gap = mar &gt; 4 ? mar / 2 : 4;
++	fs = ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14;
++	/* Slim line height: font + tiny vertical pad (matches list row feel). */
++	line_h = fs + 6;
++	if (line_h &lt; 18)
++		line_h = 18;
+ 
+ 	if (text_input) {
+ 		text_input-&gt;w = inner_w;
++		text_input-&gt;h = line_h;
+ 		text_input-&gt;margin = 0;
+-		if (text_input-&gt;h &lt; 28)
+-			text_input-&gt;h = 28;
++		text_input-&gt;padding = 2;
++		text_input-&gt;data.text_input.border_w = 0;
+ 	}
+ 	if (matches_scroll) {
+-		input_h = text_input ? text_input-&gt;h + gap : 36;
++		input_h = (text_input ? text_input-&gt;h : line_h) + gap;
+ 		matches_scroll-&gt;w = inner_w;
+ 		matches_scroll-&gt;h = inner_h - input_h;
+ 		matches_scroll-&gt;margin = 0;
+@@ -343,8 +354,6 @@ static void layout_launcher(void)
+ 			matches_scroll-&gt;h = 40;
+ 	}
+ 	if (ctx-&gt;root_widget) {
+-		int fmar = ctx-&gt;theme.frame_margin &gt;= 0 ? ctx-&gt;theme.frame_margin
+-							: 0;
+ 		ctx-&gt;root_widget-&gt;w = ctx-&gt;width;
+ 		ctx-&gt;root_widget-&gt;h = ctx-&gt;height;
+ 		ctx-&gt;root_widget-&gt;padding = pad;
+@@ -380,8 +389,9 @@ int main(void)
+ 	}
+ 	bgtk_log("bgce_connect ok fd=%d", conn_fd);
+ 
+-	int width = 480;
+-	int height = 320;
++	/* Slightly wider card; slim search line + file list. */
++	int width = 560;
++	int height = 340;
+ 	struct BufferRequest req = {.width = width, .height = height};
+ 	void* buffer = bgce_get_buffer(conn_fd, req);
+ 	if (!buffer) {
+@@ -396,19 +406,21 @@ int main(void)
+ 		bgtk_log("bgtk_init failed — check fonts / log above");
+ 		return 1;
+ 	}
+-	bgtk_log("building launcher UI (goldie file-list)");
++	bgtk_log("building launcher UI (minimal search + file list)");
+ 
+ 	{
+ 		int pad = ctx-&gt;theme.padding &gt; 0 ? ctx-&gt;theme.padding : 12;
+-		int mar = ctx-&gt;theme.margin &gt; 0 ? ctx-&gt;theme.margin : 8;
++		int fs = ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14;
+ 
++		/* Minimal field: no border, tiny pad, same font as results. */
+ 		text_input = bgtk_text_input(
+-			ctx, "", 440, 0,
+-			(BGTK_Options){.padding = pad, .margin = 0});
++			ctx, "", width, fs + 2,
++			(BGTK_Options){.padding = 2, .margin = 0});
+ 		if (!text_input) {
+ 			bgtk_log("bgtk_text_input failed");
+ 			return 1;
+ 		}
++		text_input-&gt;data.text_input.border_w = 0;
+ 		text_input-&gt;data.text_input.on_change = on_text_change;
+ 		text_input-&gt;data.text_input.on_tab = on_tab_pressed;
+ 		text_input-&gt;data.text_input.on_enter = on_enter_pressed;
+@@ -423,12 +435,17 @@ int main(void)
+ 		}
+ 
+ 		{
++			/*
++			 * Vertical list margin must stay 0: list.margin also
++			 * shifts children on X, which made the right edge look
++			 * tighter than the left. Gap under search is layout gap.
++			 */
+ 			struct BGTK_Widget *layout_items[2] = { text_input,
+ 							       matches_scroll };
+ 			struct BGTK_Widget *layout = bgtk_list(
+ 				ctx, layout_items, 2,
+ 				(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+-					       .margin = mar,
++					       .margin = 0,
+ 					       .padding = 0});
+ 			struct BGTK_Widget *frame;
+ 
+diff --git a/apps/settings.c b/apps/settings.c
+index 798086a..5903082 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -66,6 +66,7 @@ static struct BGTK_Widget *theme_frame_border_input;
+ static struct BGTK_Widget *theme_btn_border_input;
+ static struct BGTK_Widget *theme_input_border_input;
+ static struct BGTK_Widget *theme_frame_color_input;
++static struct BGTK_Widget *theme_frame_unfocused_input;
+ static struct BGTK_Widget *theme_focus_input;
+ static struct BGTK_Widget *theme_focus_bg_input;
+ static struct BGTK_Widget *theme_input_bg_input;
+@@ -406,28 +407,67 @@ static struct BGTK_Widget *ui_hbox(struct BGTK_Widget **items, int n)
+ 
+ static struct BGTK_Widget *ui_vbox(struct BGTK_Widget **items, int n)
+ {
++	/* List margin → 2×margin between rows. Keep small so L/R stay even
++	 * (vertical lists also use margin as a side inset when packing). */
++	int gap = 4;
++
++	if (ctx &amp;&amp; ctx-&gt;theme.margin &gt; 0) {
++		gap = ctx-&gt;theme.margin / 2;
++		if (gap &lt; 4)
++			gap = 4;
++		if (gap &gt; 8)
++			gap = 8;
++	}
+ 	return bgtk_list(ctx, items, n,
+ 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+-			       .margin = 0, .padding = 0});
++			       .margin = gap, .padding = 0});
+ }
+ 
+ #define FORM_LABEL_W 130
+-#define FORM_LABEL2_W 150
++/* Wide enough for longest theme col-2 label ("Frame border unfocused"). */
++#define FORM_LABEL2_W 200
++#define FORM_FIELD_W 100 /* fixed so value columns line up */
++/* List gap = 2×margin → 48px between theme columns. */
++#define FORM_COL_GAP 24
++/* Sidebar nav: list gap = 2×margin → 16px between buttons. */
++#define SIDEBAR_NAV_MARGIN 8
++
++static void ui_force_field_w(struct BGTK_Widget *f, int width)
++{
++	if (f &amp;&amp; width &gt; 0)
++		f-&gt;w = width;
++}
+ 
+ static struct BGTK_Widget *ui_row(const char *label, struct BGTK_Widget *field)
+ {
++	ui_force_field_w(field, FORM_FIELD_W);
+ 	struct BGTK_Widget *items[2] = { ui_label(label, FORM_LABEL_W), field };
+ 	return ui_hbox(items, 2);
+ }
+ 
++/* Two form columns: [lab|field] —gap— [lab|field] with fixed field widths. */
+ static struct BGTK_Widget *ui_row2(const char *l0, struct BGTK_Widget *f0,
+ 				   const char *l1, struct BGTK_Widget *f1)
+ {
+-	struct BGTK_Widget *items[4] = {
+-		ui_label(l0, FORM_LABEL_W), f0,
+-		ui_label(l1, FORM_LABEL2_W), f1
+-	};
+-	return ui_hbox(items, 4);
++	struct BGTK_Widget *c1_i[2], *c2_i[2], *cols[2];
++	struct BGTK_Widget *c1, *c2;
++
++	ui_force_field_w(f0, FORM_FIELD_W);
++	ui_force_field_w(f1, FORM_FIELD_W);
++	c1_i[0] = ui_label(l0, FORM_LABEL_W);
++	c1_i[1] = f0;
++	c2_i[0] = ui_label(l1, FORM_LABEL2_W);
++	c2_i[1] = f1;
++	c1 = ui_hbox(c1_i, 2);
++	c2 = ui_hbox(c2_i, 2);
++	/* Pin column outer widths so value edges stay on a grid. */
++	ui_force_field_w(c1, FORM_LABEL_W + FORM_FIELD_W);
++	ui_force_field_w(c2, FORM_LABEL2_W + FORM_FIELD_W);
++	cols[0] = c1;
++	cols[1] = c2;
++	return bgtk_list(ctx, cols, 2,
++		(BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL,
++			       .margin = FORM_COL_GAP, .padding = 0});
+ }
+ 
+ /* Scrollable borderless page; pad matches sidebar panel_inset. */
+@@ -584,17 +624,34 @@ static void apply_background(void *userdata)
+ 	bgtk_draw_widgets(ctx);
+ }
+ 
+-static void toggle_bg_mode(void *userdata)
++/* Switch value is already updated; sync cfg and rebuild page structure. */
++static void on_bg_type_switch(void *userdata)
+ {
+-	(void)userdata;
+-	cfg.mode = (cfg.mode == IMAGE_TILED) ? IMAGE_SCALED : IMAGE_TILED;
++	struct BGTK_Widget *sw = userdata;
++
++	if (sw &amp;&amp; sw-&gt;type == BGTK_WIDGET_SWITCH)
++		cfg.type = sw-&gt;data.switch_w.value ? BG_IMAGE : BG_COLOR;
++	else
++		cfg.type = (cfg.type == BG_COLOR) ? BG_IMAGE : BG_COLOR;
++	rebuild_content();
++}
++
++static void on_bg_mode_switch(void *userdata)
++{
++	struct BGTK_Widget *sw = userdata;
++
++	if (sw &amp;&amp; sw-&gt;type == BGTK_WIDGET_SWITCH)
++		cfg.mode = sw-&gt;data.switch_w.value ? IMAGE_TILED : IMAGE_SCALED;
++	else
++		cfg.mode = (cfg.mode == IMAGE_TILED) ? IMAGE_SCALED : IMAGE_TILED;
+ 	rebuild_content();
+ }
+ 
+-static void toggle_bg_type(void *userdata)
++/* Test helper: flip mode without a widget. */
++static void toggle_bg_mode(void *userdata)
+ {
+ 	(void)userdata;
+-	cfg.type = (cfg.type == BG_COLOR) ? BG_IMAGE : BG_COLOR;
++	cfg.mode = (cfg.mode == IMAGE_TILED) ? IMAGE_SCALED : IMAGE_TILED;
+ 	rebuild_content();
+ }
+ 
+@@ -856,6 +913,10 @@ static void apply_theme(void *userdata)
+ 	    theme_frame_color_input-&gt;data.text_input.text)
+ 		cfg.theme.frame_border_color = parse_color_input(
+ 			theme_frame_color_input-&gt;data.text_input.text);
++	if (theme_frame_unfocused_input &amp;&amp;
++	    theme_frame_unfocused_input-&gt;data.text_input.text)
++		cfg.theme.frame_border_unfocused = parse_color_input(
++			theme_frame_unfocused_input-&gt;data.text_input.text);
+ 	if (theme_focus_input &amp;&amp; theme_focus_input-&gt;data.text_input.text)
+ 		cfg.theme.focus =
+ 			parse_color_input(theme_focus_input-&gt;data.text_input.text);
+@@ -1171,22 +1232,33 @@ static struct BGTK_Widget *build_background_page(int panel_w, int panel_h)
+ 	int n = 0;
+ 	struct BGTK_Widget *body;
+ 	struct BGTK_Widget *page;
+-	char type_lbl[32], mode_lbl[32];
++	struct BGTK_Widget *type_sw;
++	struct BGTK_Widget *mode_sw;
+ 
+ 	format_hex_color(cfg.color, color_hex, sizeof(color_hex));
+-	snprintf(type_lbl, sizeof(type_lbl), "[ %s ]",
+-		 cfg.type == BG_IMAGE ? "Image" : "Color");
+ 
+-	rows[n++] = ui_row("Type", ui_btn(type_lbl, toggle_bg_type, NULL));
++	/* Pill switch: 0 = Color, 1 = Image. pad 0 so "Color" lines up with inputs. */
++	type_sw = bgtk_switch(ctx, "Color", "Image",
++			      cfg.type == BG_IMAGE ? 1 : 0, on_bg_type_switch,
++			      NULL, (BGTK_Options){.padding = 0, .margin = 0});
++	if (type_sw)
++		type_sw-&gt;data.switch_w.cb_data = type_sw;
++	rows[n++] = ui_row("Type", type_sw ? type_sw : ui_text("?"));
++
+ 	if (cfg.type == BG_COLOR) {
+ 		bg_color_input = ui_input(color_hex, 120);
+ 		rows[n++] = ui_row("Color", bg_color_input);
+ 	} else {
+ 		bg_path_input = ui_input(cfg.path, 280);
+ 		rows[n++] = ui_row("Path", bg_path_input);
+-		snprintf(mode_lbl, sizeof(mode_lbl), "[ %s ]",
+-			 cfg.mode == IMAGE_SCALED ? "Scaled" : "Tiled");
+-		rows[n++] = ui_row("Mode", ui_btn(mode_lbl, toggle_bg_mode, NULL));
++		/* 0 = Scaled, 1 = Tiled */
++		mode_sw = bgtk_switch(ctx, "Scaled", "Tiled",
++				      cfg.mode == IMAGE_TILED ? 1 : 0,
++				      on_bg_mode_switch, NULL,
++				      (BGTK_Options){.padding = 0, .margin = 0});
++		if (mode_sw)
++			mode_sw-&gt;data.switch_w.cb_data = mode_sw;
++		rows[n++] = ui_row("Mode", mode_sw ? mode_sw : ui_text("?"));
+ 	}
+ 	rows[n++] = ui_btn("Apply", apply_background, NULL);
+ 	body = ui_vbox(rows, n);
+@@ -1311,33 +1383,38 @@ static struct BGTK_Widget *build_theme_page(int panel_w, int panel_h)
+ 			    "Frame border color", theme_frame_color_input);
+ 
+ 	theme_btn_input = theme_color_input(cfg.theme.button, 90);
+-	theme_rule_color_input = theme_color_input(cfg.theme.rule_color, 90);
++	theme_frame_unfocused_input =
++		theme_color_input(cfg.theme.frame_border_unfocused, 90);
+ 	rows[n++] = ui_row2("Button", theme_btn_input,
+-			    "Rule color", theme_rule_color_input);
++			    "Frame border unfocused",
++			    theme_frame_unfocused_input);
+ 
+ 	theme_btn_text_input = theme_color_input(cfg.theme.button_text, 90);
+-	theme_focus_input = theme_color_input(cfg.theme.focus, 90);
++	theme_rule_color_input = theme_color_input(cfg.theme.rule_color, 90);
+ 	rows[n++] = ui_row2("Button text", theme_btn_text_input,
+-			    "Focus", theme_focus_input);
++			    "Rule color", theme_rule_color_input);
+ 
+-	theme_input_bg_input = theme_color_input(cfg.theme.input_bg, 90);
++	theme_focus_input = theme_color_input(cfg.theme.focus, 90);
+ 	theme_frame_border_input =
+ 		theme_int_input((int)cfg.theme.frame_border_size, 60);
+-	rows[n++] = ui_row2("Input background", theme_input_bg_input,
++	rows[n++] = ui_row2("Focus", theme_focus_input,
+ 			    "Frame border size", theme_frame_border_input);
+ 
+-	theme_focus_bg_input = theme_color_input(cfg.theme.focus_bg, 90);
++	theme_input_bg_input = theme_color_input(cfg.theme.input_bg, 90);
+ 	theme_btn_border_input =
+ 		theme_int_input((int)cfg.theme.button_border_size, 60);
+-	rows[n++] = ui_row2("Focus background", theme_focus_bg_input,
++	rows[n++] = ui_row2("Input background", theme_input_bg_input,
+ 			    "Button border size", theme_btn_border_input);
+ 
+-	theme_highlight_input = theme_color_input(cfg.theme.highlight, 90);
++	theme_focus_bg_input = theme_color_input(cfg.theme.focus_bg, 90);
+ 	theme_input_border_input =
+ 		theme_int_input((int)cfg.theme.input_border_size, 60);
+-	rows[n++] = ui_row2("Highlight", theme_highlight_input,
++	rows[n++] = ui_row2("Focus background", theme_focus_bg_input,
+ 			    "Input border size", theme_input_border_input);
+ 
++	theme_highlight_input = theme_color_input(cfg.theme.highlight, 90);
++	rows[n++] = ui_row("Highlight", theme_highlight_input);
++
+ 	theme_margin_input = theme_int_input(cfg.theme.margin, 60);
+ 	rows[n++] = ui_row("Widget margin", theme_margin_input);
+ 
+@@ -1371,6 +1448,7 @@ static void clear_page_ptrs(void)
+ 	theme_bg_input = theme_btn_input = theme_btn_text_input = NULL;
+ 	theme_frame_border_input = theme_btn_border_input = NULL;
+ 	theme_input_border_input = theme_frame_color_input = NULL;
++	theme_frame_unfocused_input = NULL;
+ 	theme_focus_input = theme_focus_bg_input = theme_input_bg_input = NULL;
+ 	theme_highlight_input = theme_rule_color_input = NULL;
+ 	theme_margin_input = theme_padding_input = NULL;
+@@ -1514,9 +1592,10 @@ static void rebuild_sidebar(void)
+ 	for (i = 0; i &lt; NUM_PAGES; i++)
+ 		btns[i] = make_nav_button(i, btn_w);
+ 	old = sidebar_list;
++	/* SIDEBAR_NAV_MARGIN → 2× between nav buttons. */
+ 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
+ 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+-			       .margin = 0, .padding = 0});
++			       .margin = SIDEBAR_NAV_MARGIN, .padding = 0});
+ 	free(btns);
+ 	sidebar-&gt;data.scrollable.items[0] = sidebar_list;
+ 	sidebar-&gt;data.scrollable.widget_count = 1;
+@@ -1546,7 +1625,7 @@ static struct BGTK_Widget *build_sidebar(void)
+ 		btns[i] = make_nav_button(i, btn_w);
+ 	sidebar_list = bgtk_list(ctx, btns, NUM_PAGES,
+ 		(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
+-			       .margin = 0, .padding = 0});
++			       .margin = SIDEBAR_NAV_MARGIN, .padding = 0});
+ 	free(btns);
+ 	scroll = bgtk_scrollable(ctx, &amp;sidebar_list, 1,
+ 		(BGTK_Options){.padding = scroll_pad, .margin = 0});
+diff --git a/bgtk.c b/bgtk.c
+index f2c7865..d25a678 100644
+--- a/bgtk.c
++++ b/bgtk.c
+@@ -884,6 +884,10 @@ static void destroy_widget(struct BGTK_Widget *w)
+ 	case BGTK_WIDGET_TEXT_INPUT:
+ 		free(w-&gt;data.text_input.text);
+ 		break;
++	case BGTK_WIDGET_SWITCH:
++		free(w-&gt;data.switch_w.left);
++		free(w-&gt;data.switch_w.right);
++		break;
+ 	case BGTK_WIDGET_IMAGE:
+ 		if (w-&gt;data.image.pixels) {
+ 			free(w-&gt;data.image.pixels);
+diff --git a/bgtk.h b/bgtk.h
+index a54b936..02d59f5 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -264,6 +264,8 @@ enum BGTK_Widget_Type {
+ 	BGTK_WIDGET_FRAME,
+ 	BGTK_WIDGET_TEXT_INPUT,
+ 	BGTK_WIDGET_RULE,
++	/* Binary pill: left / right labels + sliding knob (0 = left, 1 = right). */
++	BGTK_WIDGET_SWITCH,
+ };
+ 
+ // Widget flags
+@@ -376,10 +378,19 @@ struct BGTK_Widget {
+ 			int selection_start;
+ 			int selection_end;
+ 			int scroll_x;
++			/* -1 = theme.input_border_size; 0 = no border (minimal). */
++			int border_w;
+ 			void (*on_change)(void);
+ 			void (*on_tab)(void);
+ 			void (*on_enter)(void);
+ 		} text_input;
++		struct {
++			char *left;   /* owned */
++			char *right;  /* owned */
++			int value;    /* 0 = left, 1 = right */
++			BGTK_Callback callback;
++			void *cb_data;
++		} switch_w;
+ 	} data;  // End of union
+ };  // End of BGTK_Widget struct
+ 
+@@ -476,4 +487,11 @@ struct BGTK_Widget *bgtk_rule(struct BGTK_Context *ctx,
+ 			      enum BGTK_List_Orientation orientation,
+ 			      int thickness, BGTK_Options options);
+ 
++/* Binary switch / pill: value 0 selects left label, 1 selects right.
++ * Click left/right half of the track; callback fires after value changes. */
++struct BGTK_Widget *bgtk_switch(struct BGTK_Context *ctx, const char *left,
++				const char *right, int value,
++				BGTK_Callback callback, void *cb_data,
++				BGTK_Options options);
++
+ #endif
+diff --git a/config.c b/config.c
+index 873d683..74f753e 100644
+--- a/config.c
++++ b/config.c
+@@ -334,8 +334,10 @@ void init_config_defaults(struct config *config)
+ 	config-&gt;theme.button_border_size = 3;
+ 	config-&gt;theme.input_border_size = 3;
+ 	config-&gt;theme.frame_border_size = 6;
+-	/* Same as background — no contrasting window chrome ring. */
++	/* Same as background — no contrasting window chrome when focused. */
+ 	config-&gt;theme.frame_border_color = 0xFF0A0A0A;
++	/* Dim edge so unfocused windows are still readable. */
++	config-&gt;theme.frame_border_unfocused = 0xFF3A3530;
+ 	config-&gt;theme.focus = 0xFFE0A060;
+ 	config-&gt;theme.focus_bg = 0xFF2A2018;
+ 	config-&gt;theme.input_bg = 0xFF1C1814;
+@@ -432,6 +434,8 @@ int write_config(const struct config *config)
+ 	fprintf(f, "frame_border_size = %u\n", config-&gt;theme.frame_border_size);
+ 	format_hex_color(config-&gt;theme.frame_border_color, c, sizeof(c));
+ 	fprintf(f, "frame_border_color = %s\n", c);
++	format_hex_color(config-&gt;theme.frame_border_unfocused, c, sizeof(c));
++	fprintf(f, "frame_border_unfocused = %s\n", c);
+ 	format_hex_color(config-&gt;theme.focus, c, sizeof(c));
+ 	fprintf(f, "focus = %s\n", c);
+ 	format_hex_color(config-&gt;theme.focus_bg, c, sizeof(c));
+@@ -548,6 +552,9 @@ int parse_config(struct config *config)
+ 			} else if (strcmp(key, "frame_border_color") == 0) {
+ 				config-&gt;theme.frame_border_color =
+ 				    parse_hex_color(value);
++			} else if (strcmp(key, "frame_border_unfocused") == 0) {
++				config-&gt;theme.frame_border_unfocused =
++				    parse_hex_color(value);
+ 			} else if (strcmp(key, "focus") == 0) {
+ 				config-&gt;theme.focus = parse_hex_color(value);
+ 			} else if (strcmp(key, "focus_bg") == 0) {
+diff --git a/config.h b/config.h
+index 2ba4cea..126e7f1 100644
+--- a/config.h
++++ b/config.h
+@@ -30,6 +30,8 @@ typedef struct {
+ 	uint32_t button_border_size;
+ 	uint32_t input_border_size;
+ 	uint32_t frame_border_color;
++	/* Root frame border when the window is unfocused (0 = use background). */
++	uint32_t frame_border_unfocused;
+ 	/* Focused text-input ring + caret. */
+ 	uint32_t focus;
+ 	/* Focused text-input field fill. */
+diff --git a/drawing.c b/drawing.c
+index f410de5..1fa3a2d 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -407,23 +407,25 @@ void calculate_widget_size(struct BGTK_Context *ctx, struct BGTK_Widget *w)
+ 				w-&gt;data.list_widget.content_width -=
+ 				    2 * w-&gt;margin;
+ 		}
+-		/* Intrinsic outer size: content + outer pad/margin inset. */
++		/* Outer size: content + padding; margin is inter-item gap only. */
+ 		if (w-&gt;data.list_widget.orientation == BGTK_LIST_VERTICAL) {
+ 			w-&gt;data.list_widget.content_width = max_width;
+-			w-&gt;w = max_width + inset;
+-			w-&gt;h = w-&gt;data.list_widget.content_height + inset;
++			w-&gt;w = max_width + 2 * w-&gt;padding;
++			w-&gt;h = w-&gt;data.list_widget.content_height +
++			       2 * w-&gt;padding;
+ 		} else {
+ 			w-&gt;data.list_widget.content_height = max_height;
+-			w-&gt;h = max_height + inset;
+-			w-&gt;w = w-&gt;data.list_widget.content_width + inset;
++			w-&gt;h = max_height + 2 * w-&gt;padding;
++			w-&gt;w = w-&gt;data.list_widget.content_width +
++			       2 * w-&gt;padding;
+ 		}
++		(void)inset;
+ 		break;
+ 	}
+ 	case BGTK_WIDGET_IMAGE:
+ 	case BGTK_WIDGET_TEXT_INPUT:
+-		// Text input is a fixed-size widget; its size is set by
+-		// the constructor (bgtk_text_input). Do not resize
+-		// based on content.
++	case BGTK_WIDGET_SWITCH:
++		// Fixed-size widgets; size set by constructor.
+ 		break;
+ 	case BGTK_WIDGET_FRAME:
+ 		/* Must recurse: root is usually a frame; without this,
+@@ -908,21 +910,22 @@ static void draw_list(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		struct BGTK_Widget *child = w-&gt;data.list_widget.items[i];
+ 
+ 		if (w-&gt;data.list_widget.orientation == BGTK_LIST_VERTICAL) {
+-			child-&gt;x = w-&gt;x + w-&gt;margin + w-&gt;padding;
++			/* Margin is row gap only — not a left inset (kept L/R even). */
++			child-&gt;x = w-&gt;x + w-&gt;padding;
+ 			if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+ 				child-&gt;x =
+-				    w-&gt;x + w-&gt;margin +
+-				    (w-&gt;w - 2 * w-&gt;margin - child-&gt;w) / 2;
++				    w-&gt;x +
++				    (w-&gt;w - child-&gt;w) / 2;
+ 			}
+-			child-&gt;y = w-&gt;y + w-&gt;margin + w-&gt;padding + current_y;
++			child-&gt;y = w-&gt;y + w-&gt;padding + current_y;
+ 			current_y += child-&gt;h + 2 * w-&gt;margin;
+ 		} else {	// BGTK_LIST_HORIZONTAL
+-			child-&gt;x = w-&gt;x + w-&gt;margin + w-&gt;padding + current_x;
+-			child-&gt;y = w-&gt;y + w-&gt;margin + w-&gt;padding;
++			child-&gt;x = w-&gt;x + w-&gt;padding + current_x;
++			child-&gt;y = w-&gt;y + w-&gt;padding;
+ 			if (w-&gt;flags &amp; BGTK_FLAG_CENTER) {
+ 				child-&gt;y =
+-				    w-&gt;y + w-&gt;margin +
+-				    (w-&gt;h - 2 * w-&gt;margin - child-&gt;h) / 2;
++				    w-&gt;y +
++				    (w-&gt;h - child-&gt;h) / 2;
+ 			}
+ 			current_x += child-&gt;w + 2 * w-&gt;margin;
+ 		}
+@@ -965,8 +968,12 @@ static void draw_frame(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		uint32_t border =
+ 			w-&gt;data.frame.border_color ? w-&gt;data.frame.border_color
+ 						  : ctx-&gt;theme.frame_border_color;
+-		if (!ctx-&gt;window_focused)
+-			border = ctx-&gt;theme.background;
++		if (!ctx-&gt;window_focused) {
++			/* Dedicated unfocused chrome; 0 falls back to bg. */
++			border = ctx-&gt;theme.frame_border_unfocused
++					 ? ctx-&gt;theme.frame_border_unfocused
++					 : ctx-&gt;theme.background;
++		}
+ 		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
+ 			  w-&gt;w - 2 * w-&gt;margin, bw, border);
+ 		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin,
+@@ -999,31 +1006,50 @@ static void draw_text_input(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		ctx-&gt;theme.focus_bg ? ctx-&gt;theme.focus_bg : 0xFFE8F2FF;
+ 	uint32_t input_bg =
+ 		ctx-&gt;theme.input_bg ? ctx-&gt;theme.input_bg : 0xFFFFFFFF;
+-	uint32_t field_bg = focused ? focus_bg : input_bg;
+-	uint32_t border = focused ? focus : 0xFF888888;
+ 	uint32_t text_color = ctx-&gt;theme.button_text ?
+ 		ctx-&gt;theme.button_text : 0xFF111111;
+-
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
+-		  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin, field_bg);
+-
+-	int bw = (int)ctx-&gt;theme.input_border_size;
+-	if (bw &lt; 1)
+-		bw = 1;
+-	/* Focused fields get a visibly thicker ring so focus is obvious. */
+-	if (focused &amp;&amp; bw &lt; 3)
++	uint32_t field_bg;
++	uint32_t border;
++	int bw;
++
++	/* Per-widget border (-1 = theme; 0 = borderless / minimal field). */
++	bw = w-&gt;data.text_input.border_w &gt;= 0
++		     ? w-&gt;data.text_input.border_w
++		     : (int)ctx-&gt;theme.input_border_size;
++	if (bw &lt; 0)
++		bw = 0;
++	/* Focused fields get a thicker ring only when a border is drawn. */
++	if (focused &amp;&amp; bw &gt; 0 &amp;&amp; bw &lt; 3)
+ 		bw = 3;
+ 	if (bw * 2 &gt; w-&gt;w - 2 * w-&gt;margin)
+ 		bw = (w-&gt;w - 2 * w-&gt;margin) / 2;
+ 	if (bw * 2 &gt; w-&gt;h - 2 * w-&gt;margin)
+ 		bw = (w-&gt;h - 2 * w-&gt;margin) / 2;
+-	if (bw &lt; 1)
+-		bw = 1;
++	if (bw &lt; 0)
++		bw = 0;
+ 
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, w-&gt;w - 2 * w-&gt;margin, bw, border);	// Top
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;h - bw - w-&gt;margin, w-&gt;w - 2 * w-&gt;margin, bw, border);	// Bottom
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, bw, w-&gt;h - 2 * w-&gt;margin, border);	// Left
+-	draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - bw - w-&gt;margin, w-&gt;y + w-&gt;margin, bw, w-&gt;h - 2 * w-&gt;margin, border);	// Right
++	/* Borderless: blend into window bg so only text + caret show. */
++	if (bw == 0)
++		field_bg = ctx-&gt;theme.background ? ctx-&gt;theme.background
++						 : 0xFF0A0A0A;
++	else
++		field_bg = focused ? focus_bg : input_bg;
++	border = focused ? focus : 0xFF888888;
++
++	draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
++		  w-&gt;w - 2 * w-&gt;margin, w-&gt;h - 2 * w-&gt;margin, field_bg);
++
++	if (bw &gt; 0) {
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin,
++			  w-&gt;w - 2 * w-&gt;margin, bw, border);
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin,
++			  w-&gt;y + w-&gt;h - bw - w-&gt;margin, w-&gt;w - 2 * w-&gt;margin, bw,
++			  border);
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;margin, w-&gt;y + w-&gt;margin, bw,
++			  w-&gt;h - 2 * w-&gt;margin, border);
++		draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - bw - w-&gt;margin,
++			  w-&gt;y + w-&gt;margin, bw, w-&gt;h - 2 * w-&gt;margin, border);
++	}
+ 
+ 	int inner_x0 = w-&gt;x + w-&gt;margin + bw;
+ 	int inner_y0 = w-&gt;y + w-&gt;margin + bw;
+@@ -1191,6 +1217,103 @@ static void draw_rule(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	}
+ }
+ 
++/*
++ * Binary switch:  left_label  [●────]  right_label
++ * Labels sit outside a slim track; knob slides left/right.
++ */
++static void draw_switch(struct BGTK_Context *ctx, struct BGTK_Widget *w,
++			uint32_t *pixels)
++{
++	int x0 = w-&gt;x + w-&gt;margin + w-&gt;padding;
++	int y0 = w-&gt;y + w-&gt;margin + w-&gt;padding;
++	int iw = w-&gt;w - 2 * (w-&gt;margin + w-&gt;padding);
++	int ih = w-&gt;h - 2 * (w-&gt;margin + w-&gt;padding);
++	int fs = ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14;
++	int kn = fs + 2;
++	int val = w-&gt;data.switch_w.value ? 1 : 0;
++	const char *L = w-&gt;data.switch_w.left ? w-&gt;data.switch_w.left : "";
++	const char *R = w-&gt;data.switch_w.right ? w-&gt;data.switch_w.right : "";
++	int lw = 0, lh = 0, rw = 0, rh = 0;
++	uint32_t track = ctx-&gt;theme.button ? ctx-&gt;theme.button : 0xFF1C1814;
++	uint32_t edge = ctx-&gt;theme.rule_color ? ctx-&gt;theme.rule_color
++					     : (ctx-&gt;theme.button_text
++							? ctx-&gt;theme.button_text
++							: 0xFFF5E6D3);
++	uint32_t kn_col = ctx-&gt;theme.highlight ? ctx-&gt;theme.highlight
++					       : (ctx-&gt;theme.focus
++							  ? ctx-&gt;theme.focus
++							  : 0xFFE0A060);
++	uint32_t dim = ctx-&gt;theme.button_text ? ctx-&gt;theme.button_text
++					      : 0xFFF5E6D3;
++	uint32_t active = kn_col;
++	int gap = 8;
++	int track_w, track_h, track_x, track_y, kn_x, kn_y, text_y, th;
++
++	if (iw &lt; 16 || ih &lt; 8)
++		return;
++	if (kn &gt; ih - 2)
++		kn = ih - 2;
++	if (kn &lt; 10)
++		kn = 10;
++
++	if (ctx-&gt;ft_face) {
++		FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, fs);
++		measure_text(ctx-&gt;ft_face, L, &amp;lw, &amp;lh);
++		measure_text(ctx-&gt;ft_face, R, &amp;rw, &amp;rh);
++	} else {
++		lh = rh = fs;
++		lw = (int)strlen(L) * (fs / 2 + 1);
++		rw = (int)strlen(R) * (fs / 2 + 1);
++	}
++	th = lh &gt; rh ? lh : rh;
++	track_h = kn + 4;
++	if (track_h &gt; ih)
++		track_h = ih;
++	track_w = kn * 5 / 2;
++	if (track_w &lt; kn + 16)
++		track_w = kn + 16;
++	/* Keep room for both labels. */
++	if (lw + gap + track_w + gap + rw &gt; iw)
++		track_w = iw - lw - rw - gap * 2;
++	if (track_w &lt; kn + 8)
++		track_w = kn + 8;
++
++	track_x = x0 + lw + gap;
++	track_y = y0 + (ih - track_h) / 2;
++	text_y = y0 + (ih - th) / 2;
++	if (text_y &lt; y0)
++		text_y = y0;
++
++	/* Left / right labels */
++	draw_text_style(ctx, pixels, L, x0, text_y,
++			val == 0 ? active : dim,
++			val == 0 ? BGTK_TEXT_BOLD : 0);
++	draw_text_style(ctx, pixels, R, track_x + track_w + gap, text_y,
++			val == 1 ? active : dim,
++			val == 1 ? BGTK_TEXT_BOLD : 0);
++
++	/* Track */
++	draw_rect(ctx, pixels, track_x, track_y, track_w, track_h, track);
++	draw_rect(ctx, pixels, track_x, track_y, track_w, 1, edge);
++	draw_rect(ctx, pixels, track_x, track_y + track_h - 1, track_w, 1, edge);
++	draw_rect(ctx, pixels, track_x, track_y, 1, track_h, edge);
++	draw_rect(ctx, pixels, track_x + track_w - 1, track_y, 1, track_h, edge);
++
++	/* Knob */
++	if (val == 0)
++		kn_x = track_x + 2;
++	else
++		kn_x = track_x + track_w - kn - 2;
++	kn_y = track_y + (track_h - kn) / 2;
++	draw_rect(ctx, pixels, kn_x, kn_y, kn, kn, kn_col);
++	if (kn &gt; 6) {
++		draw_rect(ctx, pixels, kn_x + 1, kn_y + 1, kn - 2, 1, edge);
++		draw_rect(ctx, pixels, kn_x + 1, kn_y + kn - 2, kn - 2, 1, edge);
++		draw_rect(ctx, pixels, kn_x + 1, kn_y + 1, 1, kn - 2, edge);
++		draw_rect(ctx, pixels, kn_x + kn - 2, kn_y + 1, 1, kn - 2, edge);
++	}
++}
++
+ void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 		 uint32_t *pixels)
+ {
+@@ -1222,6 +1345,9 @@ void draw_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 	case BGTK_WIDGET_RULE:
+ 		draw_rule(ctx, w, pixels);
+ 		break;
++	case BGTK_WIDGET_SWITCH:
++		draw_switch(ctx, w, pixels);
++		break;
+ 	default:
+ 		puts("can't draw unknown widget");
+ 		break;
+diff --git a/test/headless.c b/test/headless.c
+index 0ef5536..78f3fe9 100644
+--- a/test/headless.c
++++ b/test/headless.c
+@@ -447,6 +447,57 @@ int main(void)
+ 		bgtk_destroy_mock(sctx);
+ 	}
+ 
++	/* 08: Binary switch pill (left/right labels + knob). */
++	{
++		struct BGTK_Context *sctx = bgtk_init_mock(360, 120);
++		struct BGTK_Widget *sw0, *sw1, *col, *frame;
++		struct BGTK_Widget *items[3];
++		struct InputEvent click = {0};
++
++		if (!sctx) {
++			fprintf(stderr, "headless: switch scene init failed\n");
++			return 1;
++		}
++		sw0 = bgtk_switch(sctx, "Color", "Image", 0, NULL, NULL,
++				  (BGTK_Options){.padding = 4, .margin = 4});
++		sw1 = bgtk_switch(sctx, "Scaled", "Tiled", 1, NULL, NULL,
++				  (BGTK_Options){.padding = 4, .margin = 4});
++		items[0] = bgtk_text(sctx, "switches",
++				     (BGTK_Options){.padding = 4, .margin = 2});
++		items[1] = sw0;
++		items[2] = sw1;
++		col = bgtk_list(sctx, items, 3,
++			(BGTK_Options){.orientation = BGTK_LIST_VERTICAL,
++				       .margin = 4, .padding = 4});
++		frame = bgtk_frame(sctx, col, 360, 120,
++				   (BGTK_Options){.padding = 8});
++		sctx-&gt;root_widget = frame;
++		bgtk_draw_widgets(sctx);
++		take_screenshot(sctx, "headless_08_switch_left.png");
++		/* Click right half of first switch → value 1. */
++		if (sw0) {
++			click.type = EV_KEY;
++			click.code = BTN_LEFT;
++			click.value = 1;
++			click.x = sw0-&gt;x + sw0-&gt;w * 3 / 4;
++			click.y = sw0-&gt;y + sw0-&gt;h / 2;
++			/* Positions assigned during draw; re-draw positions. */
++			bgtk_draw_widgets(sctx);
++			click.x = sw0-&gt;x + sw0-&gt;w * 3 / 4;
++			click.y = sw0-&gt;y + sw0-&gt;h / 2;
++			bgtk_inject_event(sctx, click);
++			if (sw0-&gt;data.switch_w.value != 1) {
++				fprintf(stderr,
++					"headless: switch click expected 1 got %d\n",
++					sw0-&gt;data.switch_w.value);
++				bgtk_destroy_mock(sctx);
++				return 1;
++			}
++			take_screenshot(sctx, "headless_08b_switch_right.png");
++		}
++		bgtk_destroy_mock(sctx);
++	}
++
+ 	printf("headless test complete. PNG frames written.\n");
+ 	return 0;
+ }
+diff --git a/test/test_settings.c b/test/test_settings.c
+index e394229..ef01366 100644
+--- a/test/test_settings.c
++++ b/test/test_settings.c
+@@ -74,6 +74,12 @@ int main(void)
+ 	/* 00: Initial view - Background page is shown */
+ 	bgtk_draw_widgets(ctx);
+ 	take_screenshot(ctx, "settings_00_background.png");
++	/* Unfocused frame border (theme.frame_border_unfocused). */
++	bgtk_set_window_focus(ctx, 0);
++	bgtk_draw_widgets(ctx);
++	take_screenshot(ctx, "settings_00u_unfocused.png");
++	bgtk_set_window_focus(ctx, 1);
++	bgtk_draw_widgets(ctx);
+ 	/* Preview must be red (0xE53935), not BGR-swapped blue-ish. */
+ 	{
+ 		uint32_t *fb = (uint32_t *)ctx-&gt;shm_buffer;
+@@ -213,7 +219,8 @@ int main(void)
+ 
+ 	/* Sidebar nav: first button center ~40, step ~45 (pad/2+2 chrome). */
+ 	#define SIDEBAR_X 70
+-	#define SIDEBAR_BTN_Y(n) (40 + (n) * 45)
++	/* Nav buttons ~41px tall + 16px gap (SIDEBAR_NAV_MARGIN=8 → 2×margin). */
++	#define SIDEBAR_BTN_Y(n) (39 + (n) * 57)
+ 
+ 	/* 01: Click "Cursor" */
+ 	{
+diff --git a/widgets.c b/widgets.c
+index f8dc8ed..9282c50 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -571,6 +571,76 @@ struct BGTK_Widget *bgtk_rule(struct BGTK_Context *ctx,
+ 	return w;
+ }
+ 
++/* Click left of center → value 0; right → 1. */
++static int switch_handle_event(struct BGTK_Widget *widget, struct InputEvent ev)
++{
++	int inside, mid, new_v;
++
++	inside = (ev.x &gt;= widget-&gt;x &amp;&amp; ev.x &lt; widget-&gt;x + widget-&gt;w &amp;&amp;
++		  ev.y &gt;= widget-&gt;y &amp;&amp; ev.y &lt; widget-&gt;y + widget-&gt;h);
++	if (ev.code != BTN_LEFT || ev.value != 1 || !inside)
++		return 0;
++
++	/* Center of content box (labels + track). */
++	mid = widget-&gt;x + widget-&gt;margin + widget-&gt;padding +
++	      (widget-&gt;w - 2 * (widget-&gt;margin + widget-&gt;padding)) / 2;
++	new_v = (ev.x &gt;= mid) ? 1 : 0;
++	if (new_v != widget-&gt;data.switch_w.value) {
++		widget-&gt;data.switch_w.value = new_v;
++		if (widget-&gt;data.switch_w.callback)
++			widget-&gt;data.switch_w.callback(
++				widget-&gt;data.switch_w.cb_data);
++		if (widget-&gt;ctx)
++			bgtk_draw_widgets(widget-&gt;ctx);
++	}
++	return 1;
++}
++
++struct BGTK_Widget *bgtk_switch(struct BGTK_Context *ctx, const char *left,
++				const char *right, int value,
++				BGTK_Callback callback, void *cb_data,
++				BGTK_Options options)
++{
++	struct BGTK_Widget *w;
++	int lw = 0, lh = 0, rw = 0, rh = 0;
++	int track_h, gap, kn, fs;
++
++	w = widget_new(ctx, BGTK_WIDGET_SWITCH, options);
++	if (!w)
++		return NULL;
++	w-&gt;data.switch_w.left = strdup(left ? left : "");
++	w-&gt;data.switch_w.right = strdup(right ? right : "");
++	w-&gt;data.switch_w.value = value ? 1 : 0;
++	w-&gt;data.switch_w.callback = callback;
++	w-&gt;data.switch_w.cb_data = cb_data;
++	w-&gt;handle_event = switch_handle_event;
++
++	if (ctx &amp;&amp; ctx-&gt;ft_face) {
++		FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0,
++				   ctx-&gt;font_size &gt; 0 ? ctx-&gt;font_size : 14);
++		measure_text(ctx-&gt;ft_face, w-&gt;data.switch_w.left, &amp;lw, &amp;lh);
++		measure_text(ctx-&gt;ft_face, w-&gt;data.switch_w.right, &amp;rw, &amp;rh);
++	} else {
++		fs = (ctx &amp;&amp; ctx-&gt;font_size &gt; 0) ? ctx-&gt;font_size : 14;
++		lh = rh = fs;
++		lw = (int)strlen(w-&gt;data.switch_w.left) * (fs / 2 + 1);
++		rw = (int)strlen(w-&gt;data.switch_w.right) * (fs / 2 + 1);
++	}
++	if (lh &lt; rh)
++		lh = rh;
++	/* left_label | gap | track | gap | right_label */
++	fs = (ctx &amp;&amp; ctx-&gt;font_size &gt; 0) ? ctx-&gt;font_size : 14;
++	kn = fs + 2;
++	if (kn &lt; 12)
++		kn = 12;
++	gap = 8;
++	track_h = kn + 6;
++	/* Track wide enough for knob travel (≈ 2.5× knob). */
++	w-&gt;w = lw + rw + kn * 5 / 2 + gap * 2 + 2 * (w-&gt;padding + w-&gt;margin);
++	w-&gt;h = (track_h &gt; lh ? track_h : lh) + 2 * (w-&gt;padding + w-&gt;margin);
++	return w;
++}
++
+ struct BGTK_Widget *bgtk_button(struct BGTK_Context *ctx,
+ 				struct BGTK_Widget *label,
+ 				BGTK_Callback callback, void *cb_data,
+@@ -719,11 +789,10 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
+ 	widget-&gt;data.list_widget.orientation = options.orientation;
+ 
+ 	/* Content size matches draw_list:
+-	 * first child at (margin+padding), gaps of 2*margin, outer inset
+-	 * margin+padding on the far side. */
++	 * children at padding; gaps of 2*margin between items; outer 2*padding. */
+ 	int max_width = 0;
+ 	int max_height = 0;
+-	int inset = 2 * (widget-&gt;margin + widget-&gt;padding);
++	int pad2 = 2 * widget-&gt;padding;
+ 	for (int i = 0; i &lt; widget_count; i++) {
+ 		widget-&gt;data.list_widget.items[i] = items[i];
+ 		if (options.orientation == BGTK_LIST_VERTICAL) {
+@@ -747,13 +816,13 @@ struct BGTK_Widget *bgtk_list(struct BGTK_Context *ctx,
+ 			widget-&gt;w -= 2 * widget-&gt;margin;
+ 		}
+ 	}
+-	// Outer pad+margin on both sides + max child on the cross axis
++	/* Outer padding only; margin is inter-item gap (not side inset). */
+ 	if (options.orientation == BGTK_LIST_VERTICAL) {
+-		widget-&gt;w = max_width + inset;
+-		widget-&gt;h += inset;
++		widget-&gt;w = max_width + pad2;
++		widget-&gt;h += pad2;
+ 	} else {
+-		widget-&gt;h = max_height + inset;
+-		widget-&gt;w += inset;
++		widget-&gt;h = max_height + pad2;
++		widget-&gt;w += pad2;
+ 	}
+ 
+ 	// Override the default event handler with list-specific one
+@@ -839,6 +908,7 @@ struct BGTK_Widget *bgtk_text_input(struct BGTK_Context *ctx,
+ 	widget-&gt;data.text_input.on_change = NULL;
+ 	widget-&gt;data.text_input.on_tab = NULL;
+ 	widget-&gt;data.text_input.on_enter = NULL;
++	widget-&gt;data.text_input.border_w = -1; /* theme default */
+ 
+ 	// Override the default event handler with text input-specific one
+ 	widget-&gt;handle_event = text_input_handle_event;
+</pre>

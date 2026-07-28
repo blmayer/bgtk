@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 0a314a7</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 0a314a7
+parent <a href=commit-bdf0563.html>bdf0563</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-06-21T23:41:39-03:00
+
+    docs: refreshed AGENTS.md with current layout and testing requirements
+
+<a href=tree-0a314a7.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 5313e5d..b7ff0f3 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,56 +2,84 @@
+ 
+ ## Project Overview
+ 
+-BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux systems. It provides a set of widgets and a rendering system for building graphical user interfaces.
++BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit for the BGCE display
++server. It provides widgets and a rendering system for building graphical user
++interfaces by writing directly to a graphical buffer. Real apps run against a
++BGCE compositor on Linux; development and testing use a headless/mock mode that
++works on Linux and macOS without BGCE.
+ 
+ ## Codebase Structure
+ 
+ ```
+ /
+ ├── AGENTS.md         - This file, guidance for agents working on the project
+-├── app.c             - Test application entry point
+-├── bgtk.c            - Core BGTK implementation
++├── bgtk.c            - Core BGTK implementation (init, events, mock mode, screenshots)
+ ├── bgtk.h            - Public API headers
+-├── config.c          - Configuration file parsing
+-├── config.h          - Configuration definitions
++├── config.c / config.h - Configuration file parsing and theme/font settings
+ ├── drawing.c         - Drawing and rendering functions
++├── widgets.c         - Widget implementations
++├── html.c / html.h   - HTML → widget tree parser (libxml2)
+ ├── internal.h        - Internal headers and definitions
+-├── Makefile          - Build configuration
+-├── README.md         - Project overview
++├── Makefile          - Build configuration (real apps + headless/test targets)
++├── README.md         - Project overview and mock testing examples
+ ├── stb_image.h       - STB image loading library
+ ├── stb_image_write.h - STB image writing library
+-├── test/             - Test scripts and utilities
+-└── widgets.c         - Widget implementations
++├── apps/             - Example / real applications
++│   ├── test_app.c
++│   ├── image_viewer.c
++│   ├── launcher.c
++│   ├── terminal.c / terminal.h / term_core.c
++│   └── gemini_browser.c
++├── compat/           - Stubs/headers so headless builds work off Linux (bgce, input.h)
++├── test/             - Headless/mock tests (produce PNG screenshots)
++│   ├── headless.c
++│   ├── test_terminal.c
++│   ├── test_html.c
++│   ├── test_gemini_browser.c
++│   └── server_client.sh
++└── www/              - Sample HTML for html tests
+ ```
+ 
+ ## Key Components
+ 
+ ### 1. BGTK Context (`struct BGTK_Context`)
+ - Central structure holding application state
+-- Manages the connection to the display server
++- Manages the connection to the display server (or an owned in-memory buffer in mock mode)
+ - Contains the root widget and focused widget
+-- Handles theme and font information
++- Handles theme and font information (FreeType)
+ 
+ ### 2. Widget System
+ - Base widget structure: `struct BGTK_Widget`
+-- Widget types: Button, Label, Text, Scrollable, Image, Frame, TextInput
++- Widget types: Button, Label, Text, Scrollable, List, Image, Frame, TextInput
+ - Each widget has:
+   - Position and dimensions (x, y, w, h)
+-  - Styling properties (padding, margin, flags)
++  - Styling properties (padding, margin, flags, text_align)
+   - Type-specific data in a union
+   - Event handling function (`handle_event`)
++- Constructors take a `BGTK_Options` struct (padding, margin, flags, alignment, etc.)
+ 
+ ### 3. Event Handling
+ - Events start at the root widget and propagate down to children
+ - Each widget can handle or pass through events
+ - Mouse and keyboard events are supported
+-- Focus management for text input
++- Focus management for text input via `bgtk_set_focus()`
++- In mock/headless tests, feed events with `bgtk_inject_event()`
+ 
+ ### 4. Drawing System
+-- Widgets are drawn to a shared memory buffer
++- Widgets are drawn to a shared memory buffer (`ctx-&gt;shm_buffer`)
+ - Drawing functions in `drawing.c`
+ - Supports text rendering with FreeType
+ - Handles widget layout and positioning
++- `take_screenshot()` dumps the buffer to PNG for visual inspection
++
++### 5. HTML Support
++- `html.c` / `html.h` parse HTML (file or inline string) into a widget tree
++- Entry points: `bgtk_html_parse()`, `bgtk_html_parse_inline()`
++- Returns a frame widget; assign to `ctx-&gt;root_widget` before drawing
++
++### 6. Apps
++- Real BGCE apps live under `apps/` (terminal, gemini_browser, launcher, image_viewer, test_app)
++- Terminal logic is split: `term_core.c` (shared) + `terminal.c` (real main) + `test/test_terminal.c` (headless main)
+ 
+ ## Development Guidelines
+ 
+@@ -61,14 +89,15 @@ BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux syste
+   organization matters, suggest if a refactor is beneficial.
+ - Keep imports lean: we should only need small and focused libraries.
+ - Avoid creating variables, use the fields from structs directly if possible.
+- 
++- **Every new feature or behavior change must be tested** (see Testing below).
++
+ ### Coding Style
+ - Follow existing code style (indentation, naming, etc.)
+ - Use defensive ifs so code is less indented.
+ - Use clear, descriptive variable and function names
+ - Keep functions focused on single responsibilities
+ - Add comments for complex logic
+-- Ident using tabs
++- Indent using tabs
+ 
+ ### Widget Implementation
+ 1. Add new widget type to `enum BGTK_Widget_Type`
+@@ -77,6 +106,7 @@ BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux syste
+ 4. Implement drawing logic in `drawing.c`
+ 5. Implement event handler (or use default)
+ 6. Add declaration to `bgtk.h`
++7. Add or extend a headless test that screenshots the new widget
+ 
+ ### Event Handling
+ - Each widget should implement `handle_event`
+@@ -92,23 +122,115 @@ BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux syste
+ 3. Implement the drawing function in `drawing.c`
+ 4. Implement event handling if needed
+ 5. Add the constructor to `bgtk.h`
++6. Write/extend a headless test; inspect the PNG screenshots
+ 
+ ### Modifying Event Handling
+ 1. Update widget-specific handlers in `widgets.c`
+ 2. Modify `bgtk_handle_input_event` in `bgtk.c` if needed
+ 3. Ensure proper event propagation
++4. Inject events in a headless test and verify via screenshots
+ 
+ ### Adding New Features
+ 1. Add necessary data structures
+ 2. Implement core functionality
+ 3. Add configuration options if needed
+-4. Update documentation
+-
++4. **Add or update headless tests** (mocks + screenshots)
++5. Update documentation (`README.md`, this file if structure/API changed)
+ 
+ ### Debugging Tips
++- Prefer headless/mock runs over attaching a real BGCE server
++- Use `take_screenshot()` at intermediate steps and open the PNGs
+ - Use `printf` for debugging output
+ - Check widget bounds and positions
+-- Verify event coordinates
++- Verify event coordinates (absolute at root, relative when propagating)
++
++## Testing (required for features)
++
++**Features must be tested.** Do not ship a new widget, rendering path, event
++behavior, or app-facing capability without a headless/mock test that exercises
++it and produces inspectable screenshots. If you change existing behavior,
++update or extend the relevant test and re-inspect the PNGs.
++
++### Methodology: mocks + screenshot inspection
++
++BGTK is primarily validated visually, not via pixel-diff assertions. The flow:
++
++1. **Init a mock context** — `bgtk_init_mock(width, height)` allocates an
++   in-memory framebuffer. No BGCE server, DRM, or real input devices required.
++2. **Build the widget tree** — same constructors and layout as a real app;
++   set `ctx-&gt;root_widget`.
++3. **Draw** — `bgtk_draw_widgets(ctx)`.
++4. **Screenshot** — `take_screenshot(ctx, "descriptive_name.png")` writes the
++   current buffer as PNG (pass `NULL` for a timestamped name).
++5. **Simulate input** (when relevant) — build a `struct InputEvent` (mouse
++   click, key press, etc.) and call `bgtk_inject_event(ctx, ev)`, then draw
++   and screenshot again.
++6. **Inspect the PNGs** — open the generated images and verify layout, colors,
++   text, focus, scrolling, terminal output, etc. This is the pass/fail gate:
++   if the screenshot does not look correct, the feature is not done.
++7. **Cleanup** — `bgtk_destroy_mock(ctx)`.
++
++Typical test shape:
++
++```c
++struct BGTK_Context *ctx = bgtk_init_mock(600, 400);
++ctx-&gt;root_widget = /* build UI */;
++bgtk_draw_widgets(ctx);
++take_screenshot(ctx, "feature_00_init.png");
++
++struct InputEvent click = {
++	.type = EV_KEY,
++	.code = BTN_LEFT,
++	.value = 1,
++	.x = 120,
++	.y = 80,
++};
++bgtk_inject_event(ctx, click);
++take_screenshot(ctx, "feature_01_after_click.png");
++
++bgtk_destroy_mock(ctx);
++```
++
++### Key mock / testing APIs
++
++| Function | Role |
++|----------|------|
++| `bgtk_init_mock(w, h)` | Headless context with owned framebuffer |
++| `bgtk_destroy_mock(ctx)` | Free mock context and its buffer |
++| `bgtk_draw_widgets(ctx)` | Render the widget tree into the buffer |
++| `take_screenshot(ctx, path)` | Dump buffer to PNG (`NULL` = timestamped name) |
++| `bgtk_inject_event(ctx, ev)` | Synthetic mouse/keyboard input |
++| `bgtk_set_focus(ctx, widget)` | Focus (e.g. text input) before key events |
++
++### Existing headless tests
++
++Build/run examples (on macOS, `make` defaults to headless targets):
++
++| Target | Source | What to inspect |
++|--------|--------|-----------------|
++| `make headless &amp;&amp; ./headless` | `test/headless.c` | Basic widgets, click, focus, typing (`headless_*.png`) |
++| `make test_terminal &amp;&amp; ./test_terminal` | `test/test_terminal.c` | Terminal/ANSI rendering (`term_*.png`) |
++| `make test_html &amp;&amp; ./test_html` | `test/test_html.c` | HTML → widget tree (`test_html_*.png`) |
++| `make test_gemini_browser &amp;&amp; ./test_gemini_browser` | `test/test_gemini_browser.c` | Gemini browser UI flow (`gemini_browser_*.png`) |
++
++Headless binaries link `compat/bgce_stub.c` and use `-Icompat` so they compile
++on non-Linux machines. Real apps (`test_app`, `terminal`, `gemini_browser`,
++etc.) still need BGCE on Linux.
++
++### Agent obligations when implementing features
++
++1. Prefer extending an existing `test/*.c` program, or add a focused headless
++   test binary if the feature is standalone.
++2. Screenshot **before and after** meaningful state changes (init, after click,
++   after text entry, after scroll, etc.) with clear sequential filenames
++   (`feature_00_...`, `feature_01_...`).
++3. **Read the PNGs** (via image/read tools or by path) and confirm the output
++   matches intent — do not only check that the binary exited 0.
++4. Keep test helpers small; mirror patterns in `test/headless.c` and
++   `test/test_terminal.c` (shared core code in `apps/` when an app already
++   has a real + test split, like the terminal).
++5. The `make test` target (BGCE + live apps) is supplementary and Linux-only;
++   **headless mock tests are the primary development and agent workflow**.
+ 
+ ## Important Notes for Agents
+ 
+@@ -116,23 +238,30 @@ BGTK (Brian's GUI Toolkit) is a lightweight GUI toolkit designed for Linux syste
+ 2. **Widget Hierarchy**: The root widget is in `ctx-&gt;root_widget`. Child widgets are stored in parent widgets.
+ 3. **Focus Management**: Text input widgets need special handling for keyboard events. Use `bgtk_set_focus()` to manage focus.
+ 4. **Drawing**: Widgets are drawn to `ctx-&gt;shm_buffer`. Use the drawing functions in `drawing.c`.
+-5. **Memory Management**: Widgets are responsible for freeing their own resources in the destructor.
++5. **Memory Management**: Widgets are responsible for freeing their own resources in the destructor. Mock contexts are freed with `bgtk_destroy_mock()`, real ones with `bgtk_destroy()`.
+ 6. **Configuration**: Theme and font settings are loaded from a config file at startup.
+-
++7. **Platform**: Full BGCE apps are Linux-oriented. Headless/mock builds are the default on macOS (`Makefile` sets `TARGET = headless test_terminal test_html` on Darwin).
+ 
+ ## Useful Functions
+ 
+-- `bgtk_init()`: Initialize the BGTK context
+-- `bgtk_destroy()`: Clean up resources
+-- `bgtk_handle_input_event()`: Handle input events
++### Runtime (real or mock)
++- `bgtk_init()` / `bgtk_init_mock()`: Initialize the BGTK context
++- `bgtk_destroy()` / `bgtk_destroy_mock()`: Clean up resources
++- `bgtk_handle_input_event()` / `bgtk_inject_event()`: Handle or inject input
+ - `bgtk_draw_widgets()`: Render all widgets
+ - `bgtk_set_focus()`: Set the focused widget
++- `take_screenshot()`: Write framebuffer to PNG
+ - `draw_widget()`: Draw a single widget
+ - `calculate_widget_size()`: Calculate widget dimensions and positions
+ 
+-This is a toolkit for the BGCE display server. It works by directly writing to
+-a graphical buffer, this library lets developers create user interfaces easily.
++### Widget constructors
++- `bgtk_text()`, `bgtk_label()`, `bgtk_button()`, `bgtk_scrollable()`,
++  `bgtk_list()`, `bgtk_image()`, `bgtk_frame()`, `bgtk_text_input()`
+ 
+-## Current task
++### HTML
++- `bgtk_html_parse()`, `bgtk_html_parse_inline()`
+ 
+-It seems the image viewer is not handling keyboard input: when i click on the text input it focuses, but typing does nothing, can you fix?
++This is a toolkit for the BGCE display server. It works by directly writing to
++a graphical buffer; this library lets developers create user interfaces easily.
++Headless/mock mode lets you develop and verify UIs by inspecting PNG screenshots
++without a running compositor.
+</pre>

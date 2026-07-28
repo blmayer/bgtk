@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk b4fecc1</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit b4fecc1
+parent <a href=commit-a510ab0.html>a510ab0</a> 
+author myr &lt;myr@terminal.pink&gt;
+date   2026-02-02T09:38:16-03:00
+
+    fixed text input
+
+<a href=tree-b4fecc1.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/README.md b/README.md
+index 82eaed0..173a45f 100644
+--- a/README.md
++++ b/README.md
+@@ -12,6 +12,16 @@ create graphical user interfaces by directly writing to a shared graphical buffe
+ - Theme support via config files (e.g., colors, fonts).
+ 
+ 
++## Available Widgets
++- Text: bgtk_text(ctx, text, options)
++- Label: bgtk_label(ctx, text, options)
++- Button: bgtk_button(ctx, label_widget, callback, options)
++- Scrollable: bgtk_scrollable(ctx, items, widget_count, options)
++- Image: bgtk_image(ctx, path, options)
++- Frame: bgtk_frame(ctx, child, width, height, options)
++- Text input: bgtk_text_input(ctx, initial_text, width, height, options)
++
++
+ ## Themes
+ Theme config files allow customizing the appearance of BGTK applications.
+ To use a theme:
+diff --git a/bgtk.h b/bgtk.h
+index f7aeb8c..e5f9b72 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -109,6 +109,7 @@ struct BGTK_Widget {
+ 			uint32_t cursor_pos;  // Cursor position
+ 			int selection_start;  // Selection start (-1 if none)
+ 			int selection_end;    // Selection end (-1 if none)
++			int scroll_x;         // Horizontal pixel scroll offset (&gt;=0)
+ 			BGTK_Callback on_change; // Callback for text changes
+ 		} text_input;
+ 	} data;
+diff --git a/drawing.c b/drawing.c
+index 9acefed..c819800 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -123,23 +123,11 @@ void calculate_widget_size(struct BGTK_Context* ctx, struct BGTK_Widget* w) {
+ 		case BGTK_WIDGET_IMAGE:
+ 			// the widget must have a definite size
+ 			break;
+-		case BGTK_WIDGET_TEXT_INPUT: {
+-			// Calculate size based on text content (or use fixed
+-			// width/height)
+-			int text_w, text_h;
+-			measure_text(ctx-&gt;ft_face, w-&gt;data.text_input.text,
+-				     &amp;text_w, &amp;text_h);
+-			// Ensure minimum width/height (e.g., 100px)
+-			w-&gt;w = text_w + 2 * w-&gt;padding;
+-			w-&gt;h = text_h + 2 * w-&gt;padding;
+-			if (w-&gt;w &lt; 100) {
+-				w-&gt;w = 100;
+-			}
+-			if (w-&gt;h &lt; 20) {
+-				w-&gt;h = 20;
+-			}
++		case BGTK_WIDGET_TEXT_INPUT:
++			// Text input is a fixed-size widget; its size is set by
++			// the constructor (bgtk_text_input). Do not resize
++			// based on content.
+ 			break;
+-		}
+ 		default:
+ 			break;
+ 	}
+@@ -417,15 +405,103 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
+ 			draw_rect(ctx, pixels, w-&gt;x + w-&gt;w - 1 - w-&gt;margin,
+ 				  w-&gt;y + w-&gt;margin, 1, w-&gt;h - 2 * w-&gt;margin,
+ 				  border);  // Right
+-			// Draw text (offset for padding)
++			// Draw text (offset for padding) with horizontal scroll
++			int inner_x0 = w-&gt;x + w-&gt;margin + 1;
++			int inner_y0 = w-&gt;y + w-&gt;margin + 1;
++			int inner_w = w-&gt;w - 2 * w-&gt;margin - 2;
++			int inner_h = w-&gt;h - 2 * w-&gt;margin - 2;
++			if (inner_w &lt; 1) {
++				inner_w = 1;
++			}
++			if (inner_h &lt; 1) {
++				inner_h = 1;
++			}
++
+ 			int text_x = w-&gt;x + w-&gt;margin + w-&gt;padding;
+ 			int text_y = w-&gt;y + w-&gt;margin + w-&gt;padding;
+-			draw_text(ctx, pixels, w-&gt;data.text_input.text, text_x,
+-				  text_y, 0xFF000000);
++			int scroll_x = w-&gt;data.text_input.scroll_x;
++			if (scroll_x &lt; 0) {
++				scroll_x = 0;
++			}
+ 
++			// Draw text clipped to the inner rectangle so glyphs don't
++			// render outside the input box when scrolled.
++			int draw_x = text_x - scroll_x;
++			const char* full = w-&gt;data.text_input.text ?
++				w-&gt;data.text_input.text : "";
++
++			int stride = ctx-&gt;width;
++			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
++			int pen_x = draw_x;
++			int pen_y = text_y + (ctx-&gt;ft_face-&gt;size-&gt;metrics.ascender &gt;&gt; 6);
++
++			for (const char* p = full; *p; p++) {
++				FT_UInt index = FT_Get_Char_Index(ctx-&gt;ft_face, *p);
++				if (FT_Load_Glyph(ctx-&gt;ft_face, index,
++						  FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT)) {
++					continue;
++				}
++				FT_Render_Glyph(ctx-&gt;ft_face-&gt;glyph, FT_RENDER_MODE_NORMAL);
++
++				FT_GlyphSlot slot = ctx-&gt;ft_face-&gt;glyph;
++				FT_Bitmap* bitmap = &amp;slot-&gt;bitmap;
++				int gx = pen_x + slot-&gt;bitmap_left;
++				int gy = pen_y - slot-&gt;bitmap_top;
++
++				// If this glyph is entirely left of the visible area, just
++				// advance and continue.
++				int glyph_x0 = gx;
++				int glyph_x1 = gx + (int)bitmap-&gt;width;
++				if (glyph_x1 &lt;= inner_x0) {
++					pen_x += slot-&gt;advance.x &gt;&gt; 6;
++					continue;
++				}
++				// If this glyph is entirely right of the visible area, we can
++				// stop.
++				if (glyph_x0 &gt;= inner_x0 + inner_w) {
++					break;
++				}
++
++				for (unsigned int row = 0; row &lt; bitmap-&gt;rows; row++) {
++					int32_t dy = gy + (int)row;
++					if (dy &lt; inner_y0 || dy &gt;= inner_y0 + inner_h) {
++						continue;
++					}
++					for (unsigned int col = 0; col &lt; bitmap-&gt;width; col++) {
++						int32_t dx = gx + (int)col;
++						if (dx &lt; inner_x0 || dx &gt;= inner_x0 + inner_w) {
++							continue;
++						}
++
++						uint8_t a = bitmap-&gt;buffer[row * bitmap-&gt;pitch + col];
++						if (a == 0) {
++							continue;
++						}
++
++						uint32_t dst = pixels[dy * stride + dx];
++						uint8_t inv = 255 - a;
++
++						uint8_t r_dst = (dst &gt;&gt; 16) &amp; 0xFF;
++						uint8_t g_dst = (dst &gt;&gt; 8) &amp; 0xFF;
++						uint8_t b_dst = (dst) &amp; 0xFF;
++
++						uint8_t r_src = (0xFF000000 &gt;&gt; 16) &amp; 0xFF;
++						uint8_t g_src = (0xFF000000 &gt;&gt; 8) &amp; 0xFF;
++						uint8_t b_src = (0xFF000000) &amp; 0xFF;
++
++						uint8_t r = (r_src * a + r_dst * inv) / 255;
++						uint8_t g = (g_src * a + g_dst * inv) / 255;
++						uint8_t b = (b_src * a + b_dst * inv) / 255;
++
++						pixels[dy * stride + dx] = (r &lt;&lt; 16) | (g &lt;&lt; 8) | b;
++					}
++				}
++
++				pen_x += slot-&gt;advance.x &gt;&gt; 6;
++			}
+ 			// Draw cursor if focused
+ 			if (focused) {
+-				uint32_t cursor_x = text_x;
++				int cursor_x = text_x - scroll_x;
+ 				// Measure text up to cursor_pos to get cursor_x
+ 				for (uint32_t i = 0;
+ 				     i &lt; w-&gt;data.text_input.cursor_pos; i++) {
+@@ -439,10 +515,20 @@ void draw_widget(struct BGTK_Context* ctx, struct BGTK_Widget* w,
+ 					cursor_x +=
+ 					    ctx-&gt;ft_face-&gt;glyph-&gt;advance.x &gt;&gt; 6;
+ 				}
+-				// Draw cursor (vertical line)
+-				draw_rect(ctx, pixels, cursor_x, text_y, 1,
+-					  w-&gt;h - 2 * (w-&gt;margin + w-&gt;padding),
+-					  0xFF000000);
++
++				// Keep cursor inside the inner border (avoid
++				// drawing outside).
++				if (cursor_x &lt; inner_x0) {
++					cursor_x = inner_x0;
++				}
++				if (cursor_x &gt; inner_x0 + inner_w - 1) {
++					cursor_x = inner_x0 + inner_w - 1;
++				}
++
++				// Draw cursor (vertical line) inside the inner
++				// rect
++				draw_rect(ctx, pixels, cursor_x, inner_y0, 1,
++					  inner_h, 0xFF000000);
+ 			}
+ 			break;
+ 		}
+diff --git a/widgets.c b/widgets.c
+index 436acdf..85b15bb 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -64,6 +64,54 @@ void bgtk_set_focus(struct BGTK_Context* ctx, struct BGTK_Widget* widget) {
+ 	bgtk_draw_widgets(ctx);
+ }
+ 
++// Returns pixel width of text[0..len-1]
++static int measure_prefix_width(FT_Face face, const char* text, int len) {
++	int width = 0;
++	if (!face || !text || len &lt;= 0) {
++		return 0;
++	}
++	for (int i = 0; i &lt; len &amp;&amp; text[i]; i++) {
++		if (FT_Load_Char(face, text[i], FT_LOAD_DEFAULT)) {
++			continue;
++		}
++		width += face-&gt;glyph-&gt;advance.x;
++	}
++	return width &gt;&gt; 6;
++}
++
++static void text_input_ensure_cursor_visible(struct BGTK_Context* ctx,
++					     struct BGTK_Widget* widget) {
++	if (!ctx || !ctx-&gt;ft_face || !widget) {
++		return;
++	}
++	int content_w = widget-&gt;w - 2 * (widget-&gt;margin + widget-&gt;padding);
++	if (content_w &lt; 1) {
++		content_w = 1;
++	}
++	int cursor_px =
++	    measure_prefix_width(ctx-&gt;ft_face, widget-&gt;data.text_input.text,
++				 (int)widget-&gt;data.text_input.cursor_pos);
++
++	int scroll_x = widget-&gt;data.text_input.scroll_x;
++	if (scroll_x &lt; 0) {
++		scroll_x = 0;
++	}
++
++	// Keep a small right-side caret margin so the cursor isn't flush.
++	int caret_margin = 2;
++
++	if (cursor_px - scroll_x &gt; content_w - caret_margin) {
++		scroll_x = cursor_px - (content_w - caret_margin);
++	}
++	if (cursor_px - scroll_x &lt; 0) {
++		scroll_x = cursor_px;
++	}
++	if (scroll_x &lt; 0) {
++		scroll_x = 0;
++	}
++	widget-&gt;data.text_input.scroll_x = scroll_x;
++}
++
+ // Text input event handler
+ static int text_input_handle_event(struct BGTK_Widget* widget,
+ 				   struct InputEvent ev) {
+@@ -261,6 +309,7 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
+ 			text[cursor] = ascii;
+ 			widget-&gt;data.text_input.text = text;
+ 			widget-&gt;data.text_input.cursor_pos++;
++			text_input_ensure_cursor_visible(widget-&gt;ctx, widget);
+ 
+ 			if (widget-&gt;data.text_input.on_change) {
+ 				widget-&gt;data.text_input.on_change();
+@@ -280,6 +329,8 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
+ 				memmove(&amp;text[cursor - 1], &amp;text[cursor],
+ 					strlen(text) - cursor + 1);
+ 				widget-&gt;data.text_input.cursor_pos--;
++				text_input_ensure_cursor_visible(widget-&gt;ctx,
++								 widget);
+ 
+ 				if (widget-&gt;data.text_input.on_change) {
+ 					widget-&gt;data.text_input.on_change();
+@@ -299,6 +350,8 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
+ 			if (cursor &lt; strlen(text)) {
+ 				memmove(&amp;text[cursor], &amp;text[cursor + 1],
+ 					strlen(text) - cursor);
++				text_input_ensure_cursor_visible(widget-&gt;ctx,
++								 widget);
+ 
+ 				if (widget-&gt;data.text_input.on_change) {
+ 					widget-&gt;data.text_input.on_change();
+@@ -316,18 +369,26 @@ static int text_input_handle_event(struct BGTK_Widget* widget,
+ 			int cursor = widget-&gt;data.text_input.cursor_pos;
+ 			int len = strlen(widget-&gt;data.text_input.text);
+ 
+-			if (ev.code == KEY_LEFT &amp;&amp; cursor &gt; 0) {
+-				widget-&gt;data.text_input.cursor_pos--;
+-				if (widget-&gt;ctx) {
+-					bgtk_draw_widgets(widget-&gt;ctx);
++			// Handle arrow keys (cursor movement)
++			if (ev.code == KEY_LEFT || ev.code == KEY_RIGHT) {
++				if (ev.code == KEY_LEFT &amp;&amp; cursor &gt; 0) {
++					widget-&gt;data.text_input.cursor_pos--;
++					text_input_ensure_cursor_visible(
++					    widget-&gt;ctx, widget);
++					if (widget-&gt;ctx) {
++						bgtk_draw_widgets(widget-&gt;ctx);
++					}
++					return 1;  // Event handled
++				} else if (ev.code == KEY_RIGHT &amp;&amp;
++					   cursor &lt; len) {
++					widget-&gt;data.text_input.cursor_pos++;
++					text_input_ensure_cursor_visible(
++					    widget-&gt;ctx, widget);
++					if (widget-&gt;ctx) {
++						bgtk_draw_widgets(widget-&gt;ctx);
++					}
++					return 1;  // Event handled
+ 				}
+-				return 1;  // Event handled
+-			} else if (ev.code == KEY_RIGHT &amp;&amp; cursor &lt; len) {
+-				widget-&gt;data.text_input.cursor_pos++;
+-				if (widget-&gt;ctx) {
+-					bgtk_draw_widgets(widget-&gt;ctx);
+-				}
+-				return 1;  // Event handled
+ 			}
+ 		}
+ 	}
+@@ -438,7 +499,7 @@ static int scrollable_handle_event(struct BGTK_Widget* widget,
+ 		}
+ 		return 1;  // Event handled
+ 	}
+-	
++
+ 	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
+ 		bgtk_set_focus(widget-&gt;ctx, widget);
+ 		return 1;
+</pre>

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 2b7aff4</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 2b7aff4
+parent <a href=commit-ed61297.html>ed61297</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-07-03T13:36:00-03:00
+
+    Install into flat /bin /lib /include for lin0.
+
+    Prefer /include and /lib fallbacks, search /share/fonts first, install built apps to /bin, and document building with /bin/cc.
+
+<a href=tree-2b7aff4.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/Makefile b/Makefile
+index 419f0d3..09fc7be 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3,17 +3,19 @@
+ # Base flags. Freetype path is discovered via pkg-config when available
+ # (works on Linux and on macOS with Homebrew). The hardcoded fallback is
+ # the common Linux location.
++CC ?= cc
++
+ FREETYPE_CFLAGS := $(shell pkg-config --cflags freetype2 2&gt;/dev/null)
+ ifeq ($(FREETYPE_CFLAGS),)
+-  FREETYPE_CFLAGS := -I/usr/include/freetype2
++  FREETYPE_CFLAGS := -I/include/freetype2
+ endif
+ 
+ FREETYPE_LIBS := $(shell pkg-config --libs freetype2 2&gt;/dev/null)
+ FREETYPE_LIBDIRS :=
+ ifeq ($(FREETYPE_LIBS),)
+-  # Common fallbacks: Linux default + macOS Homebrew (Apple Silicon + Intel)
++  # Flat /lib (lin0) plus macOS Homebrew fallbacks for dev hosts
+   FREETYPE_LIBS := -lfreetype
+-  FREETYPE_LIBDIRS := -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
++  FREETYPE_LIBDIRS := -L/lib -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
+ endif
+ 
+ OPENSSL_CFLAGS := $(shell pkg-config --cflags openssl 2&gt;/dev/null)
+@@ -24,6 +26,9 @@ OPENSSL_LIBDIRS := -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/openssl@3
+ OPENSSL_LIBS := -lssl -lcrypto
+ 
+ LIBXML2_CFLAGS := $(shell pkg-config --cflags libxml-2.0 2&gt;/dev/null)
++ifeq ($(LIBXML2_CFLAGS),)
++  LIBXML2_CFLAGS := -I/include/libxml2
++endif
+ LIBXML2_LIBS := $(shell pkg-config --libs libxml-2.0 2&gt;/dev/null)
+ ifeq ($(LIBXML2_LIBS),)
+   LIBXML2_LIBS := -lxml2
+@@ -46,8 +51,9 @@ TARGET = libbgtk.so test_app image_viewer launcher terminal gemini_browser headl
+ ifeq ($(shell uname),Darwin)
+   TARGET = headless test_terminal test_html test_settings
+ endif
+-INSTALL_LIB = /usr/lib
+-INSTALL_INCLUDE = /usr/include
++INSTALL_LIB = /lib
++INSTALL_INCLUDE = /include
++INSTALL_BIN = /bin
+ 
+ SRC = bgtk.c drawing.c widgets.c config.c html.c
+ LIB_OBJS = bgtk.o drawing.o widgets.o config.o html.o
+@@ -179,7 +185,11 @@ install: libbgtk.so bgtk.h
+ 	install -m 755 libbgtk.so $(INSTALL_LIB)
+ 	install -d $(INSTALL_INCLUDE)
+ 	install -m 644 bgtk.h $(INSTALL_INCLUDE)
+-	ldconfig
++	-install -d $(INSTALL_BIN)
++	-for f in test_app image_viewer launcher terminal settings; do \
++		if [ -f $$f ]; then install -m 755 $$f $(INSTALL_BIN); fi; \
++	done
++	-ldconfig 2&gt;/dev/null || true
+ 
+ .PHONY: test
+ test: test_app image_viewer
+diff --git a/README.md b/README.md
+index 0a605d2..834a067 100644
+--- a/README.md
++++ b/README.md
+@@ -104,7 +104,7 @@ frame_border_color = #FFFFFF
+ 
+ # Font settings
+ [font]
+-path = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
++path = /share/fonts/truetype/dejavu/DejaVuSans.ttf
+ size = 12
+ ```
+ 
+@@ -114,14 +114,18 @@ Colors use `#RRGGBB` or `#RRGGBBAA` format. Lines starting with `#` or `;` are c
+ ## Building
+ 
+ Requirements:
+-- A C compiler (GCC or Clang).
+-- FreeType development libraries.
++- A C compiler (`cc` on lin0 / TinyCC, or GCC/Clang elsewhere).
++- FreeType and libxml2 libraries/headers.
++- BGCE (`libbgce`, `bgce.h`) for real apps.
++
++On lin0 (flat `/bin` `/lib` `/include`, compiler `/bin/cc`):
+ 
+ ```sh
+-make
++make CC=cc
++make install
+ ```
+ 
+-Note: A running BGCE server is only required for real applications. The headless/mock test binary (`make headless`) does not require BGCE at all.
++Defaults install to `/lib` and `/include` (override with `INSTALL_LIB` / `INSTALL_INCLUDE` / `INSTALL_BIN`). A running BGCE server is only required for real applications; `make headless` does not need BGCE.
+ 
+ 
+ ## Running
+diff --git a/apps/settings.c b/apps/settings.c
+index d5fc75b..52e2ad6 100644
+--- a/apps/settings.c
++++ b/apps/settings.c
+@@ -120,6 +120,9 @@ static int scan_fonts(char ***out)
+ {
+ 	static const char *dirs[] = {
+ #ifdef __linux__
++		"/share/fonts/truetype",
++		"/share/fonts/TTF",
++		"/share/fonts/opentype",
+ 		"/usr/share/fonts/truetype",
+ 		"/usr/share/fonts/TTF",
+ 		"/usr/share/fonts/opentype",
+diff --git a/config.c b/config.c
+index 1b21770..60f02cc 100644
+--- a/config.c
++++ b/config.c
+@@ -77,6 +77,8 @@ void init_config_defaults(struct config *config)
+ 	if (config-&gt;font_path[0] == '\0') {
+ 		static const char *d[] = {
+ #ifdef __linux__
++			"/share/fonts/truetype/dejavu/DejaVuSans.ttf",
++			"/share/fonts/TTF/DejaVuSans.ttf",
+ 			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+ 			"/usr/share/fonts/TTF/DejaVuSans.ttf",
+ #endif
+</pre>

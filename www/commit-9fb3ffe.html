@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk 9fb3ffe</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit 9fb3ffe
+parent <a href=commit-a94b1ec.html>a94b1ec</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-06-20T23:48:17-03:00
+
+    Updated configuration examples in README and www page
+
+<a href=tree-9fb3ffe.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/README.md b/README.md
+index 2622fa6..0a605d2 100644
+--- a/README.md
++++ b/README.md
+@@ -78,18 +78,38 @@ Open the PNGs to see exactly what the UI looked like at each step. This is extre
+ 
+ No `bgce` process or special permissions are required.
+ 
+-## Themes
+-Theme config files allow customizing the appearance of BGTK applications.
+-To use a theme:
+-1. Create a config file in `~/.config/bgtk.conf`.
+-2. Define theme properties like colors and fonts in key-value pairs:
+-
+-```
+-background_color = #282828
+-text_color = #ebdbb2
+-font = /opt/fonts/.../DejaVu Sans.otf
++## Configuration
++
++BGTK is configured via `~/.config/bgtk.conf`. Example with all options and their defaults:
++
++```ini
++# Background settings
++[background]
++type = color
++color = #AAAAAA
++# Or use an image:
++# type = image
++# path = /path/to/wallpaper.png
++# mode = tiled
++
++# Theme colors and border sizes
++[theme]
++background = #AAAAAA
++button = #888888
++button_text = #000000
++button_border_size = 1
++input_border_size = 1
++frame_border_size = 4
++frame_border_color = #FFFFFF
++
++# Font settings
++[font]
++path = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
++size = 12
+ ```
+ 
++Colors use `#RRGGBB` or `#RRGGBBAA` format. Lines starting with `#` or `;` are comments.
++
+ 
+ ## Building
+ 
+diff --git a/www/index.html b/www/index.html
+index bc1a53b..8ba0f0a 100644
+--- a/www/index.html
++++ b/www/index.html
+@@ -36,15 +36,32 @@ To keep track of the develoment check the commit log
+ on the &lt;a href=feed.xml&gt;feed&lt;/a&gt;.
+ 
+ 
+-&lt;b&gt;Themes&lt;/b&gt;
+-
+-BGTK supports themes via config the file. Define
+-colors, fonts, and other visual properties in
+-~/.config/bgtk.conf. Here's an example:
+-
+-	background_color = #282828
+-	text_color = #ebdbb2
+-	font = /opt/fonts/.../DejaVu Sans.otf
++&lt;b&gt;Configuration&lt;/b&gt;
++
++BGTK is configured via ~/.config/bgtk.conf.
++Colors use #RRGGBB or #RRGGBBAA format.
++Example with all options and their defaults:
++
++	[background]
++	type = color
++	color = #AAAAAA
++	# Or use an image:
++	# type = image
++	# path = /path/to/wallpaper.png
++	# mode = tiled
++
++	[theme]
++	background = #AAAAAA
++	button = #888888
++	button_text = #000000
++	button_border_size = 1
++	input_border_size = 1
++	frame_border_size = 4
++	frame_border_color = #FFFFFF
++
++	[font]
++	path = /usr/share/fonts/.../DejaVuSans.ttf
++	size = 12
+ 
+ 
+ &lt;b&gt;Build Instructions&lt;/b&gt;
+</pre>

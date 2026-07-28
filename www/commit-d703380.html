@@ -1,0 +1,1522 @@
+<!DOCTYPE html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bgtk d703380</title>
+<meta name="color-scheme" content="light dark">
+<link rel=icon href=data:,>
+<style>pre{width:52ch;margin:2ch auto;white-space:pre-wrap}a{color:#ff00ff}</style>
+<pre>
+<a href=index.html>bgtk</a> / <b>commit</b>
+
+<a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
+
+commit d703380
+parent <a href=commit-894a27c.html>894a27c</a> 
+author Brian Mayer &lt;bleemayer@gmail.com&gt;
+date   2026-06-18T12:22:38-03:00
+
+    Added Gemini web browser
+
+    - Implemented a full Gemini protocol client (gemini:// over TLS, status codes, redirect following)
+    - Added Gemtext rendering with line wrapping/folding for paragraphs and long links
+    - Styled special elements: headers (prefix stripped, larger/bold/fuchsia), links and bullet points in fuchsia
+    - Made address bar + Go button full width at the bottom inside the frame
+    - Improved vertical spacing: tighter leading for wrapped lines within the same paragraph, extra top space before headings
+    - Changed global text color to full black via theme default
+    - Added headless test harness (test/test_gemini_browser) that performs real capsule fetches and generates screenshots for visual verification
+    - Updated build system (Makefile) for the new target and test
+
+<a href=tree-d703380.html>tree</a>
+
+<b>diff</b>
+
+diff --git a/Makefile b/Makefile
+index 2147b19..59e6890 100644
+--- a/Makefile
++++ b/Makefile
+@@ -16,6 +16,13 @@ ifeq ($(FREETYPE_LIBS),)
+   FREETYPE_LIBDIRS := -L/opt/homebrew/opt/freetype/lib -L/usr/local/opt/freetype/lib -L/opt/homebrew/lib -L/usr/local/lib
+ endif
+ 
++OPENSSL_CFLAGS := $(shell pkg-config --cflags openssl 2&gt;/dev/null)
++ifeq ($(OPENSSL_CFLAGS),)
++  OPENSSL_CFLAGS := -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/include -I/usr/local/opt/openssl/include
++endif
++OPENSSL_LIBDIRS := -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/lib -L/usr/local/opt/openssl/lib -L/usr/local/lib
++OPENSSL_LIBS := -lssl -lcrypto
++
+ CFLAGS = -Wall -Wextra -Werror -I. $(FREETYPE_CFLAGS) -fPIC
+ 
+ # Full LDFLAGS are only for real (Linux + bgce server) binaries.
+@@ -24,7 +31,7 @@ CFLAGS = -Wall -Wextra -Werror -I. $(FREETYPE_CFLAGS) -fPIC
+ # (because pkg-config --libs usually includes -L...).
+ LDFLAGS = $(FREETYPE_LIBDIRS) $(FREETYPE_LIBS) -lbgce -lm
+ 
+-TARGET = libbgtk.so test_app image_viewer launcher terminal headless
++TARGET = libbgtk.so test_app image_viewer launcher terminal gemini_browser headless
+ # On macOS (Darwin), plain `make` will try to build libbgtk.so and real
+ # apps which require the bgce library (Linux-specific). Default to
+ # headless/test targets so `make` succeeds for development on mac.
+@@ -43,6 +50,7 @@ IMAGE_VIEWER_OBJ = apps/image_viewer.o
+ LAUNCHER_OBJ = apps/launcher.o
+ TERMINAL_OBJ = apps/terminal.o
+ TERM_CORE_OBJ = apps/term_core.o
++GEMINI_BROWSER_OBJ = apps/gemini_browser.o
+ 
+ # ---------- Headless / mock testing support ----------
+ # "make headless" builds a standalone binary that uses bgtk_init_mock +
+@@ -57,6 +65,7 @@ HEADLESS_LDFLAGS := $(FREETYPE_LIBS) $(FREETYPE_LIBDIRS) -lm
+ HEADLESS_STUB := $(COMPAT_DIR)/bgce_stub.o
+ HEADLESS_OBJ := test/headless.o
+ TEST_TERMINAL_OBJ := test/test_terminal.o
++TEST_GEMINI_OBJ := test/test_gemini_browser.o
+ 
+ .PHONY: all clean test
+ 
+@@ -74,6 +83,9 @@ image_viewer: $(IMAGE_VIEWER_OBJ) $(LIB_OBJS)
+ launcher: $(LAUNCHER_OBJ) $(LIB_OBJS)
+ 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+ 
++gemini_browser: $(GEMINI_BROWSER_OBJ) $(LIB_OBJS)
++	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(OPENSSL_LIBDIRS) $(OPENSSL_LIBS)
++
+ terminal: $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS)
+ 	$(CC) $(CFLAGS) -Iapps -o $@ $^ $(LDFLAGS)
+ 
+@@ -85,7 +97,7 @@ terminal: $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS)
+ # prerequisites of the "headless" target. This way normal Linux server
+ # binaries (test_app, image_viewer, ...) continue to use the real system
+ # bgce headers if present.
+-$(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ): CFLAGS += -I$(COMPAT_DIR)
++$(HEADLESS_OBJ) $(LIB_OBJS) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(TEST_GEMINI_OBJ): CFLAGS += -I$(COMPAT_DIR)
+ 
+ $(HEADLESS_STUB): $(COMPAT_DIR)/bgce_stub.c
+ 	$(CC) $(HEADLESS_CFLAGS) -c -o $@ $&lt;
+@@ -103,14 +115,23 @@ $(TERM_CORE_OBJ): apps/term_core.c apps/terminal.h
+ $(TEST_TERMINAL_OBJ): test/test_terminal.c apps/terminal.h
+ 	$(CC) $(CFLAGS) -Iapps -c -o $@ $&lt;
+ 
++$(TEST_GEMINI_OBJ): CFLAGS += $(OPENSSL_CFLAGS)
++$(TEST_GEMINI_OBJ): test/test_gemini_browser.c
++	$(CC) $(CFLAGS) -c -o $@ $&lt;
++
++$(GEMINI_BROWSER_OBJ): CFLAGS += -I$(COMPAT_DIR) $(OPENSSL_CFLAGS)
++
+ test_terminal: $(TEST_TERMINAL_OBJ) $(TERM_CORE_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
+ 	$(CC) $(HEADLESS_CFLAGS) -Iapps -o $@ $^ $(HEADLESS_LDFLAGS)
+ 
++test_gemini_browser: $(TEST_GEMINI_OBJ) $(LIB_OBJS) $(HEADLESS_STUB)
++	$(CC) $(HEADLESS_CFLAGS) $(OPENSSL_CFLAGS) -o $@ $^ $(HEADLESS_LDFLAGS) $(OPENSSL_LIBDIRS) $(OPENSSL_LIBS)
++
+ %.o: %.c
+ 	$(CC) $(CFLAGS) -c -o $@ $&lt;
+ 
+ clean:
+-	rm -f $(TARGET) terminal test_terminal $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ)
++	rm -f $(TARGET) terminal test_terminal test_gemini_browser gemini_browser $(LIB_OBJS) $(IMAGE_VIEWER_OBJ) $(TEST_APP_OBJ) $(LAUNCHER_OBJ) $(TERMINAL_OBJ) $(TERM_CORE_OBJ) $(GEMINI_BROWSER_OBJ) $(HEADLESS_OBJ) $(HEADLESS_STUB) $(TEST_TERMINAL_OBJ) $(TEST_GEMINI_OBJ)
+ 
+ 
+ .PHONY: install
+diff --git a/apps/gemini_browser.c b/apps/gemini_browser.c
+new file mode 100644
+index 0000000..093bca1
+--- /dev/null
++++ b/apps/gemini_browser.c
+@@ -0,0 +1,702 @@
++#include &lt;arpa/inet.h&gt;
++#include &lt;bgce.h&gt;
++#include &lt;bgtk.h&gt;
++#include &lt;errno.h&gt;
++#include &lt;linux/input.h&gt;
++#include &lt;netdb.h&gt;
++#include &lt;openssl/err.h&gt;
++#include &lt;openssl/ssl.h&gt;
++#include &lt;stdio.h&gt;
++#include &lt;stdlib.h&gt;
++#include &lt;string.h&gt;
++#include &lt;sys/socket.h&gt;
++#include &lt;unistd.h&gt;
++#include &lt;ctype.h&gt;
++
++static struct BGTK_Context *ctx = NULL;
++static struct BGTK_Widget *content_scroll = NULL;
++static struct BGTK_Widget *addr_input = NULL;
++
++static char current_url[512] = "gemini://geminiprotocol.net/";
++
++static struct BGTK_Widget *link_target_widgets[128];
++static char link_targets[128][512];
++static int num_page_links = 0;
++
++static void load_url(const char *url);
++
++/* --- URL resolution (relative links, ../ etc) --- */
++static void resolve_url(const char *base, const char *rel, char *out, size_t outlen)
++{
++	if (!rel || !*rel) {
++		strncpy(out, base, outlen - 1);
++		out[outlen - 1] = 0;
++		return;
++	}
++	if (strstr(rel, "://") || !strncmp(rel, "gemini:", 7)) {
++		strncpy(out, rel, outlen - 1);
++		out[outlen - 1] = 0;
++		return;
++	}
++
++	char bhost[256] = {0};
++	char bpath[512] = {0};
++	int bport = 1965;
++
++	const char *p = base;
++	if (!strncmp(p, "gemini://", 9))
++		p += 9;
++	const char *he = strchr(p, '/');
++	const char *pe = strchr(p, ':');
++	if (pe &amp;&amp; (!he || pe &lt; he)) {
++		int hl = (int)(pe - p);
++		if (hl &gt; 255)
++			hl = 255;
++		memcpy(bhost, p, hl);
++		bhost[hl] = 0;
++		bport = atoi(pe + 1);
++		if (he)
++			strncpy(bpath, he, sizeof(bpath) - 1);
++		else
++			strcpy(bpath, "/");
++	} else if (he) {
++		int hl = (int)(he - p);
++		memcpy(bhost, p, hl);
++		bhost[hl] = 0;
++		strncpy(bpath, he, sizeof(bpath) - 1);
++	} else {
++		strncpy(bhost, p, sizeof(bhost) - 1);
++		strcpy(bpath, "/");
++	}
++	if (!bpath[0])
++		strcpy(bpath, "/");
++
++	char portpart[32] = "";
++	if (bport != 1965)
++		snprintf(portpart, sizeof(portpart), ":%d", bport);
++
++	if (rel[0] == '/') {
++		snprintf(out, outlen, "gemini://%s%s%s", bhost, portpart, rel);
++		return;
++	}
++
++	/* relative: dirname(base) + rel, with ../ handling */
++	char dir[512];
++	strncpy(dir, bpath, sizeof(dir) - 1);
++	char *ls = strrchr(dir, '/');
++	if (ls)
++		*(ls + 1) = 0;
++	else
++		strcpy(dir, "/");
++
++	char full[1024];
++	snprintf(full, sizeof(full), "%s%s", dir, rel);
++
++	/* normalize segments */
++	char *segs[64];
++	int nseg = 0;
++	char *tmp = strdup(full);
++	char *save = NULL;
++	char *seg = strtok_r(tmp, "/", &amp;save);
++	while (seg) {
++		if (!strcmp(seg, ".") || !*seg) {
++			/* skip */
++		} else if (!strcmp(seg, "..")) {
++			if (nseg &gt; 0)
++				nseg--;
++		} else {
++			segs[nseg++] = seg;
++		}
++		seg = strtok_r(NULL, "/", &amp;save);
++	}
++
++	char norm[1024] = "/";
++	for (int i = 0; i &lt; nseg; i++) {
++		strcat(norm, segs[i]);
++		if (i + 1 &lt; nseg)
++			strcat(norm, "/");
++	}
++	free(tmp);
++
++	snprintf(out, outlen, "gemini://%s%s%s", bhost, portpart, norm);
++}
++
++/* --- Gemini fetch over TLS --- */
++static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, char **out_body)
++{
++	*out_status = 0;
++	*out_meta = NULL;
++	*out_body = NULL;
++
++	char host[256] = {0};
++	char path[768] = "/";
++	int port = 1965;
++
++	const char *p = req_url;
++	if (!strncmp(p, "gemini://", 9))
++		p += 9;
++	const char *he = strchr(p, '/');
++	const char *pe = strchr(p, ':');
++	if (pe &amp;&amp; (!he || pe &lt; he)) {
++		int hl = (int)(pe - p);
++		if (hl &gt; 255)
++			hl = 255;
++		memcpy(host, p, hl);
++		host[hl] = 0;
++		port = atoi(pe + 1);
++		if (he)
++			strncpy(path, he, sizeof(path) - 1);
++	} else if (he) {
++		int hl = (int)(he - p);
++		memcpy(host, p, hl);
++		host[hl] = 0;
++		strncpy(path, he, sizeof(path) - 1);
++	} else {
++		strncpy(host, p, sizeof(host) - 1);
++	}
++	if (!host[0])
++		return -1;
++	if (port &lt; 1)
++		port = 1965;
++	if (!path[0])
++		strcpy(path, "/");
++
++	/* full selector is the original req_url (spec) */
++	char selector[1024];
++	strncpy(selector, req_url, sizeof(selector) - 1);
++
++	SSL_CTX *sctx = SSL_CTX_new(TLS_client_method());
++	if (!sctx)
++		return -2;
++	SSL_CTX_set_verify(sctx, SSL_VERIFY_NONE, NULL);
++
++	int sock = socket(AF_INET, SOCK_STREAM, 0);
++	if (sock &lt; 0) {
++		SSL_CTX_free(sctx);
++		return -3;
++	}
++
++	struct hostent *heent = gethostbyname(host);
++	if (!heent) {
++		close(sock);
++		SSL_CTX_free(sctx);
++		return -4;
++	}
++	struct sockaddr_in sin = {0};
++	sin.sin_family = AF_INET;
++	sin.sin_port = htons(port);
++	memcpy(&amp;sin.sin_addr, heent-&gt;h_addr_list[0], heent-&gt;h_length);
++
++	if (connect(sock, (struct sockaddr *)&amp;sin, sizeof(sin)) &lt; 0) {
++		close(sock);
++		SSL_CTX_free(sctx);
++		return -5;
++	}
++
++	SSL *ssl = SSL_new(sctx);
++	SSL_set_fd(ssl, sock);
++	if (SSL_connect(ssl) != 1) {
++		SSL_free(ssl);
++		close(sock);
++		SSL_CTX_free(sctx);
++		return -6;
++	}
++
++	char req[1200];
++	int rlen = snprintf(req, sizeof(req), "%s\r\n", selector);
++	if (SSL_write(ssl, req, rlen) &lt;= 0) {
++		SSL_free(ssl);
++		close(sock);
++		SSL_CTX_free(sctx);
++		return -7;
++	}
++
++	/* read header up to first \r\n */
++	char hbuf[1024] = {0};
++	int hlen = 0;
++	while (hlen &lt; (int)sizeof(hbuf) - 1) {
++		int n = SSL_read(ssl, hbuf + hlen, 1);
++		if (n &lt;= 0)
++			break;
++		hlen += n;
++		if (hlen &gt;= 2 &amp;&amp; hbuf[hlen - 2] == '\r' &amp;&amp; hbuf[hlen - 1] == '\n')
++			break;
++	}
++	hbuf[hlen] = 0;
++
++	int status = 0;
++	char meta[512] = {0};
++	if (sscanf(hbuf, "%d %511[^\r\n]", &amp;status, meta) &lt; 1)
++		status = 59;
++	*out_status = status;
++	if (out_meta)
++		*out_meta = strdup(meta);
++
++	/* read body */
++	size_t cap = 8192;
++	size_t blen = 0;
++	char *body = malloc(cap);
++	if (!body) {
++		SSL_free(ssl);
++		close(sock);
++		SSL_CTX_free(sctx);
++		return -8;
++	}
++	for (;;) {
++		char rbuf[1024];
++		int n = SSL_read(ssl, rbuf, sizeof(rbuf));
++		if (n &lt;= 0)
++			break;
++		if (blen + (size_t)n + 1 &gt; cap) {
++			cap = cap * 2 + n;
++			char *nb = realloc(body, cap);
++			if (!nb) {
++				free(body);
++				SSL_free(ssl);
++				close(sock);
++				SSL_CTX_free(sctx);
++				return -8;
++			}
++			body = nb;
++		}
++		memcpy(body + blen, rbuf, n);
++		blen += n;
++	}
++	body[blen] = 0;
++	*out_body = body;
++
++	SSL_shutdown(ssl);
++	SSL_free(ssl);
++	close(sock);
++	SSL_CTX_free(sctx);
++	return 0;
++}
++
++/* click handler for link text widgets */
++static int gemini_link_handler(struct BGTK_Widget *w, struct InputEvent ev)
++{
++	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
++		for (int i = 0; i &lt; num_page_links; i++) {
++			if (link_target_widgets[i] == w) {
++				load_url(link_targets[i]);
++				return 1;
++			}
++		}
++	}
++	return 0;
++}
++
++/* Simple word-wrap for long paragraphs and link labels. Returns malloc'ed array of lines (caller frees). */
++static char **wrap_text(FT_Face face, const char *text, int max_width, int *nlines)
++{
++	*nlines = 0;
++	if (!face || !text || !*text || max_width &lt; 20) return NULL;
++	char **lines = NULL;
++	int n = 0, cap = 0;
++	int len = strlen(text);
++	int i = 0;
++	while (i &lt; len) {
++		int j = i;
++		int last_space = -1;
++		int w = 0;
++		for (; j &lt; len; j++) {
++			unsigned char ch = (unsigned char)text[j];
++			if (FT_Load_Char(face, ch, FT_LOAD_DEFAULT) == 0)
++				w += face-&gt;glyph-&gt;advance.x &gt;&gt; 6;
++			if (w &gt; max_width &amp;&amp; j &gt; i) break;
++			if (isspace(ch)) last_space = j;
++		}
++		int end = (j &gt;= len) ? len : (last_space &gt; i ? last_space : j);
++		int lnlen = end - i;
++		char *ln = malloc(lnlen + 1);
++		memcpy(ln, text + i, lnlen);
++		ln[lnlen] = 0;
++		while (lnlen &gt; 0 &amp;&amp; isspace((unsigned char)ln[lnlen-1])) ln[--lnlen] = 0;
++		if (n &gt;= cap) {
++			cap = cap ? cap * 2 : 8;
++			lines = realloc(lines, cap * sizeof(char *));
++		}
++		lines[n++] = ln;
++		i = end;
++		while (i &lt; len &amp;&amp; isspace((unsigned char)text[i])) i++;
++	}
++	*nlines = n;
++	return lines;
++}
++
++/* replace page content from gemtext body */
++static void rebuild_content_from_gemtext(const char *body)
++{
++	/* free old line widgets (all plain text) */
++	if (content_scroll-&gt;data.scrollable.items) {
++		for (int i = 0; i &lt; content_scroll-&gt;data.scrollable.widget_count; i++) {
++			struct BGTK_Widget *tw = content_scroll-&gt;data.scrollable.items[i];
++			if (tw) {
++				free(tw-&gt;data.text.text);
++				free(tw);
++			}
++		}
++		free(content_scroll-&gt;data.scrollable.items);
++		content_scroll-&gt;data.scrollable.items = NULL;
++		content_scroll-&gt;data.scrollable.widget_count = 0;
++	}
++	num_page_links = 0;
++
++	if (!body)
++		return;
++
++	int max_text_w = 480;
++	if (content_scroll &amp;&amp; content_scroll-&gt;w &gt; 100)
++		max_text_w = content_scroll-&gt;w - 8;
++
++	/* copy for strtok */
++	char *work = strdup(body);
++	if (!work)
++		return;
++
++	/* collect new widgets */
++	struct BGTK_Widget **new_items = NULL;
++	int cap = 0;
++	int cnt = 0;
++
++	char *save = NULL;
++	char *line = strtok_r(work, "\n", &amp;save);
++	int in_pre = 0;
++	while (line) {
++		/* strip \r */
++		char *cr = strchr(line, '\r');
++		if (cr)
++			*cr = 0;
++
++		if (!strncmp(line, "```", 3)) {
++			in_pre = !in_pre;
++			line = strtok_r(NULL, "\n", &amp;save);
++			continue;
++		}
++
++		char vis[768];
++		int is_link = 0;
++		char link_to[512] = {0};
++		int header_level = 0;
++
++		if (in_pre) {
++			snprintf(vis, sizeof(vis), "  %s", line);
++		} else if (!strncmp(line, "=&gt;", 2)) {
++			/* link */
++			char tgt[512] = {0};
++			char disp[512] = {0};
++			const char *rest = line + 2;
++			while (*rest == ' ' || *rest == '\t')
++				rest++;
++			const char *sp = rest;
++			while (*sp &amp;&amp; *sp != ' ' &amp;&amp; *sp != '\t')
++				sp++;
++			int tl = (int)(sp - rest);
++			if (tl &gt; 0 &amp;&amp; tl &lt; (int)sizeof(tgt))
++				memcpy(tgt, rest, tl);
++			tgt[tl] = 0;
++			while (*sp == ' ' || *sp == '\t')
++				sp++;
++			if (*sp)
++				strncpy(disp, sp, sizeof(disp) - 1);
++			else
++				strncpy(disp, tgt, sizeof(disp) - 1);
++
++			snprintf(vis, sizeof(vis), "=&gt; %s", disp);
++			strncpy(link_to, tgt, sizeof(link_to) - 1);
++			is_link = 1;
++		} else if (!strncmp(line, "# ", 2)) {
++			snprintf(vis, sizeof(vis), "%s", line + 2);
++			header_level = 1;
++		} else if (!strncmp(line, "## ", 3)) {
++			snprintf(vis, sizeof(vis), "%s", line + 3);
++			header_level = 2;
++		} else if (!strncmp(line, "### ", 4)) {
++			snprintf(vis, sizeof(vis), "%s", line + 4);
++			header_level = 3;
++		} else if (!strncmp(line, "&gt; ", 2)) {
++			snprintf(vis, sizeof(vis), "%s", line);
++		} else if (!strncmp(line, "* ", 2)) {
++			snprintf(vis, sizeof(vis), "\xe2\x80\xa2 %s", line + 2);
++		} else {
++			snprintf(vis, sizeof(vis), "%s", line);
++		}
++
++		char resolved[512] = {0};
++		if (is_link)
++			resolve_url(current_url, link_to, resolved, sizeof(resolved));
++
++		if (header_level &gt; 0 &amp;&amp; cnt &gt; 0) {
++			new_items[cnt-1]-&gt;h += 5;  /* increase the top spacing a little before headings */
++		}
++
++		if (header_level &gt; 0) {
++			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size + 4 - header_level);
++		}
++		if (!in_pre) {
++			int nsubs = 0;
++			char **subs = wrap_text(ctx-&gt;ft_face, vis, max_text_w, &amp;nsubs);
++			for (int s = 0; s &lt; nsubs; s++) {
++				struct BGTK_Widget *tw = bgtk_text(ctx, subs[s], (BGTK_Options){.padding = 1, .margin = 1});
++				if (!tw) continue;
++				if (header_level &gt; 0) {
++					tw-&gt;data.text.header_level = header_level;
++				}
++				if (is_link &amp;&amp; num_page_links &lt; 128) {
++					link_target_widgets[num_page_links] = tw;
++					strncpy(link_targets[num_page_links], resolved, sizeof(link_targets[0]) - 1);
++					num_page_links++;
++					tw-&gt;handle_event = gemini_link_handler;
++				}
++				if (s &lt; nsubs - 1) {
++					tw-&gt;h -= 3;  /* decrease a little for lines in the same paragraph (tighter leading between wraps) */
++				}
++				if (s == nsubs - 1) {
++					tw-&gt;h += 5;  /* extra vertical space after this logical block */
++				}
++				if (cnt &gt;= cap) {
++					cap = cap ? cap * 2 : 32;
++					struct BGTK_Widget **ni = realloc(new_items, (size_t)cap * sizeof(*ni));
++					if (!ni) {
++						free(tw-&gt;data.text.text);
++						free(tw);
++						break;
++					}
++					new_items = ni;
++				}
++				new_items[cnt++] = tw;
++			}
++			for (int s = 0; s &lt; nsubs; s++) free(subs[s]);
++			free(subs);
++		} else {
++			struct BGTK_Widget *tw = bgtk_text(ctx, vis, (BGTK_Options){.padding = 1, .margin = 1});
++			if (tw) {
++				tw-&gt;h += 4;  /* space after pre block */
++				if (cnt &gt;= cap) {
++					cap = cap ? cap * 2 : 32;
++					struct BGTK_Widget **ni = realloc(new_items, (size_t)cap * sizeof(*ni));
++					if (!ni) {
++						free(tw-&gt;data.text.text);
++						free(tw);
++					} else {
++						new_items = ni;
++						new_items[cnt++] = tw;
++					}
++				} else {
++					new_items[cnt++] = tw;
++				}
++			}
++		}
++		if (header_level &gt; 0) {
++			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
++		}
++
++		line = strtok_r(NULL, "\n", &amp;save);
++	}
++	free(work);
++
++	content_scroll-&gt;data.scrollable.items = new_items;
++	content_scroll-&gt;data.scrollable.widget_count = cnt;
++	content_scroll-&gt;data.scrollable.scroll_y = 0;
++}
++
++/* main navigation entry */
++static void load_url(const char *url)
++{
++	if (!url || !*url)
++		return;
++
++	strncpy(current_url, url, sizeof(current_url) - 1);
++	current_url[sizeof(current_url) - 1] = 0;
++
++	/* follow redirects a few times */
++	char tourl[512];
++	strncpy(tourl, url, sizeof(tourl) - 1);
++	int redirects = 0;
++	int status = 0;
++	char *meta = NULL;
++	char *body = NULL;
++	int feres = -1;
++
++	for (;;) {
++		if (meta) {
++			free(meta);
++			meta = NULL;
++		}
++		if (body) {
++			free(body);
++			body = NULL;
++		}
++		feres = fetch_gemini(tourl, &amp;status, &amp;meta, &amp;body);
++		if (feres == 0 &amp;&amp; (status == 30 || status == 31) &amp;&amp; meta &amp;&amp; *meta &amp;&amp; redirects &lt; 5) {
++			char next[512];
++			resolve_url(tourl, meta, next, sizeof(next));
++			strncpy(tourl, next, sizeof(tourl) - 1);
++			redirects++;
++			continue;
++		}
++		break;
++	}
++
++	/* update current to final */
++	strncpy(current_url, tourl, sizeof(current_url) - 1);
++
++	/* build UI lines */
++	if (feres != 0 || status / 10 != 2) {
++		char errline[256];
++		snprintf(errline, sizeof(errline), "Error %d %s", status, meta ? meta : "");
++		struct BGTK_Widget *et = bgtk_text(ctx, errline, (BGTK_Options){.padding = 2, .margin = 1});
++		struct BGTK_Widget **errs = calloc(1, sizeof(*errs));
++		if (errs)
++			errs[0] = et;
++		/* free previous via rebuild but force single */
++		if (content_scroll-&gt;data.scrollable.items) {
++			for (int i = 0; i &lt; content_scroll-&gt;data.scrollable.widget_count; i++) {
++				struct BGTK_Widget *tw = content_scroll-&gt;data.scrollable.items[i];
++				free(tw-&gt;data.text.text);
++				free(tw);
++			}
++			free(content_scroll-&gt;data.scrollable.items);
++		}
++		content_scroll-&gt;data.scrollable.items = errs;
++		content_scroll-&gt;data.scrollable.widget_count = errs ? 1 : 0;
++		content_scroll-&gt;data.scrollable.scroll_y = 0;
++		num_page_links = 0;
++	} else {
++		rebuild_content_from_gemtext(body);
++	}
++
++	/* sync address bar (it serves as the URL display) */
++	free(addr_input-&gt;data.text_input.text);
++	addr_input-&gt;data.text_input.text = strdup(current_url);
++	addr_input-&gt;data.text_input.cursor_pos = (uint32_t)strlen(current_url);
++	addr_input-&gt;data.text_input.scroll_x = 0;
++
++	if (meta)
++		free(meta);
++	if (body)
++		free(body);
++
++	bgtk_draw_widgets(ctx);
++}
++
++static void go_button_cb(void)
++{
++	if (addr_input)
++		load_url(addr_input-&gt;data.text_input.text);
++}
++
++static void addr_on_enter(void)
++{
++	if (addr_input)
++		load_url(addr_input-&gt;data.text_input.text);
++}
++
++int main(void)
++{
++	setvbuf(stdout, NULL, _IONBF, 0);
++	setvbuf(stderr, NULL, _IONBF, 0);
++
++	SSL_load_error_strings();
++	OpenSSL_add_ssl_algorithms();
++
++	int conn_fd = bgce_connect();
++	if (conn_fd &lt; 0) {
++		fprintf(stderr, "gemini_browser: Failed to connect to BGCE server.\n");
++		return -1;
++	}
++
++	int width = 640;
++	int height = 480;
++	struct BufferRequest req = {.width = width, .height = height};
++	void *buffer = bgce_get_buffer(conn_fd, req);
++	if (!buffer) {
++		fprintf(stderr, "gemini_browser: Failed to get buffer from server.\n");
++		bgce_disconnect(conn_fd);
++		return -3;
++	}
++
++	ctx = bgtk_init(conn_fd, buffer, width, height);
++	if (!ctx) {
++		fprintf(stderr, "gemini_browser: Failed to initialize BGTK.\n");
++		return 1;
++	}
++
++	int usable_w = width - 20;
++
++	/* create button first to know its size, then size the input to make the row (address bar + button) full width */
++	struct BGTK_Widget *go_label = bgtk_text(ctx, "Go", (BGTK_Options){.padding = 2, .margin = 0});
++	struct BGTK_Widget *go_btn = bgtk_button(ctx, go_label, go_button_cb,
++						 (BGTK_Options){.padding = 4, .margin = 2});
++	int input_w = usable_w - go_btn-&gt;w - 16;  /* leave room for row padding/margins */
++	addr_input = bgtk_text_input(ctx, "gemini://geminiprotocol.net/", input_w &gt; 100 ? input_w : 400, 0,
++				     (BGTK_Options){.padding = 4, .margin = 2});
++	addr_input-&gt;data.text_input.on_enter = addr_on_enter;
++
++	struct BGTK_Widget *addr_items[2] = {addr_input, go_btn};
++	struct BGTK_Widget *addr_row = bgtk_list(ctx, addr_items, 2,
++						 (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .padding = 2, .margin = 1});
++
++	/* content: scrollable holding the list of text items (gemtext lines) */
++	content_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 2, .margin = 3});
++
++	/* leave room inside the frame for addr_row + list spacing */
++	int v_margins = 16;
++	int reserved = (addr_row ? addr_row-&gt;h : 24) + v_margins;
++	int scroll_h = height - reserved - 24;
++	if (scroll_h &lt; 100)
++		scroll_h = 180;
++	content_scroll-&gt;w = usable_w;
++	content_scroll-&gt;h = scroll_h;
++
++	/* vertical list inside the frame: [content scroll of texts, address bar at bottom] */
++	struct BGTK_Widget *main_items[2] = {content_scroll, addr_row};
++	struct BGTK_Widget *main_list = bgtk_list(ctx, main_items, 2,
++						  (BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .padding = 2, .margin = 2});
++
++	/* single frame around everything (content + address bar at bottom) */
++	struct BGTK_Widget *frame = bgtk_frame(ctx, main_list, width, height,
++					       (BGTK_Options){.padding = 4, .margin = 0});
++
++	ctx-&gt;root_widget = frame;
++	bgtk_set_focus(ctx, addr_input);
++
++	/* initial page */
++	load_url(current_url);
++
++	printf("gemini_browser starting (%dx%d) on %s\n", width, height, current_url);
++
++	struct BGCEMessage msg;
++	ssize_t bytes;
++	while (1) {
++		bytes = bgce_recv_msg(ctx-&gt;conn_fd, &amp;msg);
++		if (bytes &lt;= 0) {
++			if (bytes == 0)
++				fprintf(stderr, "gemini_browser: Server closed connection.\n");
++			else if (errno != EINTR)
++				perror("gemini_browser: bgce_recv_msg");
++			break;
++		}
++
++		int res = 0;
++		switch (msg.type) {
++		case MSG_INPUT_EVENT:
++			if (msg.data.input_event.type != EV_REL &amp;&amp; msg.data.input_event.type != EV_ABS) {
++				res = bgtk_handle_input_event(ctx, msg.data.input_event);
++			}
++			break;
++		case MSG_FOCUS_CHANGE:
++			bgtk_set_window_focus(ctx, msg.data.focus_event.state);
++			break;
++		case MSG_BUFFER_CHANGE:
++			break;
++		default:
++			break;
++		}
++		if (res)
++			bgce_draw(conn_fd);
++	}
++
++	bgtk_destroy(ctx);
++	return 0;
++}
+diff --git a/bgtk.h b/bgtk.h
+index 89b824f..4e46eaf 100644
+--- a/bgtk.h
++++ b/bgtk.h
+@@ -106,6 +106,7 @@ struct BGTK_Widget {
+ 		} button;
+ 		struct {
+ 			char* text;
++			int header_level;  // 0=normal, 1/2/3 for # headers (for bigger/bold/colored rendering)
+ 		} text;
+ 		struct {
+ 			uint32_t* pixels;  // Pixel buffer for image
+diff --git a/config.c b/config.c
+index 3ecf05d..ef93c7c 100644
+--- a/config.c
++++ b/config.c
+@@ -55,7 +55,7 @@ void init_config_defaults(struct config *config)
+ 	// Theme defaults
+ 	config-&gt;theme.background = 0xAAAAAAAA;
+ 	config-&gt;theme.button = 0x88888888;
+-	config-&gt;theme.button_text = 0xFFFFFFFF;
++	config-&gt;theme.button_text = 0xFF000000;
+ 	config-&gt;theme.button_border_size = 1;
+ 	config-&gt;theme.input_border_size = 1;
+ 	config-&gt;theme.frame_border_size = 4;
+diff --git a/drawing.c b/drawing.c
+index 123206c..1fd0a8f 100644
+--- a/drawing.c
++++ b/drawing.c
+@@ -368,8 +368,29 @@ static void draw_label(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ static void draw_text_widget(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+ 			     uint32_t *pixels)
+ {
++	int level = w-&gt;data.text.header_level;
++	const char *t = w-&gt;data.text.text ? w-&gt;data.text.text : "";
++	uint32_t color = ctx-&gt;theme.button_text;
++	int old_size = ctx-&gt;font_size;
++	if (level &gt; 0) {
++		color = 0xFFFF00FF;  // fuchsia for headers
++		ctx-&gt;font_size = ctx-&gt;font_size + (4 - level);  // h1 biggest
++	} else if (t[0] == '=' &amp;&amp; t[1] == '&gt;' &amp;&amp; t[2] == ' ') {
++		color = 0xFFFF00FF;  // fuchsia for links
++	} else if (strncmp(t, "\xe2\x80\xa2 ", 4) == 0) {
++		color = 0xFFFF00FF;  // fuchsia for bullet points
++	}
++	if (level &gt; 0) {
++		// cheap bold effect via 1px offset
++		draw_text(ctx, pixels, w-&gt;data.text.text,
++			  w-&gt;x + w-&gt;margin + w-&gt;padding + 1,
++			  w-&gt;y + w-&gt;margin + w-&gt;padding + 1, color);
++	}
+ 	draw_text(ctx, pixels, w-&gt;data.text.text, w-&gt;x + w-&gt;margin + w-&gt;padding,
+-		  w-&gt;y + w-&gt;margin + w-&gt;padding, ctx-&gt;theme.button_text);
++		  w-&gt;y + w-&gt;margin + w-&gt;padding, color);
++	if (level &gt; 0) {
++		ctx-&gt;font_size = old_size;
++	}
+ }
+ 
+ static void draw_button(struct BGTK_Context *ctx, struct BGTK_Widget *w,
+diff --git a/test/test_gemini_browser.c b/test/test_gemini_browser.c
+new file mode 100644
+index 0000000..c644f47
+--- /dev/null
++++ b/test/test_gemini_browser.c
+@@ -0,0 +1,617 @@
++/* test/test_gemini_browser.c
++ *
++ * Headless (mock) test version of the gemini browser.
++ * Lets you run on macOS or anywhere without bgce server or network.
++ * Builds the real widget tree (frame + vertical list + scrollable of text lines
++ * for gemtext + current URL text + address bar at bottom inside the frame).
++ *
++ * Exercises layout, text rendering, text input focus/typing/enter, link clicking
++ * (via custom handle_event on some lines), content replacement on "nav", and
++ * produces PNG screenshots you can visually inspect.
++ *
++ * Build: make test_gemini_browser
++ * Run:   ./test_gemini_browser
++ * Output: gemini_browser_*.png files
++ */
++
++#include &lt;stdio.h&gt;
++#include &lt;stdlib.h&gt;
++#include &lt;string.h&gt;
++#include &lt;unistd.h&gt;
++#include &lt;sys/socket.h&gt;
++#include &lt;netdb.h&gt;
++#include &lt;arpa/inet.h&gt;
++#include &lt;linux/input.h&gt;
++#include &lt;ctype.h&gt;
++
++#include &lt;openssl/ssl.h&gt;
++#include &lt;openssl/err.h&gt;
++
++#include "bgtk.h"
++
++static struct BGTK_Context *ctx = NULL;
++static struct BGTK_Widget *content_scroll = NULL;
++static struct BGTK_Widget *addr_input = NULL;
++
++static char current_url[512] = "gemini://geminiprotocol.net/";
++static struct BGTK_Widget *link_target_widgets[128];
++static char link_targets[128][512];
++static int num_page_links = 0;
++
++/* --- Real Gemini client (copied/adapted from the main app for the test) --- */
++
++static int fetch_gemini(const char *req_url, int *out_status, char **out_meta, char **out_body)
++{
++	*out_status = 0;
++	*out_meta = NULL;
++	*out_body = NULL;
++
++	char host[256] = {0};
++	char path[768] = "/";
++	int port = 1965;
++
++	const char *p = req_url;
++	if (!strncmp(p, "gemini://", 9))
++		p += 9;
++	const char *he = strchr(p, '/');
++	const char *pe = strchr(p, ':');
++	if (pe &amp;&amp; (!he || pe &lt; he)) {
++		int hl = (int)(pe - p);
++		if (hl &gt; 255) hl = 255;
++		memcpy(host, p, hl); host[hl] = 0;
++		port = atoi(pe + 1);
++		if (he) strncpy(path, he, sizeof(path)-1);
++	} else if (he) {
++		int hl = (int)(he - p);
++		memcpy(host, p, hl); host[hl] = 0;
++		strncpy(path, he, sizeof(path)-1);
++	} else {
++		strncpy(host, p, sizeof(host)-1);
++	}
++	if (!host[0]) return -1;
++	if (port &lt; 1) port = 1965;
++	if (!path[0]) strcpy(path, "/");
++
++	char selector[1024];
++	strncpy(selector, req_url, sizeof(selector)-1);
++
++	SSL_CTX *sctx = SSL_CTX_new(TLS_client_method());
++	if (!sctx) return -2;
++	SSL_CTX_set_verify(sctx, SSL_VERIFY_NONE, NULL);
++
++	int sock = socket(AF_INET, SOCK_STREAM, 0);
++	if (sock &lt; 0) { SSL_CTX_free(sctx); return -3; }
++
++	struct hostent *heent = gethostbyname(host);
++	if (!heent) { close(sock); SSL_CTX_free(sctx); return -4; }
++	struct sockaddr_in sin = {0};
++	sin.sin_family = AF_INET;
++	sin.sin_port = htons(port);
++	memcpy(&amp;sin.sin_addr, heent-&gt;h_addr_list[0], heent-&gt;h_length);
++
++	if (connect(sock, (struct sockaddr *)&amp;sin, sizeof(sin)) &lt; 0) {
++		close(sock); SSL_CTX_free(sctx); return -5;
++	}
++
++	SSL *ssl = SSL_new(sctx);
++	SSL_set_fd(ssl, sock);
++	if (SSL_connect(ssl) != 1) {
++		SSL_free(ssl); close(sock); SSL_CTX_free(sctx); return -6;
++	}
++
++	char req[1200];
++	int rlen = snprintf(req, sizeof(req), "%s\r\n", selector);
++	if (SSL_write(ssl, req, rlen) &lt;= 0) {
++		SSL_free(ssl); close(sock); SSL_CTX_free(sctx); return -7;
++	}
++
++	/* read header */
++	char hbuf[1024] = {0};
++	int hlen = 0;
++	while (hlen &lt; (int)sizeof(hbuf)-1) {
++		int n = SSL_read(ssl, hbuf + hlen, 1);
++		if (n &lt;= 0) break;
++		hlen += n;
++		if (hlen &gt;= 2 &amp;&amp; hbuf[hlen-2]=='\r' &amp;&amp; hbuf[hlen-1]=='\n') break;
++	}
++	hbuf[hlen] = 0;
++
++	int status = 0;
++	char meta[512] = {0};
++	if (sscanf(hbuf, "%d %511[^\r\n]", &amp;status, meta) &lt; 1) status = 59;
++	*out_status = status;
++	if (out_meta) *out_meta = strdup(meta);
++
++	/* read body */
++	size_t cap = 8192;
++	size_t blen = 0;
++	char *body = malloc(cap);
++	if (!body) { SSL_free(ssl); close(sock); SSL_CTX_free(sctx); return -8; }
++	for (;;) {
++		char rbuf[1024];
++		int n = SSL_read(ssl, rbuf, sizeof(rbuf));
++		if (n &lt;= 0) break;
++		if (blen + (size_t)n + 1 &gt; cap) {
++			cap = cap * 2 + n;
++			char *nb = realloc(body, cap);
++			if (!nb) { free(body); SSL_free(ssl); close(sock); SSL_CTX_free(sctx); return -8; }
++			body = nb;
++		}
++		memcpy(body + blen, rbuf, n);
++		blen += n;
++	}
++	body[blen] = 0;
++	*out_body = body;
++
++	SSL_shutdown(ssl);
++	SSL_free(ssl);
++	close(sock);
++	SSL_CTX_free(sctx);
++	return 0;
++}
++
++static void resolve_url(const char *base, const char *rel, char *out, size_t outlen)
++{
++	if (!rel || !*rel) {
++		strncpy(out, base, outlen-1); out[outlen-1]=0; return;
++	}
++	if (strstr(rel, "://") || !strncmp(rel, "gemini:", 7)) {
++		strncpy(out, rel, outlen-1); out[outlen-1]=0; return;
++	}
++
++	char bhost[256] = {0};
++	char bpath[512] = {0};
++	int bport = 1965;
++
++	const char *p = base;
++	if (!strncmp(p, "gemini://", 9)) p += 9;
++	const char *he = strchr(p, '/');
++	const char *pe = strchr(p, ':');
++	if (pe &amp;&amp; (!he || pe &lt; he)) {
++		int hl = (int)(pe - p); if (hl &gt; 255) hl=255;
++		memcpy(bhost, p, hl); bhost[hl]=0;
++		bport = atoi(pe+1);
++		if (he) strncpy(bpath, he, sizeof(bpath)-1); else strcpy(bpath, "/");
++	} else if (he) {
++		int hl = (int)(he - p);
++		memcpy(bhost, p, hl); bhost[hl]=0;
++		strncpy(bpath, he, sizeof(bpath)-1);
++	} else {
++		strncpy(bhost, p, sizeof(bhost)-1);
++		strcpy(bpath, "/");
++	}
++	if (!bpath[0]) strcpy(bpath, "/");
++
++	char portpart[32] = "";
++	if (bport != 1965) snprintf(portpart, sizeof(portpart), ":%d", bport);
++
++	if (rel[0] == '/') {
++		snprintf(out, outlen, "gemini://%s%s%s", bhost, portpart, rel);
++		return;
++	}
++
++	char dir[512];
++	strncpy(dir, bpath, sizeof(dir)-1);
++	char *ls = strrchr(dir, '/');
++	if (ls) *(ls+1) = 0; else strcpy(dir, "/");
++
++	char full[1024];
++	snprintf(full, sizeof(full), "%s%s", dir, rel);
++
++	char *segs[64]; int nseg = 0;
++	char *tmp = strdup(full);
++	char *save = NULL;
++	char *seg = strtok_r(tmp, "/", &amp;save);
++	while (seg) {
++		if (!strcmp(seg, ".") || !*seg) {
++		} else if (!strcmp(seg, "..")) {
++			if (nseg &gt; 0) nseg--;
++		} else {
++			segs[nseg++] = seg;
++		}
++		seg = strtok_r(NULL, "/", &amp;save);
++	}
++
++	char norm[1024] = "/";
++	for (int i = 0; i &lt; nseg; i++) {
++		strcat(norm, segs[i]);
++		if (i+1 &lt; nseg) strcat(norm, "/");
++	}
++	free(tmp);
++
++	snprintf(out, outlen, "gemini://%s%s%s", bhost, portpart, norm);
++}
++
++/* Simple word-wrap for long paragraphs and link labels. Returns malloc'ed array of lines (caller frees). */
++static char **wrap_text(FT_Face face, const char *text, int max_width, int *nlines)
++{
++	*nlines = 0;
++	if (!face || !text || !*text || max_width &lt; 20) return NULL;
++	char **lines = NULL;
++	int n = 0, cap = 0;
++	int len = strlen(text);
++	int i = 0;
++	while (i &lt; len) {
++		int j = i;
++		int last_space = -1;
++		int w = 0;
++		for (; j &lt; len; j++) {
++			unsigned char ch = (unsigned char)text[j];
++			if (FT_Load_Char(face, ch, FT_LOAD_DEFAULT) == 0)
++				w += face-&gt;glyph-&gt;advance.x &gt;&gt; 6;
++			if (w &gt; max_width &amp;&amp; j &gt; i) break;
++			if (isspace(ch)) last_space = j;
++		}
++		int end = (j &gt;= len) ? len : (last_space &gt; i ? last_space : j);
++		int lnlen = end - i;
++		char *ln = malloc(lnlen + 1);
++		memcpy(ln, text + i, lnlen);
++		ln[lnlen] = 0;
++		while (lnlen &gt; 0 &amp;&amp; isspace((unsigned char)ln[lnlen-1])) ln[--lnlen] = 0;
++		if (n &gt;= cap) {
++			cap = cap ? cap * 2 : 8;
++			lines = realloc(lines, cap * sizeof(char *));
++		}
++		lines[n++] = ln;
++		i = end;
++		while (i &lt; len &amp;&amp; isspace((unsigned char)text[i])) i++;
++	}
++	*nlines = n;
++	return lines;
++}
++
++/* Rebuild scrollable content from real gemtext body (same logic as the main app) */
++static int gemini_link_handler(struct BGTK_Widget *w, struct InputEvent ev);
++
++static void rebuild_content_from_gemtext(const char *body)
++{
++	if (content_scroll-&gt;data.scrollable.items) {
++		for (int i = 0; i &lt; content_scroll-&gt;data.scrollable.widget_count; i++) {
++			struct BGTK_Widget *tw = content_scroll-&gt;data.scrollable.items[i];
++			if (tw) {
++				free(tw-&gt;data.text.text);
++				free(tw);
++			}
++		}
++		free(content_scroll-&gt;data.scrollable.items);
++	}
++	content_scroll-&gt;data.scrollable.items = NULL;
++	content_scroll-&gt;data.scrollable.widget_count = 0;
++	num_page_links = 0;
++
++	if (!body) return;
++
++	int max_text_w = 480;
++	if (content_scroll &amp;&amp; content_scroll-&gt;w &gt; 100)
++		max_text_w = content_scroll-&gt;w - 8;
++
++	char *work = strdup(body);
++	if (!work) return;
++
++	struct BGTK_Widget **new_items = NULL;
++	int cap = 0, cnt = 0;
++
++	char *save = NULL;
++	char *line = strtok_r(work, "\n", &amp;save);
++	int in_pre = 0;
++	while (line) {
++		char *cr = strchr(line, '\r');
++		if (cr) *cr = 0;
++
++		if (!strncmp(line, "```", 3)) {
++			in_pre = !in_pre;
++			line = strtok_r(NULL, "\n", &amp;save);
++			continue;
++		}
++
++		char vis[768];
++		int is_link = 0;
++		char link_to[512] = {0};
++		int header_level = 0;
++
++		if (in_pre) {
++			snprintf(vis, sizeof(vis), "  %s", line);
++		} else if (!strncmp(line, "=&gt;", 2)) {
++			char tgt[512] = {0};
++			char disp[512] = {0};
++			const char *rest = line + 2;
++			while (*rest == ' ' || *rest == '\t') rest++;
++			const char *sp = rest;
++			while (*sp &amp;&amp; *sp != ' ' &amp;&amp; *sp != '\t') sp++;
++			int tl = (int)(sp - rest);
++			if (tl &gt; 0 &amp;&amp; tl &lt; (int)sizeof(tgt)) memcpy(tgt, rest, tl);
++			tgt[tl] = 0;
++			while (*sp == ' ' || *sp == '\t') sp++;
++			if (*sp) strncpy(disp, sp, sizeof(disp)-1);
++			else strncpy(disp, tgt, sizeof(disp)-1);
++
++			snprintf(vis, sizeof(vis), "=&gt; %s", disp);
++			strncpy(link_to, tgt, sizeof(link_to)-1);
++			is_link = 1;
++		} else if (!strncmp(line, "# ", 2)) {
++			snprintf(vis, sizeof(vis), "%s", line + 2);
++			header_level = 1;
++		} else if (!strncmp(line, "## ", 3)) {
++			snprintf(vis, sizeof(vis), "%s", line + 3);
++			header_level = 2;
++		} else if (!strncmp(line, "### ", 4)) {
++			snprintf(vis, sizeof(vis), "%s", line + 4);
++			header_level = 3;
++		} else if (!strncmp(line, "&gt; ", 2) || !strncmp(line, "* ", 2)) {
++			snprintf(vis, sizeof(vis), "%s", line[0]=='*' ? "\xe2\x80\xa2 " : "");
++			if (line[0]=='*') strncat(vis, line+2, sizeof(vis)-strlen(vis)-1);
++			else strncat(vis, line, sizeof(vis)-strlen(vis)-1);
++		} else {
++			snprintf(vis, sizeof(vis), "%s", line);
++		}
++
++		char resolved[512] = {0};
++		if (is_link)
++			resolve_url(current_url, link_to, resolved, sizeof(resolved));
++
++		if (header_level &gt; 0 &amp;&amp; cnt &gt; 0) {
++			new_items[cnt-1]-&gt;h += 5;  /* increase the top spacing a little before headings */
++		}
++
++		if (header_level &gt; 0) {
++			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size + 4 - header_level);
++		}
++		if (!in_pre) {
++			int nsubs = 0;
++			char **subs = wrap_text(ctx-&gt;ft_face, vis, max_text_w, &amp;nsubs);
++			for (int s = 0; s &lt; nsubs; s++) {
++				struct BGTK_Widget *tw = bgtk_text(ctx, subs[s], (BGTK_Options){.padding=1, .margin=1});
++				if (!tw) continue;
++				if (header_level &gt; 0) {
++					tw-&gt;data.text.header_level = header_level;
++				}
++				if (is_link &amp;&amp; num_page_links &lt; 128) {
++					link_target_widgets[num_page_links] = tw;
++					strncpy(link_targets[num_page_links], resolved, sizeof(link_targets[0])-1);
++					num_page_links++;
++					tw-&gt;handle_event = gemini_link_handler;
++				}
++				if (s &lt; nsubs - 1) {
++					tw-&gt;h -= 3;  /* decrease a little for lines in the same paragraph (tighter leading between wraps) */
++				}
++				if (s == nsubs - 1) {
++					tw-&gt;h += 5;  /* extra vertical space after this logical block */
++				}
++				if (cnt &gt;= cap) {
++					cap = cap ? cap*2 : 32;
++					struct BGTK_Widget **ni = realloc(new_items, (size_t)cap * sizeof(*ni));
++					if (!ni) { free(tw-&gt;data.text.text); free(tw); break; }
++					new_items = ni;
++				}
++				new_items[cnt++] = tw;
++			}
++			for (int s = 0; s &lt; nsubs; s++) free(subs[s]);
++			free(subs);
++		} else {
++			struct BGTK_Widget *tw = bgtk_text(ctx, vis, (BGTK_Options){.padding=1, .margin=1});
++			if (tw) {
++				tw-&gt;h += 4;  /* space after pre block */
++				if (cnt &gt;= cap) {
++					cap = cap ? cap*2 : 32;
++					struct BGTK_Widget **ni = realloc(new_items, (size_t)cap * sizeof(*ni));
++					if (!ni) { free(tw-&gt;data.text.text); free(tw); }
++					else { new_items = ni; new_items[cnt++] = tw; }
++				} else {
++					new_items[cnt++] = tw;
++				}
++			}
++		}
++		if (header_level &gt; 0) {
++			FT_Set_Pixel_Sizes(ctx-&gt;ft_face, 0, ctx-&gt;font_size);
++		}
++
++		line = strtok_r(NULL, "\n", &amp;save);
++	}
++	free(work);
++
++	content_scroll-&gt;data.scrollable.items = new_items;
++	content_scroll-&gt;data.scrollable.widget_count = cnt;
++	content_scroll-&gt;data.scrollable.scroll_y = 0;
++}
++
++/* Real navigation using live capsule */
++static void load_real_url(const char *url);
++
++static int gemini_link_handler(struct BGTK_Widget *w, struct InputEvent ev)
++{
++	if (ev.code == BTN_LEFT &amp;&amp; ev.value == 1) {
++		for (int i = 0; i &lt; num_page_links; i++) {
++			if (link_target_widgets[i] == w) {
++				load_real_url(link_targets[i]);
++				return 1;
++			}
++		}
++	}
++	return 0;
++}
++
++static void load_real_url(const char *url)
++{
++	if (!url || !*url) return;
++
++	strncpy(current_url, url, sizeof(current_url)-1);
++	current_url[sizeof(current_url)-1] = 0;
++
++	char tourl[512];
++	strncpy(tourl, url, sizeof(tourl)-1);
++	int redirects = 0;
++	int status = 0;
++	char *meta = NULL;
++	char *body = NULL;
++	int feres = -1;
++
++	for (;;) {
++		if (meta) { free(meta); meta = NULL; }
++		if (body) { free(body); body = NULL; }
++		feres = fetch_gemini(tourl, &amp;status, &amp;meta, &amp;body);
++		if (feres == 0 &amp;&amp; (status == 30 || status == 31) &amp;&amp; meta &amp;&amp; *meta &amp;&amp; redirects &lt; 5) {
++			char next[512];
++			resolve_url(tourl, meta, next, sizeof(next));
++			strncpy(tourl, next, sizeof(tourl)-1);
++			redirects++;
++			continue;
++		}
++		break;
++	}
++	strncpy(current_url, tourl, sizeof(current_url)-1);
++
++	/* free old content */
++	if (content_scroll-&gt;data.scrollable.items) {
++		for (int i = 0; i &lt; content_scroll-&gt;data.scrollable.widget_count; i++) {
++			struct BGTK_Widget *tw = content_scroll-&gt;data.scrollable.items[i];
++			free(tw-&gt;data.text.text);
++			free(tw);
++		}
++		free(content_scroll-&gt;data.scrollable.items);
++	}
++	content_scroll-&gt;data.scrollable.items = NULL;
++	content_scroll-&gt;data.scrollable.widget_count = 0;
++	num_page_links = 0;
++
++	if (feres != 0 || status / 10 != 2) {
++		char errline[256];
++		snprintf(errline, sizeof(errline), "Error %d %s", status, meta ? meta : "");
++		struct BGTK_Widget **errs = calloc(1, sizeof(*errs));
++		if (errs) errs[0] = bgtk_text(ctx, errline, (BGTK_Options){.padding=2, .margin=1});
++		content_scroll-&gt;data.scrollable.items = errs;
++		content_scroll-&gt;data.scrollable.widget_count = errs ? 1 : 0;
++	} else {
++		rebuild_content_from_gemtext(body);
++	}
++
++	/* sync address bar (it serves as the URL display) */
++	free(addr_input-&gt;data.text_input.text);
++	addr_input-&gt;data.text_input.text = strdup(current_url);
++	addr_input-&gt;data.text_input.cursor_pos = (uint32_t)strlen(current_url);
++	addr_input-&gt;data.text_input.scroll_x = 0;
++
++	if (meta) free(meta);
++	if (body) free(body);
++
++	bgtk_draw_widgets(ctx);
++}
++
++static void demo_addr_on_enter(void)
++{
++	load_real_url(addr_input-&gt;data.text_input.text);
++}
++
++int main(void)
++{
++	SSL_load_error_strings();
++	OpenSSL_add_ssl_algorithms();
++
++	int width = 640;
++	int height = 500;
++
++	ctx = bgtk_init_mock(width, height);
++	if (!ctx) {
++		fprintf(stderr, "test_gemini_browser: bgtk_init_mock failed\n");
++		return 1;
++	}
++
++	int usable_w = width - 20;
++
++	/* create button first to know its size, then size the input to make the row (address bar + button) full width */
++	struct BGTK_Widget *go_label = bgtk_text(ctx, "Go", (BGTK_Options){.padding = 2, .margin = 0});
++	struct BGTK_Widget *go_btn = bgtk_button(ctx, go_label, NULL,
++						 (BGTK_Options){.padding = 4, .margin = 2});
++	int input_w = usable_w - go_btn-&gt;w - 16;  /* leave room for row padding/margins */
++	addr_input = bgtk_text_input(ctx, "gemini://geminiprotocol.net/", input_w &gt; 100 ? input_w : 400, 0,
++				     (BGTK_Options){.padding = 4, .margin = 2});
++	addr_input-&gt;data.text_input.on_enter = demo_addr_on_enter;
++
++	struct BGTK_Widget *addr_items[2] = {addr_input, go_btn};
++	struct BGTK_Widget *addr_row = bgtk_list(ctx, addr_items, 2,
++						 (BGTK_Options){.orientation = BGTK_LIST_HORIZONTAL, .padding = 2, .margin = 1});
++
++	content_scroll = bgtk_scrollable(ctx, NULL, 0, (BGTK_Options){.padding = 2, .margin = 3});
++	int v_margins = 16;
++	int reserved = (addr_row ? addr_row-&gt;h : 24) + v_margins;
++	int scroll_h = height - reserved - 24;
++	if (scroll_h &lt; 100) scroll_h = 180;
++	content_scroll-&gt;w = usable_w;
++	content_scroll-&gt;h = scroll_h;
++
++	struct BGTK_Widget *main_items[2] = {content_scroll, addr_row};
++	struct BGTK_Widget *main_list = bgtk_list(ctx, main_items, 2,
++						  (BGTK_Options){.orientation = BGTK_LIST_VERTICAL, .padding = 2, .margin = 2});
++
++	struct BGTK_Widget *frame = bgtk_frame(ctx, main_list, width, height,
++					       (BGTK_Options){.padding = 4, .margin = 0});
++
++	ctx-&gt;root_widget = frame;
++
++	/* === Real capsule load === */
++	load_real_url("gemini://geminiprotocol.net/");
++	bgtk_draw_widgets(ctx);
++	take_screenshot(ctx, "gemini_browser_00_real_capsule.png");
++
++	/* Focus the address bar (real UI element) */
++	{
++		struct InputEvent c = {0};
++		c.type = EV_KEY;
++		c.code = BTN_LEFT;
++		c.value = 1;
++		c.x = addr_input-&gt;x + 30;
++		c.y = addr_input-&gt;y + 6;
++		bgtk_inject_event(ctx, c);
++		c.value = 0;
++		bgtk_inject_event(ctx, c);
++	}
++	take_screenshot(ctx, "gemini_browser_01_bar_focused.png");
++
++	/* Type a different real path into the bar (will be used on enter) */
++	{
++		struct InputEvent k = {0};
++		k.type = EV_KEY;
++		k.value = 1;
++		int keyseq[] = {
++			KEY_G, KEY_E, KEY_M, KEY_I, KEY_N, KEY_I, KEY_SLASH, KEY_SLASH,
++			KEY_G, KEY_E, KEY_M, KEY_I, KEY_N, KEY_I, KEY_P, KEY_R, KEY_O, KEY_T, KEY_O, KEY_C, KEY_O, KEY_L, KEY_DOT, KEY_N, KEY_E, KEY_T, KEY_SLASH
++		};
++		for (size_t i = 0; i &lt; sizeof(keyseq)/sizeof(keyseq[0]); ++i) {
++			k.code = keyseq[i];
++			bgtk_inject_event(ctx, k);
++		}
++	}
++	take_screenshot(ctx, "gemini_browser_02_typing_in_bar.png");
++
++	/* ENTER -&gt; real fetch of the (re)typed capsule URL via on_enter */
++	{
++		struct InputEvent k = {0};
++		k.type = EV_KEY;
++		k.value = 1;
++		k.code = KEY_ENTER;
++		bgtk_inject_event(ctx, k);
++	}
++	take_screenshot(ctx, "gemini_browser_03_after_enter.png");
++
++	/* Click a real link from the capsule content (first registered link target) */
++	if (num_page_links &gt; 0 &amp;&amp; link_target_widgets[0]) {
++		struct BGTK_Widget *lnk = link_target_widgets[0];
++		int ax = content_scroll-&gt;x + lnk-&gt;x + 15;
++		int ay = content_scroll-&gt;y + lnk-&gt;y + 4;
++		struct InputEvent c = {0};
++		c.type = EV_KEY;
++		c.code = BTN_LEFT;
++		c.value = 1;
++		c.x = ax;
++		c.y = ay;
++		bgtk_inject_event(ctx, c);
++		c.value = 0;
++		bgtk_inject_event(ctx, c);
++	}
++	take_screenshot(ctx, "gemini_browser_04_real_link_clicked.png");
++
++	printf("test_gemini_browser complete. Real capsule used (geminiprotocol.net and links).\n");
++	printf("PNG files contain authentic rendered Gemini content.\n");
++
++	bgtk_destroy_mock(ctx);
++	return 0;
++}
+diff --git a/widgets.c b/widgets.c
+index 7fa4b3d..334fed9 100644
+--- a/widgets.c
++++ b/widgets.c
+@@ -638,6 +638,7 @@ struct BGTK_Widget *bgtk_text(struct BGTK_Context *ctx, char *text,
+ 	char *ptr = calloc(1, strlen(text) + 1);
+ 	sprintf(ptr, "%s", text);
+ 	widget-&gt;data.text.text = ptr;
++	widget-&gt;data.text.header_level = 0;
+ 
+ 	// Calculate size based on text
+ 	measure_text(widget-&gt;ctx-&gt;ft_face, widget-&gt;data.text.text, &amp;widget-&gt;w,
+</pre>
