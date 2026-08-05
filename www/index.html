@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>BGTK</title>
+<title>bgtk</title>
 <meta charset="UTF-8">
 <meta name="color-scheme" content="light dark">
 <link rel=icon href=data:,>
@@ -8,40 +8,40 @@
 <style>pre{width:52ch;margin:2ch auto}a{color:#ff00ff}</style>
 <pre>
 		┌─────────────┐
-		│ BGTK is the │
+		│ bgtk is the │
 		│ simplest    │
 		│ toolkit for │
 		│ buffers.    │
 		│             │
 		│  ┌───────┐  │
-		│  │ HELLO │  │
+		│  │ hello │  │
 		│  └───────┘  │
 		└─────────────┘
 
 <a href=log.html>log</a> | <a href=tree.html>tree</a> | <a href=refs.html>refs</a>
 <!-- site nav -->
 
-<i><b>BGTK: Brian's Graphical Tool Kit</b></i>
+<i><b>bgtk: brian's graphical tool kit</b></i>
 
-BGTK is a simple toolkit that directly handles
-framebuffers. It was created for BGCE, so it makes
+bgtk is a simple toolkit that directly handles
+framebuffers. it was created for bgce, so it makes
 it very easy to send/receive events and create
 widgets and components.
 
 
-<b>Overview</b>
+<b>overview</b>
 
-BGTK offers the Widget abstraction and some basic
-helper functions. The idea is to be a "declarative"
+bgtk offers the widget abstraction and some basic
+helper functions. the idea is to be a "declarative"
 library, so it is intuitive to use.
 
-To keep track of the develoment check the commit log
+to keep track of the develoment check the commit log
 on the <a href=feed.xml>feed</a>.
 
 
-<b>Download</b>
+<b>download</b>
 
-Source snapshot (no git history):
+source snapshot (no git history):
 
 	<a href=bgtk.tar.gz>bgtk.tar.gz</a>
 
@@ -49,30 +49,30 @@ Source snapshot (no git history):
 	tar xzf bgtk.tar.gz
 	cd bgtk
 
-Or clone the repository:
+or clone the repository:
 
 	git clone https://terminal.pink/bgtk
 	cd bgtk
 
 
-<b>Configuration</b>
+<b>configuration</b>
 
-BGTK is configured via ~/.config/bgtk.conf.
-Colors use #RRGGBB or #RRGGBBAA format.
-Example with all options and their defaults
+bgtk is configured via ~/.config/bgtk.conf.
+colors use #rrggbb or #rrggbbaa format.
+example with all options and their defaults
 (also used when the file is missing):
 
 	[background]
 	type = color
-	color = #E8E8E8
-	# Or use an image:
+	color = #e8e8e8
+	# or use an image:
 	# type = image
 	# path = /path/to/wallpaper.png
 	# mode = tiled
 
 	[theme]
-	background = #E8E8E8
-	button = #D0D0D0
+	background = #e8e8e8
+	button = #d0d0d0
 	button_text = #111111
 	button_border_size = 1
 	input_border_size = 2
@@ -80,37 +80,37 @@ Example with all options and their defaults
 	frame_border_color = #333333
 
 	[font]
-	path = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+	path = /usr/share/fonts/truetype/dejavu/dejavusans.ttf
 	size = 14
 
-Per-app logs go under ~/.cache/bgtk/&lt;app&gt;.log
-(or $XDG_CACHE_HOME/bgtk/), not the BGCE log.
+per-app logs go under ~/.cache/bgtk/&lt;app&gt;.log
+(or $xdg_cache_home/bgtk/), not the bgce log.
 
 
-<b>Build Instructions</b>
+<b>build instructions</b>
 
-First make sure all dependencies are met:
+first make sure all dependencies are met:
 - freetype2
 - libxml2
 - bgce (for real apps; not needed for headless tests)
 
-Then run:
+then run:
 
-	make CC=cc
+	make cc=cc
 	make install
-	# or headless UI tests without a compositor:
+	# or headless ui tests without a compositor:
 	make headless && ./headless
 
 
-<b>Goals</b>
+<b>goals</b>
 
-- Minimal, declarative widget library
-- Few external dependencies
-- Educational reference for framebuffer-based
+- minimal, declarative widget library
+- few external dependencies
+- educational reference for framebuffer-based
   compositing
 
 
-<b>License</b>
+<b>license</b>
 
-BSD 2-clause license.
+bsd 2-clause license.
 </pre>
