@@ -43,16 +43,16 @@ on the <a href=feed.xml>feed</a>.
 
 source snapshot (no git history):
 
-	<a href=bgtk.tar.gz>bgtk.tar.gz</a>
+<a href=bgtk.tar.gz>bgtk.tar.gz</a>
 
-	curl -fsSL -o bgtk.tar.gz https://terminal.pink/bgtk/bgtk.tar.gz
-	tar xzf bgtk.tar.gz
-	cd bgtk
+curl -fsSL -o bgtk.tar.gz https://terminal.pink/bgtk/bgtk.tar.gz
+tar xzf bgtk.tar.gz
+cd bgtk
 
 or clone the repository:
 
-	git clone https://terminal.pink/bgtk
-	cd bgtk
+git clone https://terminal.pink/bgtk
+cd bgtk
 
 
 <b>configuration</b>
@@ -62,26 +62,26 @@ colors use #rrggbb or #rrggbbaa format.
 example with all options and their defaults
 (also used when the file is missing):
 
-	[background]
-	type = color
-	color = #e8e8e8
-	# or use an image:
-	# type = image
-	# path = /path/to/wallpaper.png
-	# mode = tiled
+[background]
+type = color
+color = #e8e8e8
+# or use an image:
+# type = image
+# path = /path/to/wallpaper.png
+# mode = tiled
 
-	[theme]
-	background = #e8e8e8
-	button = #d0d0d0
-	button_text = #111111
-	button_border_size = 1
-	input_border_size = 2
-	frame_border_size = 4
-	frame_border_color = #333333
+[theme]
+background = #e8e8e8
+button = #d0d0d0
+button_text = #111111
+button_border_size = 1
+input_border_size = 2
+frame_border_size = 4
+frame_border_color = #333333
 
-	[font]
-	path = /usr/share/fonts/truetype/dejavu/dejavusans.ttf
-	size = 14
+[font]
+path = /usr/share/fonts/truetype/dejavu/dejavusans.ttf
+size = 14
 
 per-app logs go under ~/.cache/bgtk/&lt;app&gt;.log
 (or $xdg_cache_home/bgtk/), not the bgce log.
@@ -96,10 +96,10 @@ first make sure all dependencies are met:
 
 then run:
 
-	make cc=cc
-	make install
-	# or headless ui tests without a compositor:
-	make headless && ./headless
+make CC=cc
+make install
+# or headless ui tests without a compositor:
+make headless && ./headless
 
 
 <b>goals</b>
